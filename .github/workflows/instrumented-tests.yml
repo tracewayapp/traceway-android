@@ -1,0 +1,138 @@
+name: Instrumented tests (Firebase Test Lab)
+
+on:
+  workflow_dispatch:
+    inputs:
+      branch:
+        description: 'Branch to test'
+        required: false
+        default: 'main'
+        type: string
+      device:
+        description: 'FTL device model (default shiba=Pixel 8)'
+        required: false
+        default: 'shiba'
+        type: string
+      api_level:
+        description: 'Android API level'
+        required: false
+        default: '34'
+        type: string
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  build:
+    name: Build self-instrumenting androidTest APK
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.branch || github.ref }}
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - uses: gradle/actions/setup-gradle@v3
+
+      - name: Generate Gradle wrapper
+        run: gradle wrapper --gradle-version 8.4
+
+      - name: Assemble androidTest APK
+        run: ./gradlew :traceway:assembleDebugAndroidTest --stacktrace
+
+      - name: Show built APK paths
+        run: find traceway/build/outputs/apk -type f -name "*.apk"
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: traceway-androidtest-apk
+          path: traceway/build/outputs/apk/androidTest/debug/*.apk
+
+  firebase-test-lab:
+    name: Run on Firebase Test Lab
+    needs: build
+    runs-on: ubuntu-latest
+    # Only run on pushes/dispatches when GCP secrets are configured. PRs from
+    # forks will not have these and would otherwise fail with auth errors.
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: traceway-androidtest-apk
+          path: ./apks
+
+      - uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ secrets.GCP_SERVICE_ACCOUNT }}
+
+      - uses: google-github-actions/setup-gcloud@v2
+
+      - name: Locate androidTest APK
+        id: locate
+        run: |
+          APK=$(find ./apks -type f -name "*-androidTest.apk" | head -1)
+          if [ -z "$APK" ]; then
+            echo "::error::No androidTest APK found"
+            exit 1
+          fi
+          echo "apk_path=$APK" >> "$GITHUB_OUTPUT"
+
+      - name: Run on Firebase Test Lab
+        env:
+          DEVICE: ${{ github.event.inputs.device || 'shiba' }}
+          API: ${{ github.event.inputs.api_level || '34' }}
+        run: |
+          # Library-module androidTest APKs are self-instrumenting: pass the
+          # same APK as both --app and --test.
+          gcloud firebase test android run \
+            --project=${{ secrets.GCP_PROJECT_ID }} \
+            --type instrumentation \
+            --app "${{ steps.locate.outputs.apk_path }}" \
+            --test "${{ steps.locate.outputs.apk_path }}" \
+            --device model=$DEVICE,version=$API,locale=en,orientation=portrait \
+            --use-orchestrator \
+            --environment-variables clearPackageData=true \
+            --timeout 15m \
+            --results-dir=instrumented-${{ github.run_id }} \
+            --results-bucket=${{ secrets.GCS_BUCKET }} \
+            --record-video \
+            2>&1 | tee ftl_output.txt
+
+      - name: Download results from GCS
+        if: always()
+        run: |
+          GCS_PATH="gs://${{ secrets.GCS_BUCKET }}/instrumented-${{ github.run_id }}"
+          mkdir -p ./results
+          gsutil -m cp -r "$GCS_PATH/" ./results/ 2>&1 || echo "WARNING: gsutil download failed"
+
+      - name: Surface test results
+        if: always()
+        run: |
+          echo "=== JUnit XML test summaries ==="
+          find ./results -name "test_result_*.xml" -exec sh -c 'echo "--- $1 ---"; cat "$1"' _ {} \; 2>/dev/null | head -300
+          echo ""
+          echo "=== Traceway logs from logcat ==="
+          grep -rh "Traceway" ./results/ 2>/dev/null | head -80 || echo "no Traceway log lines"
+          echo ""
+          echo "=== Errors / failures from logcat ==="
+          grep -rh "FAILURES\!\|AssertionError\|java.lang.AssertionError\|expected:\|but was:" ./results/ 2>/dev/null | head -80 || echo "no test failures in logcat"
+
+      - name: Upload FTL artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ftl-results-${{ github.run_id }}
+          path: ./results/
