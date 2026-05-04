@@ -83,7 +83,7 @@ mavenPublishing {
         publishJavadocJar = true,
     ))
 
-    coordinates("com.tracewayapp", "traceway", "0.0.1")
+    coordinates("com.tracewayapp", "traceway", "1.0.0")
 
     pom {
         name.set("Traceway Android SDK")
