@@ -211,7 +211,7 @@ Two test suites mirror the Flutter SDK's setup.
 **JVM unit tests** — fast, no device required. Cover wire-format JSON serialization, the rolling event buffer, connection-string parsing, ISO-8601 timestamps, the disk-backed exception store, and the full client flow against a fake `ReportSender`.
 
 ```bash
-gradle wrapper --gradle-version 8.4   # one-time
+gradle wrapper --gradle-version 8.7   # one-time
 ./gradlew :traceway:testDebugUnitTest
 ```
 
