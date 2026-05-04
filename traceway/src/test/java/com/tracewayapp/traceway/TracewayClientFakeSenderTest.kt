@@ -114,37 +114,37 @@ class TracewayClientFakeSenderTest {
 
     @Test
     fun failingSenderRetainsPendingExceptions() {
-        val sender = CapturingSender().apply {
-            responseSuccess = false
-            sendLatch = CountDownLatch(1)
-        }
+        val sender = CapturingSender().apply { responseSuccess = false }
         val client = newClient(sender)
 
         client.captureException(RuntimeException("retry me"))
-        assertTrue(sender.sendLatch!!.await(5, TimeUnit.SECONDS))
+        // flush submits a doSync to the single-threaded scheduler; it runs
+        // *after* the in-flight one finishes (including the re-queue branch).
+        client.flush(timeoutMs = 5_000)
 
+        assertTrue(
+            "expected at least one send attempt, got 0",
+            sender.sendCount.get() >= 1,
+        )
         // Sender returned false, so the exception should still be queued.
         assertEquals(1, client.pendingExceptionCount())
     }
 
     @Test
     fun pendingExceptionsSurviveRestartFromDisk() {
-        val failing = CapturingSender().apply {
-            responseSuccess = false
-            sendLatch = CountDownLatch(1)
-        }
+        val failing = CapturingSender().apply { responseSuccess = false }
         var client = newClient(failing)
         client.captureException(IllegalStateException("survive me"))
-        assertTrue(failing.sendLatch!!.await(5, TimeUnit.SECONDS))
+        client.flush(timeoutMs = 5_000)
 
         // The exception should remain in pending and on disk.
         assertEquals(1, client.pendingExceptionCount())
+        val files = dir.listFiles { f -> f.name.endsWith(".json") } ?: emptyArray()
+        assertTrue("expected file on disk after failed send, got 0", files.isNotEmpty())
 
         TracewayClient.resetForTest()
 
-        val success = CapturingSender().apply {
-            sendLatch = CountDownLatch(1)
-        }
+        val success = CapturingSender().apply { sendLatch = CountDownLatch(1) }
         client = newClient(success)
         client.loadPendingFromDisk()
 

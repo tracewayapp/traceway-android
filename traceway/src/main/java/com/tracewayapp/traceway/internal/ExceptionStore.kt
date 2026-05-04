@@ -29,7 +29,9 @@ internal class ExceptionStore(
 
     val isAvailable: Boolean get() = available
 
+    /** Idempotent — safe to call multiple times. */
     fun init() {
+        if (available) return
         try {
             if (!dir.exists()) {
                 dir.mkdirs()

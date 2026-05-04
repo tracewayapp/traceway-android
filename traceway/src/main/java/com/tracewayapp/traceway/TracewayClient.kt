@@ -77,6 +77,12 @@ class TracewayClient internal constructor(
             Thread(r, "TracewayScheduler").apply { isDaemon = true }
         }
 
+    init {
+        // Open the store eagerly so the first captureException — which may
+        // arrive before [loadPendingFromDisk] is called — actually persists.
+        store?.init()
+    }
+
     val debug: Boolean get() = options.debug
 
     /** Sets the device attribute map merged into every captured exception. */

@@ -43,7 +43,7 @@ internal class EventBuffer<T : TracewayEvent>(
 
     private fun prune() {
         val cutoff = System.currentTimeMillis() - windowMs
-        while (queue.isNotEmpty() && queue.peekFirst().timestampMs < cutoff) {
+        while (queue.isNotEmpty() && (queue.peekFirst()?.timestampMs ?: Long.MAX_VALUE) < cutoff) {
             queue.removeFirst()
         }
         while (queue.size > maxSize) {
