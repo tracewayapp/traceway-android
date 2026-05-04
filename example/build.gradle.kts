@@ -1,6 +1,18 @@
+import java.util.Properties
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
+}
+
+val tracewayDsn: String = run {
+    val props = Properties()
+    val localFile = rootProject.file("local.properties")
+    if (localFile.exists()) {
+        localFile.inputStream().use { props.load(it) }
+    }
+    props.getProperty("traceway.dsn")
+        ?: "your-token@https://your-traceway-instance.com/api/report"
 }
 
 android {
@@ -14,12 +26,7 @@ android {
         versionCode = 1
         versionName = "1.0.0"
 
-        val dsn = java.util.Properties().apply {
-            val f = rootProject.file("local.properties")
-            if (f.exists()) f.reader().use { load(it) }
-        }.getProperty("traceway.dsn")
-            ?: "your-token@https://your-traceway-instance.com/api/report"
-        buildConfigField("String", "TRACEWAY_DSN", "\"$dsn\"")
+        buildConfigField("String", "TRACEWAY_DSN", "\"$tracewayDsn\"")
     }
 
     buildFeatures {
