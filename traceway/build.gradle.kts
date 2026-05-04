@@ -1,7 +1,10 @@
+import com.vanniktech.maven.publish.AndroidSingleVariantLibrary
+import com.vanniktech.maven.publish.SonatypeHost
+
 plugins {
     id("com.android.library")
     id("org.jetbrains.kotlin.android")
-    `maven-publish`
+    id("com.vanniktech.maven.publish")
 }
 
 android {
@@ -39,12 +42,6 @@ android {
             isReturnDefaultValues = true
         }
     }
-
-    publishing {
-        singleVariant("release") {
-            withSourcesJar()
-        }
-    }
 }
 
 dependencies {
@@ -76,16 +73,48 @@ dependencies {
     androidTestImplementation("androidx.appcompat:appcompat:1.6.1")
 }
 
-publishing {
-    publications {
-        register<MavenPublication>("release") {
-            groupId = "com.tracewayapp"
-            artifactId = "traceway"
-            version = "1.0.0"
+mavenPublishing {
+    publishToMavenCentral(SonatypeHost.CENTRAL_PORTAL, automaticRelease = true)
+    signAllPublications()
 
-            afterEvaluate {
-                from(components["release"])
+    configure(AndroidSingleVariantLibrary(
+        variant = "release",
+        sourcesJar = true,
+        publishJavadocJar = true,
+    ))
+
+    coordinates("com.tracewayapp", "traceway", "1.0.0")
+
+    pom {
+        name.set("Traceway Android SDK")
+        description.set(
+            "Error tracking for native Android apps. Captures exceptions with " +
+                "full stack traces, plus the last ~10 seconds of logs, HTTP calls, " +
+                "navigation transitions, and custom breadcrumbs."
+        )
+        inceptionYear.set("2026")
+        url.set("https://github.com/tracewayapp/traceway-android")
+
+        licenses {
+            license {
+                name.set("MIT License")
+                url.set("https://opensource.org/licenses/MIT")
+                distribution.set("repo")
             }
+        }
+
+        developers {
+            developer {
+                id.set("tracewayapp")
+                name.set("Traceway")
+                url.set("https://github.com/tracewayapp")
+            }
+        }
+
+        scm {
+            url.set("https://github.com/tracewayapp/traceway-android")
+            connection.set("scm:git:git://github.com/tracewayapp/traceway-android.git")
+            developerConnection.set("scm:git:ssh://git@github.com/tracewayapp/traceway-android.git")
         }
     }
 }

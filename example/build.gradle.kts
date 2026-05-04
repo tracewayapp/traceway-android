@@ -13,6 +13,17 @@ android {
         targetSdk = 34
         versionCode = 1
         versionName = "1.0.0"
+
+        val dsn = java.util.Properties().apply {
+            val f = rootProject.file("local.properties")
+            if (f.exists()) f.reader().use { load(it) }
+        }.getProperty("traceway.dsn")
+            ?: "your-token@https://your-traceway-instance.com/api/report"
+        buildConfigField("String", "TRACEWAY_DSN", "\"$dsn\"")
+    }
+
+    buildFeatures {
+        buildConfig = true
     }
 
     buildTypes {

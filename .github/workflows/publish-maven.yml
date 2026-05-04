@@ -1,0 +1,82 @@
+name: Publish to Maven Central
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to release (e.g. 1.0.1). The workflow will bump traceway/build.gradle.kts, publish to Central, then commit + tag v<version>.'
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    name: Publish release to Sonatype Central
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Need a real ref (not detached HEAD) so we can push the release
+          # commit back to the branch the workflow was dispatched from.
+          ref: ${{ github.ref_name }}
+          fetch-depth: 0
+
+      - name: Validate version input
+        env:
+          VERSION: ${{ github.event.inputs.version }}
+        run: |
+          if ! echo "$VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9.]+)?$'; then
+            echo "::error::Invalid version '$VERSION' — expected semver like 1.0.1 or 1.0.1-rc1"
+            exit 1
+          fi
+          if git rev-parse "v$VERSION" >/dev/null 2>&1; then
+            echo "::error::Tag v$VERSION already exists in the repo"
+            exit 1
+          fi
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - uses: gradle/actions/setup-gradle@v3
+
+      - name: Generate Gradle wrapper
+        run: gradle wrapper --gradle-version 8.4
+
+      - name: Bump version in traceway/build.gradle.kts
+        env:
+          VERSION: ${{ github.event.inputs.version }}
+        run: |
+          sed -i -E \
+            's/(coordinates\("com\.tracewayapp", "traceway", ")[^"]*(".*)/\1'"$VERSION"'\2/' \
+            traceway/build.gradle.kts
+          echo "--- Updated coordinates line ---"
+          grep -n 'coordinates(' traceway/build.gradle.kts
+          # Sanity check: the new version must actually appear on that line.
+          grep -q "\"$VERSION\"" traceway/build.gradle.kts || {
+            echo "::error::sed bump did not apply — coordinates line did not change"
+            exit 1
+          }
+
+      - name: Publish to Maven Central
+        env:
+          ORG_GRADLE_PROJECT_mavenCentralUsername: ${{ secrets.MAVEN_CENTRAL_USERNAME }}
+          ORG_GRADLE_PROJECT_mavenCentralPassword: ${{ secrets.MAVEN_CENTRAL_PASSWORD }}
+          ORG_GRADLE_PROJECT_signingInMemoryKey: ${{ secrets.SIGNING_KEY }}
+          ORG_GRADLE_PROJECT_signingInMemoryKeyPassword: ${{ secrets.SIGNING_PASSWORD }}
+        run: ./gradlew :traceway:publishAndReleaseToMavenCentral --no-configuration-cache --stacktrace
+
+      - name: Commit version bump and push tag
+        env:
+          VERSION: ${{ github.event.inputs.version }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add traceway/build.gradle.kts
+          git commit -m "Release v$VERSION"
+          git tag -a "v$VERSION" -m "Release v$VERSION"
+          git push origin "HEAD:${{ github.ref_name }}"
+          git push origin "v$VERSION"

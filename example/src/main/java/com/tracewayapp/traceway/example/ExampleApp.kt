@@ -10,7 +10,7 @@ class ExampleApp : Application() {
 
         Traceway.init(
             application = this,
-            connectionString = "your-token@https://your-traceway-instance.com/api/report",
+            connectionString = BuildConfig.TRACEWAY_DSN,
             options = TracewayOptions(
                 version = "1.0.0",
                 debug = true,
