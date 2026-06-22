@@ -43,9 +43,10 @@ jobs:
 
       - uses: gradle/actions/setup-gradle@v3
 
-      - name: Generate Gradle wrapper
-        run: gradle wrapper --gradle-version 8.7
-
+      # Always build via the committed ./gradlew (Gradle 8.7, Kotlin 1.9.x).
+      # Never invoke the runner's system `gradle` (9.5.x ships kotlin-stdlib 2.3):
+      # configuring this build applies the com.tracewayapp.symbols plugin from the
+      # included gradle-plugin build, whose 1.9.22 compiler can't read 2.3 metadata.
       - name: Assemble androidTest APK
         run: ./gradlew :traceway:assembleDebugAndroidTest --stacktrace
 
