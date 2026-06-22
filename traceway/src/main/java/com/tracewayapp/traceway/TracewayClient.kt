@@ -341,6 +341,7 @@ class TracewayClient internal constructor(
             collectionFrames = listOf(frame),
             appVersion = options.version,
             serverName = "",
+            proguardUuid = options.proguardUuid,
         )
 
         var failed = false

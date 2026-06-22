@@ -3,17 +3,20 @@ import java.util.Properties
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
+    id("com.tracewayapp.symbols")
 }
 
-val tracewayDsn: String = run {
-    val props = Properties()
+val localProps = Properties().apply {
     val localFile = rootProject.file("local.properties")
-    if (localFile.exists()) {
-        localFile.inputStream().use { props.load(it) }
-    }
-    props.getProperty("traceway.dsn")
-        ?: "your-token@https://your-traceway-instance.com/api/report"
+    if (localFile.exists()) localFile.inputStream().use { load(it) }
 }
+
+val tracewayDsn: String = localProps.getProperty("traceway.dsn")
+    ?: "your-token@https://your-traceway-instance.com/api/report"
+
+val tracewayUploadToken: String = localProps.getProperty("traceway.upload_token") ?: ""
+val tracewayUrl: String = localProps.getProperty("traceway.upload_url")
+    ?: tracewayDsn.substringAfter('@', "").removeSuffix("/api/report")
 
 android {
     namespace = "com.tracewayapp.traceway.example"
@@ -35,7 +38,11 @@ android {
 
     buildTypes {
         release {
-            isMinifyEnabled = false
+            isMinifyEnabled = true
+            proguardFiles(
+                getDefaultProguardFile("proguard-android-optimize.txt"),
+                "proguard-rules.pro",
+            )
         }
     }
 
@@ -47,6 +54,12 @@ android {
     kotlinOptions {
         jvmTarget = "1.8"
     }
+}
+
+traceway {
+    uploadToken = tracewayUploadToken
+    url = tracewayUrl
+    autoUpload = false
 }
 
 dependencies {

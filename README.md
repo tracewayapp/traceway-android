@@ -99,6 +99,7 @@ All field names mirror the Flutter SDK so existing config can be ported as-is.
 | `sampleRate` | `1.0` | Error sampling rate (0.0 - 1.0) |
 | `debug` | `false` | Print debug info to logcat |
 | `version` | `""` | App version string |
+| `proguardUuid` | `null` | R8/ProGuard build UUID for deobfuscating release crashes. Set to `BuildConfig.TRACEWAY_PROGUARD_UUID` (injected by the `com.tracewayapp.symbols` plugin). See [Deobfuscating release crashes](#deobfuscating-release-crashes-r8proguard) |
 | `debounceMs` | `1500` | Milliseconds before sending batched events |
 | `retryDelayMs` | `10000` | Retry delay on failed uploads |
 | `maxPendingExceptions` | `5` | Max exceptions held in memory before oldest is dropped |
@@ -177,6 +178,82 @@ TracewayOptions(
 - **Main `Handler.post` throws** — async exceptions on the main looper
 - **Activity lifecycle transitions** — `push` / `pop` via `Application.ActivityLifecycleCallbacks`
 
+## Deobfuscating release crashes (R8/ProGuard)
+
+Release builds run R8, which renames classes and methods and rewrites line numbers, so crashes arrive obfuscated. Traceway reverses them with the build's `mapping.txt`, matched to the crashing build by a ProGuard UUID that the SDK sends with every report.
+
+The `com.tracewayapp.symbols` Gradle plugin (in [`gradle-plugin/`](gradle-plugin)) automates both halves: it injects a per-build UUID into `BuildConfig.TRACEWAY_PROGUARD_UUID` and uploads `mapping.txt` to your Traceway instance. It's published to Maven Central, so add `mavenCentral()` to your `pluginManagement` repositories in `settings.gradle.kts`:
+
+```kotlin
+pluginManagement {
+    repositories {
+        gradlePluginPortal()
+        mavenCentral()   // resolves com.tracewayapp.symbols
+    }
+}
+```
+
+Then apply and configure it on your app module:
+
+```kotlin
+plugins {
+    id("com.android.application")
+    id("com.tracewayapp.symbols") version "0.0.1"
+}
+
+android {
+    buildFeatures { buildConfig = true }   // required for the injected UUID field
+    buildTypes {
+        release { isMinifyEnabled = true }
+    }
+}
+
+traceway {
+    uploadToken = "<your project upload token>"   // NOT the DSN/connection-string token
+    url = "https://your-traceway-instance.com"    // instance base URL
+    autoUpload = true                             // upload after assembleRelease; default false
+    // proguardUuid = "..."                        // optional: pin the build UUID yourself
+}
+```
+
+Then pass the injected UUID to the SDK so reported crashes carry the matching UUID:
+
+```kotlin
+Traceway.init(
+    application = this,
+    connectionString = BuildConfig.TRACEWAY_DSN,
+    options = TracewayOptions(
+        version = "1.0.0",
+        proguardUuid = BuildConfig.TRACEWAY_PROGUARD_UUID,
+    ),
+)
+```
+
+Notes:
+
+- **`uploadToken` is the project _upload token_** from the dashboard (the same token used for JavaScript source maps and iOS dSYMs), **not** the DSN/connection-string token. The wrong token is rejected with a 401.
+- The injected UUID is derived from the module path, variant, and app version (`versionName` + `versionCode`), so **bump the version each release** to keep each build's mapping distinct — otherwise a new upload overwrites the previous release's mapping under the same UUID.
+- `autoUpload` defaults to `false` so a release build never depends on backend availability. With it off, run the upload explicitly (recommended for CI):
+
+  ```bash
+  ./gradlew :app:assembleRelease :app:uploadReleaseTracewaySymbols
+  ```
+
+> The plugin currently ships inside this repo; the `:example` module applies it via `includeBuild("gradle-plugin")` in `settings.gradle.kts`.
+
+### Manual upload (no plugin)
+
+You can upload `mapping.txt` yourself and pin the UUID by hand — set the same value in `TracewayOptions(proguardUuid = ...)`:
+
+```bash
+curl -X POST https://your-traceway-instance.com/api/symbols/upload \
+  -H "Authorization: Bearer <your project upload token>" \
+  -F "proguard_uuid=<your build uuid>" \
+  -F "files=@app/build/outputs/mapping/release/mapping.txt"
+```
+
+See the [symbolicator docs](https://docs.tracewayapp.com/symbolicator/android) for the full upload API and how traces are resolved.
+
 ## Platform Support
 
 | Platform | Error Tracking | Screen Recording |
@@ -193,6 +270,10 @@ To point it at your own Traceway backend, drop your DSN into `local.properties` 
 
 ```properties
 traceway.dsn=YOUR_TOKEN@https://your-traceway-instance.com/api/report
+
+# Optional — only needed to exercise the com.tracewayapp.symbols plugin:
+traceway.upload_token=YOUR_UPLOAD_TOKEN              # project upload token (not the DSN token)
+traceway.upload_url=https://your-traceway-instance.com   # defaults to the DSN host if omitted
 ```
 
 Then run from Android Studio (Run ▸ `example`) or from the CLI:
@@ -200,6 +281,12 @@ Then run from Android Studio (Run ▸ `example`) or from the CLI:
 ```bash
 ./gradlew :example:installDebug
 adb shell am start -n com.tracewayapp.traceway.example/.MainActivity
+```
+
+The `:example` module also applies the `com.tracewayapp.symbols` plugin (via `includeBuild("gradle-plugin")`), so you can build a minified release and upload its mapping in one go to verify deobfuscation end to end:
+
+```bash
+./gradlew :example:assembleRelease :example:uploadReleaseTracewaySymbols
 ```
 
 If `local.properties` is missing or has no `traceway.dsn` key, the app falls back to a placeholder DSN that won't reach any real server.
@@ -225,14 +312,29 @@ CI runs both on every push and PR — JVM tests via [`unit-tests.yml`](.github/w
 
 ## Publishing
 
-Releases are cut by manually triggering the **Publish to Maven Central** workflow with the desired version — the workflow handles the version bump, Maven Central upload, commit, and tag.
+Two artifacts are published to Maven Central, each with its own workflow. Both bump the version, sign and upload to Sonatype Central, then commit + tag. If publish fails, no commit or tag is created — fix the issue and re-run.
+
+**SDK** (`com.tracewayapp:traceway`) — trigger the **Publish to Maven Central** workflow:
 
 ```bash
 gh workflow run "Publish to Maven Central" -f version=1.0.1
 gh run watch
 ```
 
-If publish fails, no commit or tag is created — fix the issue and re-run.
+**Gradle plugin** (`com.tracewayapp.symbols`) — trigger the **Publish Gradle Plugin to Maven Central** workflow (tagged `plugin-v<version>`, versioned independently of the SDK). It defaults to a dry run that builds, tests, signs, and publishes to a throwaway local repo without touching Central or the repo, so a misfire is harmless. Once the dry run is green, release for real by unchecking `dry_run`:
+
+```bash
+# Validate first (default):
+gh workflow run "Publish Gradle Plugin to Maven Central" -f version=0.0.2
+
+# Release once the validation run is green:
+gh workflow run "Publish Gradle Plugin to Maven Central" -f version=0.0.2 -f dry_run=false
+gh run watch
+```
+
+Both workflows are thin wrappers. The plugin publish logic lives in [`scripts/publish-plugin.sh`](scripts/publish-plugin.sh), which you can also run locally: `scripts/publish-plugin.sh 0.0.2` publishes to `~/.m2` for a smoke test, `--release` pushes to Central, and `-- --dry-run` validates the task graph without credentials.
+
+Both share the same Sonatype Central account and signing key (`MAVEN_CENTRAL_USERNAME`/`MAVEN_CENTRAL_PASSWORD` and `SIGNING_KEY`/`SIGNING_PASSWORD` repo secrets); the `com.tracewayapp` namespace is already verified, which also covers the plugin's `com.tracewayapp.symbols` marker.
 
 ## Links
 

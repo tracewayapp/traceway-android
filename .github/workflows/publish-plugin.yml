@@ -1,0 +1,109 @@
+name: Publish Gradle Plugin to Maven Central
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Plugin version (e.g. 0.0.2).'
+        required: true
+        type: string
+      dry_run:
+        description: 'Validate only: build, test, sign, and publish to the runner''s local repo. No Central upload, no commit, no tag. Uncheck to release for real.'
+        required: false
+        type: boolean
+        default: true
+
+concurrency:
+  group: publish-plugin
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    name: ${{ inputs.dry_run && 'Validate' || 'Release' }} traceway-symbols-plugin
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.ref_name }}
+          fetch-depth: 0
+
+      - name: Validate version input
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          if ! echo "$VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9.]+)?$'; then
+            echo "::error::Invalid version '$VERSION' — expected semver like 0.0.2 or 1.0.0-rc1"
+            exit 1
+          fi
+
+      - name: Check tag does not already exist
+        if: ${{ !inputs.dry_run }}
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          if git rev-parse "plugin-v$VERSION" >/dev/null 2>&1; then
+            echo "::error::Tag plugin-v$VERSION already exists — bump the version"
+            exit 1
+          fi
+
+      - name: Check required secrets are present
+        if: ${{ !inputs.dry_run }}
+        env:
+          MAVEN_CENTRAL_USERNAME: ${{ secrets.MAVEN_CENTRAL_USERNAME }}
+          MAVEN_CENTRAL_PASSWORD: ${{ secrets.MAVEN_CENTRAL_PASSWORD }}
+          SIGNING_KEY: ${{ secrets.SIGNING_KEY }}
+          SIGNING_PASSWORD: ${{ secrets.SIGNING_PASSWORD }}
+        run: |
+          missing=0
+          for name in MAVEN_CENTRAL_USERNAME MAVEN_CENTRAL_PASSWORD SIGNING_KEY SIGNING_PASSWORD; do
+            if [ -z "${!name}" ]; then
+              echo "::error::Required secret $name is not set"
+              missing=1
+            fi
+          done
+          [ "$missing" -eq 0 ] || exit 1
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - uses: gradle/actions/setup-gradle@v3
+
+      - name: Generate Gradle wrapper
+        run: gradle wrapper --gradle-version 8.7
+
+      - name: Test the plugin
+        run: ./gradlew -p gradle-plugin test --stacktrace
+
+      - name: Validate (dry run — local repo only, no upload)
+        if: ${{ inputs.dry_run }}
+        env:
+          ORG_GRADLE_PROJECT_signingInMemoryKey: ${{ secrets.SIGNING_KEY }}
+          ORG_GRADLE_PROJECT_signingInMemoryKeyPassword: ${{ secrets.SIGNING_PASSWORD }}
+        run: ./scripts/publish-plugin.sh "${{ inputs.version }}"
+
+      - name: Publish to Maven Central
+        if: ${{ !inputs.dry_run }}
+        env:
+          ORG_GRADLE_PROJECT_mavenCentralUsername: ${{ secrets.MAVEN_CENTRAL_USERNAME }}
+          ORG_GRADLE_PROJECT_mavenCentralPassword: ${{ secrets.MAVEN_CENTRAL_PASSWORD }}
+          ORG_GRADLE_PROJECT_signingInMemoryKey: ${{ secrets.SIGNING_KEY }}
+          ORG_GRADLE_PROJECT_signingInMemoryKeyPassword: ${{ secrets.SIGNING_PASSWORD }}
+        run: ./scripts/publish-plugin.sh "${{ inputs.version }}" --release
+
+      - name: Commit version bump and push tag
+        if: ${{ !inputs.dry_run }}
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add gradle-plugin/build.gradle.kts
+          git commit -m "Release plugin v$VERSION"
+          git tag -a "plugin-v$VERSION" -m "Release plugin v$VERSION"
+          git push origin "HEAD:${{ github.ref_name }}"
+          git push origin "plugin-v$VERSION"

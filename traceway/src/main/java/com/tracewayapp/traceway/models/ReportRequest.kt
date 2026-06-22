@@ -7,6 +7,7 @@ class ReportRequest(
     val collectionFrames: List<CollectionFrame>,
     val appVersion: String = "",
     val serverName: String = "",
+    val proguardUuid: String? = null,
 ) {
     fun toJson(): JSONObject {
         val obj = JSONObject()
@@ -15,6 +16,7 @@ class ReportRequest(
         obj.put("collectionFrames", arr)
         obj.put("appVersion", appVersion)
         obj.put("serverName", serverName)
+        if (proguardUuid != null) obj.put("proguardUuid", proguardUuid)
         return obj
     }
 }

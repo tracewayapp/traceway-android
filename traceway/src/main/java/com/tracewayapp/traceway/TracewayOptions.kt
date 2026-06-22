@@ -17,6 +17,14 @@ data class TracewayOptions(
     /** App version string emitted on every report. */
     val version: String = "",
 
+    /**
+     * R8/ProGuard build UUID used to symbolicate obfuscated release crashes.
+     * Set this to `BuildConfig.TRACEWAY_PROGUARD_UUID` (injected by the
+     * `com.tracewayapp.symbols` Gradle plugin) so reported traces match the
+     * uploaded `mapping.txt`.
+     */
+    val proguardUuid: String? = null,
+
     /** Milliseconds before sending batched events. */
     val debounceMs: Long = 1500,
 

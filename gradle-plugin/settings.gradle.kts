@@ -1,5 +1,4 @@
 pluginManagement {
-    includeBuild("gradle-plugin")
     repositories {
         google()
         mavenCentral()
@@ -8,14 +7,11 @@ pluginManagement {
 }
 
 dependencyResolutionManagement {
-    repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
     repositories {
         google()
         mavenCentral()
+        gradlePluginPortal()
     }
 }
 
-rootProject.name = "traceway-android"
-
-include(":traceway")
-include(":example")
+rootProject.name = "traceway-symbols-plugin"

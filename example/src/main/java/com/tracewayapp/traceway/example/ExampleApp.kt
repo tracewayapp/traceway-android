@@ -14,6 +14,7 @@ class ExampleApp : Application() {
             options = TracewayOptions(
                 version = "1.0.0",
                 debug = true,
+                proguardUuid = BuildConfig.TRACEWAY_PROGUARD_UUID,
             ),
         )
     }
