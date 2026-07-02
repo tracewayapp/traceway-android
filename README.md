@@ -198,7 +198,7 @@ Then apply and configure it on your app module:
 ```kotlin
 plugins {
     id("com.android.application")
-    id("com.tracewayapp.symbols") version "0.0.1"
+    id("com.tracewayapp.symbols") version "1.0.1"
 }
 
 android {
@@ -325,14 +325,14 @@ gh run watch
 
 ```bash
 # Validate first (default):
-gh workflow run "Publish Gradle Plugin to Maven Central" -f version=0.0.2
+gh workflow run "Publish Gradle Plugin to Maven Central" -f version=1.0.2
 
 # Release once the validation run is green:
-gh workflow run "Publish Gradle Plugin to Maven Central" -f version=0.0.2 -f dry_run=false
+gh workflow run "Publish Gradle Plugin to Maven Central" -f version=1.0.2 -f dry_run=false
 gh run watch
 ```
 
-Both workflows are thin wrappers. The plugin publish logic lives in [`scripts/publish-plugin.sh`](scripts/publish-plugin.sh), which you can also run locally: `scripts/publish-plugin.sh 0.0.2` publishes to `~/.m2` for a smoke test, `--release` pushes to Central, and `-- --dry-run` validates the task graph without credentials.
+Both workflows are thin wrappers. The plugin publish logic lives in [`scripts/publish-plugin.sh`](scripts/publish-plugin.sh), which you can also run locally: `scripts/publish-plugin.sh 1.0.2` publishes to `~/.m2` for a smoke test, `--release` pushes to Central, and `-- --dry-run` validates the task graph without credentials.
 
 Both share the same Sonatype Central account and signing key (`MAVEN_CENTRAL_USERNAME`/`MAVEN_CENTRAL_PASSWORD` and `SIGNING_KEY`/`SIGNING_PASSWORD` repo secrets); the `com.tracewayapp` namespace is already verified, which also covers the plugin's `com.tracewayapp.symbols` marker.
 
