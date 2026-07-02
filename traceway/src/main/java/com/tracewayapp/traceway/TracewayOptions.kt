@@ -47,8 +47,9 @@ data class TracewayOptions(
     val captureLogs: Boolean = true,
 
     /**
-     * When true, Traceway will install an OkHttp interceptor on any
-     * [okhttp3.OkHttpClient] passed to [Traceway.instrument]. Enabled by default.
+     * When true, HTTP calls routed through
+     * [com.tracewayapp.traceway.network.TracewayOkHttpInterceptor] are recorded
+     * as network events. Enabled by default.
      */
     val captureNetwork: Boolean = true,
 

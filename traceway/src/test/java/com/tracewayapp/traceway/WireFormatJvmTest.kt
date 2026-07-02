@@ -9,6 +9,8 @@ import com.tracewayapp.traceway.models.CollectionFrame
 import com.tracewayapp.traceway.models.ExceptionStackTrace
 import com.tracewayapp.traceway.models.ReportRequest
 import com.tracewayapp.traceway.models.SessionRecordingPayload
+import com.tracewayapp.traceway.models.Span
+import com.tracewayapp.traceway.models.Trace
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
@@ -178,6 +180,43 @@ class WireFormatJvmTest {
         assertTrue(parsed.isMessage)
         assertEquals("b", parsed.attributes!!["a"])
         assertEquals("rid", parsed.sessionRecordingId)
+    }
+
+    @Test
+    fun traceJsonShapeEmitsDurationInNanoseconds() {
+        val trace = Trace(
+            id = "f47ac10b-58cc-4372-a567-0e02b2c3d479",
+            endpoint = "GET /api/users/:id",
+            durationMs = 15_234,
+            recordedAtMs = 1_700_000_000_000L,
+            statusCode = 200,
+            bodySize = 1024,
+        )
+        val json = trace.toJson()
+
+        assertEquals("f47ac10b-58cc-4372-a567-0e02b2c3d479", json.getString("id"))
+        assertEquals("GET /api/users/:id", json.getString("endpoint"))
+        // The backend reads `duration` as a Go time.Duration (int64 nanoseconds).
+        assertEquals(15_234_000_000L, json.getLong("duration"))
+        assertEquals("2023-11-14T22:13:20.000Z", json.getString("recordedAt"))
+        assertEquals(200, json.getInt("statusCode"))
+        assertEquals(1024, json.getInt("bodySize"))
+        assertEquals(false, json.getBoolean("isTask"))
+    }
+
+    @Test
+    fun spanJsonShapeEmitsDurationInNanoseconds() {
+        val span = Span(
+            id = "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+            name = "db.query",
+            startTimeMs = 1_700_000_000_100L,
+            durationMs = 5_000,
+        )
+        val json = span.toJson()
+
+        assertEquals("db.query", json.getString("name"))
+        assertEquals("2023-11-14T22:13:20.100Z", json.getString("startTime"))
+        assertEquals(5_000_000_000L, json.getLong("duration"))
     }
 
     @Test

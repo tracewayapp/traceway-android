@@ -22,7 +22,9 @@ class Trace(
         mapOf(
             "id" to id,
             "endpoint" to endpoint,
-            "duration" to durationMs,
+            // The backend deserializes `duration` into a Go time.Duration,
+            // so the wire value must be in nanoseconds.
+            "duration" to durationMs * 1_000_000L,
             "recordedAt" to Iso8601.format(recordedAtMs),
             "statusCode" to statusCode,
             "bodySize" to bodySize,

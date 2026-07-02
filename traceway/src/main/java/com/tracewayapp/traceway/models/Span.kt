@@ -15,7 +15,9 @@ class Span(
             "id" to id,
             "name" to name,
             "startTime" to Iso8601.format(startTimeMs),
-            "duration" to durationMs,
+            // The backend deserializes `duration` into a Go time.Duration,
+            // so the wire value must be in nanoseconds.
+            "duration" to durationMs * 1_000_000L,
         )
     )
 }
