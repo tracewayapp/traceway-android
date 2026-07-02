@@ -49,7 +49,7 @@ mavenPublishing {
 
     configure(GradlePublishPlugin())
 
-    coordinates("com.tracewayapp", "traceway-symbols-plugin", "0.0.1")
+    coordinates("com.tracewayapp", "traceway-symbols-plugin", "1.0.1")
 
     pom {
         name.set("Traceway Symbols Gradle Plugin")
