@@ -1,15 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
-
-    <application android:theme="@style/Theme.AppCompat.Light.NoActionBar">
-
+    <application>
+        <!-- Hosts the touch tracker's instrumented tests. -->
         <activity
-            android:name="com.tracewayapp.traceway.test.ui.TracewayTestActivity"
-            android:exported="true" />
-
-        <activity
-            android:name="com.tracewayapp.traceway.test.ui.TracewayTestActivity2"
-            android:exported="true" />
-
+            android:name="com.tracewayapp.traceway.interaction.InteractionTestActivity"
+            android:exported="false" />
     </application>
 </manifest>

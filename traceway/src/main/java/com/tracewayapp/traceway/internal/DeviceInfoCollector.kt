@@ -3,52 +3,46 @@ package com.tracewayapp.traceway.internal
 import android.content.Context
 import android.content.res.Configuration
 import android.os.Build
-import android.util.DisplayMetrics
-import java.net.NetworkInterface
+import com.tracewayapp.traceway.metrics.DeviceDimensions
 import java.util.Locale
 
+/**
+ * The device and OS as resource attributes of every record. Keys follow
+ * the OpenTelemetry semantic conventions where they exist, plus the keys
+ * the Flutter SDK sends so the dashboard shows both the same way.
+ */
 internal object DeviceInfoCollector {
-    fun collectSync(context: Context): Map<String, String> {
-        val info = mutableMapOf<String, String>()
+    fun collect(context: Context): Map<String, String> {
+        val info = LinkedHashMap<String, String>()
+        val release = Build.VERSION.RELEASE ?: ""
         info["os.name"] = "android"
-        info["os.version"] = "Android ${Build.VERSION.RELEASE} (SDK ${Build.VERSION.SDK_INT})"
+        info["os.type"] = "linux"
+        info["os.version"] = release
+        info["os.description"] = "Android $release (SDK ${Build.VERSION.SDK_INT})"
+        info["android.os.api_level"] = Build.VERSION.SDK_INT.toString()
         info["device.locale"] = currentLocale(context).toString()
-        info["runtime.version"] = "Java ${System.getProperty("java.version") ?: ""}"
+        info["runtime.version"] = "Java ${System.getProperty("java.vm.version") ?: System.getProperty("java.version") ?: ""}".trim()
 
         try {
-            val dm: DisplayMetrics = context.resources.displayMetrics
+            val dm = context.resources.displayMetrics
             info["screen.resolution"] = "${dm.widthPixels}x${dm.heightPixels}"
             info["screen.density"] = String.format(Locale.US, "%.1f", dm.density)
         } catch (_: Throwable) {
         }
 
-        info["device.model"] = Build.MODEL ?: ""
-        info["device.manufacturer"] = Build.MANUFACTURER ?: ""
+        val model = Build.MODEL ?: ""
+        val manufacturer = Build.MANUFACTURER ?: ""
+        info["device.model.identifier"] = model
+        info["device.model.name"] = model
+        info["device.manufacturer"] = manufacturer
+        info["device.model"] = model
         info["device.brand"] = Build.BRAND ?: ""
         info["device.modelId"] = Build.DEVICE ?: ""
-        info["device.systemVersion"] = "Android ${Build.VERSION.RELEASE} (SDK ${Build.VERSION.SDK_INT})"
+        info["device.systemVersion"] = "Android $release (SDK ${Build.VERSION.SDK_INT})"
         info["device.isPhysical"] = isPhysicalDevice().toString()
 
-        return info
-    }
-
-    fun collectAsync(): Map<String, String> {
-        val info = mutableMapOf<String, String>()
-        try {
-            val ifaces = NetworkInterface.getNetworkInterfaces() ?: return info
-            outer@ for (iface in ifaces) {
-                if (iface.isLoopback || !iface.isUp) continue
-                for (addr in iface.inetAddresses) {
-                    if (addr.isLoopbackAddress) continue
-                    val host = addr.hostAddress ?: continue
-                    if (host.contains('.') && !host.contains(':')) {
-                        info["device.ip"] = host
-                        break@outer
-                    }
-                }
-            }
-        } catch (_: Throwable) {
-        }
+        // os.major, device.form_factor and device.class: the dimensions the server keeps on metrics.
+        info.putAll(DeviceDimensions.collect(context))
         return info
     }
 

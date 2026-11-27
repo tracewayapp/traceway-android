@@ -43,22 +43,24 @@ jobs:
 
       - uses: gradle/actions/setup-gradle@v3
 
-      # Always build via the committed ./gradlew (Gradle 8.7, Kotlin 1.9.x).
-      # Never invoke the runner's system `gradle` (9.5.x ships kotlin-stdlib 2.3):
-      # configuring this build applies the com.tracewayapp.symbols plugin from the
-      # included gradle-plugin build, whose 1.9.22 compiler can't read 2.3 metadata.
+      # Always build via the committed ./gradlew (Gradle 8.9, AGP 8.7, Kotlin 2.0).
+      # Never invoke the runner's system `gradle`: configuring this build applies
+      # the com.tracewayapp.symbols plugin from the included gradle-plugin build,
+      # compiled with Kotlin 1.9, which can't read newer stdlib metadata.
+      # The version is one `val sdkVersion` that feeds both the Maven
+      # coordinates and BuildConfig.SDK_VERSION (sent as traceway.sdk.version).
       - name: Bump version in traceway/build.gradle.kts
         env:
           VERSION: ${{ github.event.inputs.version }}
         run: |
           sed -i -E \
-            's/(coordinates\("com\.tracewayapp", "traceway", ")[^"]*(".*)/\1'"$VERSION"'\2/' \
+            's/^(val sdkVersion = ")[^"]*(".*)/\1'"$VERSION"'\2/' \
             traceway/build.gradle.kts
-          echo "--- Updated coordinates line ---"
-          grep -n 'coordinates(' traceway/build.gradle.kts
+          echo "--- Updated version line ---"
+          grep -n '^val sdkVersion' traceway/build.gradle.kts
           # Sanity check: the new version must actually appear on that line.
-          grep -q "\"$VERSION\"" traceway/build.gradle.kts || {
-            echo "::error::sed bump did not apply — coordinates line did not change"
+          grep -q "^val sdkVersion = \"$VERSION\"" traceway/build.gradle.kts || {
+            echo "::error::sed bump did not apply — sdkVersion line did not change"
             exit 1
           }
 

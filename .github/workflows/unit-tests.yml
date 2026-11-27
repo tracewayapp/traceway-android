@@ -2,9 +2,9 @@ name: Unit tests
 
 on:
   push:
-    branches: [main]
+    branches: [main, v2]
   pull_request:
-    branches: [main]
+    branches: [main, v2]
   workflow_dispatch:
 
 permissions:
@@ -24,10 +24,10 @@ jobs:
 
       - uses: gradle/actions/setup-gradle@v3
 
-      # Always build via the committed ./gradlew (Gradle 8.7, Kotlin 1.9.x).
-      # Never invoke the runner's system `gradle` (9.5.x ships kotlin-stdlib 2.3):
-      # configuring this build applies the com.tracewayapp.symbols plugin from the
-      # included gradle-plugin build, whose 1.9.22 compiler can't read 2.3 metadata.
+      # Always build via the committed ./gradlew (Gradle 8.9, AGP 8.7, Kotlin 2.0).
+      # Never invoke the runner's system `gradle`: configuring this build applies
+      # the com.tracewayapp.symbols plugin from the included gradle-plugin build,
+      # compiled with Kotlin 1.9, which can't read newer stdlib metadata.
       - name: Run unit tests
         run: ./gradlew :traceway:testDebugUnitTest --stacktrace
 

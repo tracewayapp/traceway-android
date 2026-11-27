@@ -1,81 +1,114 @@
 package com.tracewayapp.traceway
 
 /**
- * Configuration for [Traceway].
+ * Configuration for [Traceway.init]. Names and defaults follow the Flutter
+ * and browser SDKs, so one Data Collection rule targets every client.
  *
- * Field names mirror the Flutter SDK so an app can be ported without changing
- * its config layer. Screen-capture-specific fields are kept for parity but
- * have no effect — this Android library does not record video.
+ * The `capture*` flags, [screenCapture] and [sessions] are **ceilings**:
+ * remote settings can lower what is collected but never raise it.
+ * [sampleRate], [baselineSampleRate] and [recordAllSessions] are defaults
+ * that a rule can change either way.
  */
-data class TracewayOptions(
-    /** Error sampling rate (0.0 - 1.0). */
+data class TracewayOptions @JvmOverloads constructor(
+    /** Share of exceptions and messages that are reported (0.0 - 1.0). */
     val sampleRate: Double = 1.0,
 
-    /** Print debug info to logcat. */
+    /**
+     * Record the screen as a wireframe: the view tree (and Jetpack Compose
+     * semantics) replayed as HTML by the dashboard's rrweb player. The last
+     * frames go up with an exception, and captures stream it.
+     */
+    val screenCapture: Boolean = false,
+
+    /** Print debug info to logcat (tag `Traceway`). */
     val debug: Boolean = false,
 
-    /** App version string emitted on every report. */
+    /** App version, sent as `service.version` (`unknown` when empty). */
     val version: String = "",
+
+    /** Sent as `service.name`. Defaults to the application id. */
+    val serviceName: String? = null,
+
+    /** Sent as `deployment.environment.name`. */
+    val environment: String? = null,
+
+    /** Attributes attached to every record, and usable to target this app from Data Collection rules. */
+    val attributes: Map<String, String> = emptyMap(),
 
     /**
      * R8/ProGuard build UUID used to symbolicate obfuscated release crashes.
-     * Set this to `BuildConfig.TRACEWAY_PROGUARD_UUID` (injected by the
+     * Set it to `BuildConfig.TRACEWAY_PROGUARD_UUID` (injected by the
      * `com.tracewayapp.symbols` Gradle plugin) so reported traces match the
-     * uploaded `mapping.txt`.
+     * uploaded `mapping.txt`. Sent as `app.debug.proguard_uuid`.
      */
     val proguardUuid: String? = null,
 
-    /** Milliseconds before sending batched events. */
-    val debounceMs: Long = 1500,
-
-    /** Retry delay on failed uploads. */
-    val retryDelayMs: Long = 10_000,
-
-    /** Maximum exceptions held in memory before the oldest is dropped. */
-    val maxPendingExceptions: Int = 5,
-
-    /** Persist pending exceptions to disk so they survive app restarts. */
-    val persistToDisk: Boolean = true,
-
-    /** Max exception files stored on disk awaiting sync. */
-    val maxLocalFiles: Int = 5,
-
-    /** Hours after which unsynced local files are deleted. */
-    val localFileMaxAgeHours: Int = 12,
-
-    /** Capture every `Log.*` / `println` line as a log event. */
-    val captureLogs: Boolean = true,
-
-    /**
-     * When true, HTTP calls routed through
-     * [com.tracewayapp.traceway.network.TracewayOkHttpInterceptor] are recorded
-     * as network events. Enabled by default.
-     */
-    val captureNetwork: Boolean = true,
-
-    /** Record activity transitions as navigation events. */
-    val captureNavigation: Boolean = true,
-
-    /** Length in ms of the rolling log/action window snapshotted with each exception. */
-    val eventsWindowMs: Long = 10_000,
-
-    /** Hard cap applied independently to each rolling buffer. */
-    val eventsMaxCount: Int = 200,
-
-    // ------------------------------------------------------------------
-    // Screen-capture parity fields. Accepted for API parity with the Flutter
-    // SDK but have no effect on Android — this library does not record video.
-    // ------------------------------------------------------------------
-
-    /** Has no effect on Android. */
-    val screenCapture: Boolean = false,
-
-    /** Has no effect on Android. */
-    val capturePixelRatio: Double = 0.75,
-
-    /** Has no effect on Android. */
+    /** Wireframe frames held on the device; the upper bound of every clip. */
     val maxBufferFrames: Int = 150,
 
-    /** Has no effect on Android. */
-    val fps: Int = 15,
+    /** Most wireframe frames captured per second (1-30); only frames where something was drawn are captured. */
+    val fps: Int = 10,
+
+    /** Keep SDK state and undelivered telemetry on disk across restarts. */
+    val persistToDisk: Boolean = true,
+
+    /**
+     * The connection string a 1.x build of the app used. Unsent 1.x reports
+     * found on the device are delivered to that project's `/api/report`
+     * (and expire after 12 hours, the 1.x default).
+     */
+    val legacyConnectionString: String? = null,
+
+    /** Capture `System.out` / `System.err` lines and [Traceway.recordLog] calls. */
+    val captureLogs: Boolean = true,
+
+    /** Record HTTP calls made through [com.tracewayapp.traceway.network.TracewayOkHttpInterceptor]. */
+    val captureNetwork: Boolean = true,
+
+    /** Record activity and fragment transitions, and [Traceway.recordNavigation] calls. */
+    val captureNavigation: Boolean = true,
+
+    /** Record taps with the selector of the view, and feed taps to recording triggers. */
+    val captureUserActions: Boolean = true,
+
+    /**
+     * Measure app start, screen display times, slow and frozen frames,
+     * hangs, crashes, sessions, users and requests, and upload them as
+     * OTLP metrics.
+     */
+    val captureMetrics: Boolean = true,
+
+    /** Up to two app-defined dimensions on every metric (`custom.<key>`). */
+    val metricDimensions: Map<String, String> = emptyMap(),
+
+    /** Stream breadcrumbs and the screen recording all the time instead of keeping them for errors. */
+    val recordAllSessions: Boolean = false,
+
+    /**
+     * Local collection settings: the same document as a Data Collection
+     * rule (`signals`, `buffer`, `replay`, `triggers`, ...), laid over the
+     * built-in defaults. With [remoteConfig] the server's rules apply on top.
+     */
+    val collection: Map<String, Any?>? = null,
+
+    /** Send session records (`session.start` / `session.end`). The session id exists either way. */
+    val sessions: Boolean = true,
+
+    /** Share of sessions whose breadcrumbs are sent continuously, not only around errors. */
+    val baselineSampleRate: Double = 0.0,
+
+    /** Poll the server for collection settings over OpAMP. */
+    val remoteConfig: Boolean = true,
+
+    /** How long finished records wait to be sent as one batch. */
+    val exportDelayMs: Long = 1000,
+
+    /** Send logs, spans and metrics to another OTLP/HTTP receiver as well, or (standalone) only there. */
+    val telemetry: TracewayTelemetry? = null,
+
+    /** URL prefixes whose requests carry a W3C `traceparent` header naming their client span. */
+    val propagateTraceHeaderUrls: List<String> = emptyList(),
+
+    /** Like [propagateTraceHeaderUrls], for URLs matching a pattern. */
+    val propagateTraceHeaderUrlPatterns: List<Regex> = emptyList(),
 )

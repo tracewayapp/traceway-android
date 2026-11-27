@@ -12,10 +12,15 @@ class ExampleApp : Application() {
             application = this,
             connectionString = BuildConfig.TRACEWAY_DSN,
             options = TracewayOptions(
-                version = "1.0.0",
+                version = BuildConfig.VERSION_NAME,
+                environment = "example",
                 debug = true,
+                // Wireframe session replay: the last seconds on screen go up with every exception.
+                screenCapture = true,
                 proguardUuid = BuildConfig.TRACEWAY_PROGUARD_UUID,
+                propagateTraceHeaderUrls = listOf("https://httpbin.org/"),
             ),
         )
+        Traceway.setAttribute("user.id", "example-user")
     }
 }

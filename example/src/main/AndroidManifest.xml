@@ -6,7 +6,7 @@
     <application
         android:name=".ExampleApp"
         android:label="Traceway Example"
-        android:theme="@style/Theme.AppCompat.Light.NoActionBar"
+        android:theme="@style/Theme.Material3.DayNight.NoActionBar"
         android:allowBackup="false">
 
         <activity
@@ -17,5 +17,7 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <activity android:name=".ComposeActivity" android:exported="false" />
     </application>
 </manifest>
