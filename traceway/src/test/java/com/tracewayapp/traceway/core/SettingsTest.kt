@@ -1,5 +1,6 @@
 package com.tracewayapp.traceway.core
 
+import com.tracewayapp.traceway.TracewayImagePolicy
 import com.tracewayapp.traceway.internal.Json
 import com.tracewayapp.traceway.internal.asJsonObject
 import org.junit.Assert.assertEquals
@@ -290,6 +291,45 @@ class SettingsTest {
         val off = clampToCeilings(defaultSettings(), ceilingsFrom(enabled = false, sessions = false))
         assertFalse(off.enabled)
         assertFalse(off.sessionsEnabled)
+    }
+
+    @Test
+    fun `replay images default to wifi, follow the documents and stay under the app's ceiling`() {
+        val defaults = defaultSettings()
+        assertEquals(TracewayImagePolicy.WIFI, defaults.replayImages)
+        val always = applyOverlay(defaults, overlay("""{"replay":{"images":"always"}}"""))
+        assertEquals(TracewayImagePolicy.ALWAYS, always.replayImages)
+        assertEquals(TracewayImagePolicy.WIFI, defaults.replayImages)
+        assertEquals(TracewayImagePolicy.WIFI, always.copy().also { it.replayImages = TracewayImagePolicy.WIFI }.replayImages)
+        assertEquals(TracewayImagePolicy.ALWAYS, always.copy().replayImages)
+        for (bad in listOf("\"sometimes\"", "\"WIFI\"", "1", "true", "null")) {
+            assertEquals(bad, TracewayImagePolicy.ALWAYS, applyOverlay(always, overlay("""{"replay":{"images":$bad}}""")).replayImages)
+        }
+        val off = applyOverlay(always, overlay("""{"replay":{"images":"off"}}"""))
+        assertEquals(TracewayImagePolicy.OFF, off.replayImages)
+
+        // The lower of the setting and the app's ceiling.
+        assertEquals(TracewayImagePolicy.ALWAYS, clampToCeilings(always, ceilingsFrom(screenCapture = true)).replayImages)
+        val wifiCeiling = ceilingsFrom(screenCapture = true, replayImages = TracewayImagePolicy.WIFI)
+        assertEquals(TracewayImagePolicy.WIFI, clampToCeilings(always, wifiCeiling).replayImages)
+        assertEquals(TracewayImagePolicy.OFF, clampToCeilings(off, wifiCeiling).replayImages)
+        val offCeiling = ceilingsFrom(screenCapture = true, replayImages = TracewayImagePolicy.OFF)
+        assertEquals(TracewayImagePolicy.OFF, clampToCeilings(always, offCeiling).replayImages)
+        // No replay, no pictures: the app records no screen, or the plan allows no replay.
+        assertEquals(TracewayImagePolicy.OFF, clampToCeilings(always, ceilingsFrom(screenCapture = false)).replayImages)
+        val limited = applyLimits(wifiCeiling, overlay("""{"limits":{"replay":"off"}}"""))
+        assertEquals(TracewayImagePolicy.WIFI, limited.replayImages)
+        assertEquals(TracewayImagePolicy.OFF, clampToCeilings(always, limited).replayImages)
+
+        // A rule over the app's local document, like maskAllInputs.
+        val control = ControlState(always, ceilingsFrom(screenCapture = true))
+        assertEquals(TracewayImagePolicy.ALWAYS, control.settings.replayImages)
+        control.applyRemote(overlay("""{"replay":{"images":"wifi"}}"""))
+        assertEquals(TracewayImagePolicy.WIFI, control.settings.replayImages)
+        control.applyRemote(overlay("""{"replay":{"mode":"stream"}}"""))
+        assertEquals(TracewayImagePolicy.ALWAYS, control.settings.replayImages)
+        assertEquals(TracewayImagePolicy.OFF, TracewayImagePolicy.lower(TracewayImagePolicy.OFF, TracewayImagePolicy.ALWAYS))
+        assertEquals("wifi", TracewayImagePolicy.WIFI.wire)
     }
 
     @Test

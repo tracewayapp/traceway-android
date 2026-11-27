@@ -53,6 +53,10 @@ import android.widget.LinearLayout
 import android.widget.TextView
 import com.tracewayapp.traceway.TracewayMaskMode
 import com.tracewayapp.traceway.compose.tracewayMask
+import com.tracewayapp.traceway.compose.tracewayPrivacyMask
+import com.tracewayapp.traceway.interaction.ViewPath
+import com.tracewayapp.traceway.interaction.describeTap
+import androidx.compose.foundation.clickable
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -67,7 +71,9 @@ import org.robolectric.annotation.GraphicsMode
  * The wireframe of Jetpack Compose screens, read from their semantics tree,
  * composable by composable: text, buttons, fields, toggles, sliders,
  * progress, icons, lists, tabs, dialogs and menus, each where Compose puts
- * it. The screen is 400 x 800 dp.
+ * it. The screen is 400 x 800 dp. The declarative topics of the wireframe
+ * suites every SDK shares come first, in their order (41 to 48; the iOS
+ * SDK's SwiftUI tests mirror them).
  */
 @RunWith(RobolectricTestRunner::class)
 @Config(qualifiers = "w400dp-h800dp-mdpi")
@@ -78,7 +84,7 @@ class ComposeWireframeTest {
     }
 
     @Test
-    fun textHasItsSizeWeightColorAndPlace() {
+    fun textHasItsStyleAndPlace() {
         val s = compose {
             Column(Modifier.padding(start = 20.dp, top = 30.dp)) {
                 Text("Hello", fontSize = 20.sp, fontWeight = FontWeight.Bold, color = Color.Red)
@@ -103,7 +109,7 @@ class ComposeWireframeTest {
     }
 
     @Test
-    fun buttonsIconsAndDisabledOnes() {
+    fun buttonsAndIconsShowTheirLook() {
         val s = compose {
             Column {
                 Button(onClick = {}) { Text("Pay") }
@@ -117,7 +123,9 @@ class ComposeWireframeTest {
         // Its white text tells a filled button: the theme's primary color behind it.
         assertTrue("a filled, rounded button: ${style(pay)}", style(pay).contains("background-color:#6750a4;") && style(pay).contains("border-radius:20px;"))
         val cancel = ancestors(screen, withText(screen, "Cancel")!!).first()
-        assertTrue("an outlined one: ${style(cancel)}", style(cancel).contains("background-color:rgba(127,127,127,.12);"))
+        // Its text in the primary color tells an outlined button: an outline and no fill.
+        assertTrue("an outlined one: ${style(cancel)}", style(cancel).contains("box-shadow:inset 0 0 0 1px #79747e;"))
+        assertFalse(style(cancel), style(cancel).contains("background-color"))
         assertEquals("the text inside the button", "Pay", pay.children.single { !it.isText }.children.single().text)
         val later = ancestors(screen, withText(screen, "Later")!!).first()
         assertTrue("disabled: ${style(later)}", style(later).contains("opacity:0.38;"))
@@ -126,7 +134,7 @@ class ComposeWireframeTest {
     }
 
     @Test
-    fun fieldsAreMaskedAndPasswordsAlwaysAre() {
+    fun fieldsMaskTheirTextAndBulletSecrets() {
         val s = compose {
             Column {
                 TextField(value = "typed text", onValueChange = {}, label = { Text("Name") })
@@ -147,6 +155,12 @@ class ComposeWireframeTest {
         assertTrue("labels and placeholders are not typed text: $text", texts(screen).containsAll(listOf("Name", "Password", "Search")))
         assertTrue(text, text.contains("***** ****"))
         assertTrue(text, text.contains("•••••••"))
+        // A TextField is filled; an OutlinedTextField with a label is outlined below the room for its label.
+        val name = ancestors(screen, withText(screen, "Name")!!).first { style(it).contains("height:") && styleNumber(it, "height") >= 48f }
+        assertTrue(style(name), style(name).contains("background-color:#e6e0e9;border-radius:4px 4px 0 0;box-shadow:inset 0 -"))
+        val password = ancestors(screen, withText(screen, "Password")!!).first { style(it).contains("height:") && styleNumber(it, "height") >= 48f }
+        val outline = password.children.first { !it.isText && style(it).contains("box-shadow:inset 0 0 0 1px") }
+        assertEquals(8f, styleNumber(outline, "top"))
         s.capture.maskAllInputs = false
         screen = s.screen()
         assertTrue(allText(screen), texts(screen).contains("typed text"))
@@ -201,6 +215,8 @@ class ComposeWireframeTest {
         }
         val item = withText(before, "Item 20")!!
         assertEquals("rows sit where the list draws them", 20 * 50f - 650f, position(before, item).second, 0.6f)
+        // The text is at the top of its taller row, as Compose draws it, not in the middle.
+        assertTrue(style(item), styleNumber(item, "line-height") < 25f)
         assertTrue("the list clips its rows", allNodes(before).any { style(it).contains("overflow:hidden;") })
     }
 
@@ -208,8 +224,8 @@ class ComposeWireframeTest {
     fun masksHideWhatTheyCover() {
         val s = compose {
             Column {
-                Text("secret blur", Modifier.tracewayMask())
-                Box(Modifier.tracewayMask(TracewayMaskMode.blank(0xFF123456.toInt()))) { Text("secret blank") }
+                Text("secret blur", Modifier.tracewayPrivacyMask())
+                Box(Modifier.tracewayPrivacyMask(TracewayMaskMode.blank(0xFF123456.toInt()))) { Text("secret blank") }
                 Text("tagged", Modifier.testTag("traceway-mask"))
                 Box(Modifier.testTag("traceway-blank").size(40.dp)) { Text("blank tag") }
                 Text("visible")
@@ -220,6 +236,79 @@ class ComposeWireframeTest {
         assertEquals(listOf("****** ****", "******", "visible"), text)
         assertTrue(styles(screen).any { it.contains("background:#123456;") })
         assertEquals(2, allNodes(screen).count { it.attributes["class"] == "mk" })
+    }
+
+    @Test
+    fun aStateChangeReplaysInTheMirror() {
+        val count: MutableState<Int> = mutableStateOf(0)
+        val checked = mutableStateOf(false)
+        val s = compose {
+            Column {
+                Text("Count ${count.value}")
+                Row { Checkbox(checked = checked.value, onCheckedChange = {}); Text("Agree") }
+                if (count.value % 2 == 1) Text("Odd")
+            }
+        }
+        var before = s.screen()
+        val mirror = Mirror()
+        mirror.play(listOf(fullSnapshotOf(before)))
+        val steps = listOf({ count.value = 1 }, { checked.value = true }, { count.value = 2 }, { checked.value = false; count.value = 3 })
+        for ((i, step) in steps.withIndex()) {
+            step()
+            val after = s.screen()
+            diffScreens(before, after)?.let { mirror.mutation(it) }
+            assertEquals("step $i", dumpVNode(after), mirror.screen.dump())
+            before = after
+        }
+        assertEquals(listOf("Count 3", "Agree", "Odd"), mirror.texts())
+    }
+
+    @Test
+    fun declarativeInsideAClassicHierarchyIsPlacedWithIt() {
+        val s = RealScreen.open { a ->
+            LinearLayout(a).apply {
+                orientation = LinearLayout.VERTICAL
+                addView(TextView(a).apply { text = "A view"; height = 100 })
+                addView(ComposeView(a).recomposingOnTestFrames().apply { setContent { MaterialTheme { Text("Composed", Modifier.padding(start = 10.dp)) } } })
+            }
+        }
+        val screen = s.screen()
+        assertEquals(listOf("A view", "Composed"), texts(screen))
+        assertEquals(10f to 100f, position(screen, withText(screen, "Composed")!!))
+    }
+
+    @Test
+    fun theOldMaskModifierStillMasks() {
+        val s = compose {
+            Column {
+                @Suppress("DEPRECATION")
+                Text("old secret", Modifier.tracewayMask())
+            }
+        }
+        assertEquals(listOf("*** ******"), texts(s.screen()))
+    }
+
+    @Test
+    fun aMaskTestTagMasksWhatTapsReportToo() {
+        val s = compose {
+            Column {
+                Text("Card 4242", Modifier.testTag("traceway-mask").clickable {}.padding(8.dp))
+                Text("Plain row", Modifier.testTag("plain").clickable {}.padding(8.dp))
+            }
+        }
+        val screen = s.screen()
+        fun tapOn(shown: String) = run {
+            val node = withText(screen, shown)!!
+            val (x, y) = position(screen, node)
+            val root = s.activity.window.decorView
+            describeTap(ViewPath.pathAt(root, s.px(x + 4f).toFloat(), s.px(y + 4f).toFloat())!!)!!
+        }
+        val masked = tapOn("**** ****")
+        assertEquals(null, masked.text)
+        assertFalse("the mask tag names nothing", masked.selector.contains("traceway-mask"))
+        val plain = tapOn("Plain row")
+        assertEquals("Plain row", plain.text)
+        assertEquals("plain", plain.id)
     }
 
     @Test
@@ -269,44 +358,5 @@ class ComposeWireframeTest {
         val inPopup = shareX >= popup.x / s.density && shareX < (popup.x + popup.view.width) / s.density &&
             shareY >= popup.y / s.density && shareY < (popup.y + popup.view.height) / s.density
         assertTrue("Share at $shareX,$shareY; popup at ${popup.x},${popup.y} ${popup.view.width}x${popup.view.height}", inPopup)
-    }
-
-    @Test
-    fun composeInsideViewsIsPlacedWithThem() {
-        val s = RealScreen.open { a ->
-            LinearLayout(a).apply {
-                orientation = LinearLayout.VERTICAL
-                addView(TextView(a).apply { text = "A view"; height = 100 })
-                addView(ComposeView(a).recomposingOnTestFrames().apply { setContent { MaterialTheme { Text("Composed", Modifier.padding(start = 10.dp)) } } })
-            }
-        }
-        val screen = s.screen()
-        assertEquals(listOf("A view", "Composed"), texts(screen))
-        assertEquals(10f to 100f, position(screen, withText(screen, "Composed")!!))
-    }
-
-    @Test
-    fun aStateChangeReplaysInTheMirror() {
-        val count: MutableState<Int> = mutableStateOf(0)
-        val checked = mutableStateOf(false)
-        val s = compose {
-            Column {
-                Text("Count ${count.value}")
-                Row { Checkbox(checked = checked.value, onCheckedChange = {}); Text("Agree") }
-                if (count.value % 2 == 1) Text("Odd")
-            }
-        }
-        var before = s.screen()
-        val mirror = Mirror()
-        mirror.play(listOf(fullSnapshotOf(before)))
-        val steps = listOf({ count.value = 1 }, { checked.value = true }, { count.value = 2 }, { checked.value = false; count.value = 3 })
-        for ((i, step) in steps.withIndex()) {
-            step()
-            val after = s.screen()
-            diffScreens(before, after)?.let { mirror.mutation(it) }
-            assertEquals("step $i", dumpVNode(after), mirror.screen.dump())
-            before = after
-        }
-        assertEquals(listOf("Count 3", "Agree", "Odd"), mirror.texts())
     }
 }

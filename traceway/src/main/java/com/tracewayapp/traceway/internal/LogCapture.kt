@@ -8,7 +8,7 @@ import java.io.PrintStream
  * Mirrors [System.out] / [System.err] into the SDK as console records,
  * while still writing the bytes to the original stream. Each line is one
  * record. Calls to `android.util.Log` do not pass through System.out; apps
- * that want them call `Traceway.recordLog` (from a Timber tree, say).
+ * that want them call `Traceway.log` (from a Timber tree, say).
  */
 internal object LogCapture {
     @Volatile

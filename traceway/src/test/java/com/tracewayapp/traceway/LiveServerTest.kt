@@ -60,7 +60,7 @@ class LiveServerTest {
         Thread.sleep(1500)
 
         client.recordNavigation("/checkout")
-        client.recordLog("Paying for 2 items")
+        client.log("Paying for 2 items")
         client.recordAction("cart", "add_item", mapOf("sku" to "SKU-123"))
         val request = client.startRequest("POST", "https://api.example.com/pay")!!
         Thread.sleep(40)

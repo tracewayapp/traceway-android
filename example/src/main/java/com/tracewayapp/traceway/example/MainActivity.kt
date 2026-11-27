@@ -16,7 +16,9 @@ import androidx.appcompat.app.AppCompatActivity
 import com.google.android.material.button.MaterialButton
 import com.google.android.material.materialswitch.MaterialSwitch
 import com.tracewayapp.traceway.Traceway
+import com.tracewayapp.traceway.TracewayLogLevel
 import com.tracewayapp.traceway.TracewayMaskMode
+import com.tracewayapp.traceway.tracewayPrivacyMask
 import com.tracewayapp.traceway.network.TracewayOkHttpInterceptor
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -61,7 +63,7 @@ class MainActivity : AppCompatActivity() {
             inputType = InputType.TYPE_CLASS_NUMBER
         }
         // Blank in the replay: a box, nothing of what is typed.
-        Traceway.mask(card, TracewayMaskMode.blank(Color.DKGRAY))
+        card.tracewayPrivacyMask = TracewayMaskMode.blank(Color.DKGRAY)
         root.addView(card)
         root.addView(CheckBox(this).apply { text = "Save card for next time" })
         root.addView(MaterialSwitch(this).apply { text = "Express delivery" })
@@ -80,16 +82,22 @@ class MainActivity : AppCompatActivity() {
         button("Pay", R.id.pay) {
             Traceway.track("checkout_started", mapOf("items" to 2L))
             println("Paying for 2 items") // a console breadcrumb
+            // One trace for the whole checkout: the request below is its child, the exception points to it.
+            val checkout = Traceway.startInteraction("checkout", mapOf("items" to 2L))
             Thread {
-                try {
-                    httpClient.newCall(Request.Builder().url("https://httpbin.org/status/500").build()).execute().close()
-                } catch (_: IOException) {
+                checkout.run {
+                    Traceway.log("Calling the payment provider", TracewayLogLevel.DEBUG)
+                    try {
+                        httpClient.newCall(Request.Builder().url("https://httpbin.org/status/500").build()).execute().close()
+                    } catch (_: IOException) {
+                    }
+                    try {
+                        error("Payment provider returned 500")
+                    } catch (e: IllegalStateException) {
+                        checkout.captureException(e, mapOf("checkout.step" to "pay"))
+                    }
                 }
-                try {
-                    error("Payment provider returned 500")
-                } catch (e: IllegalStateException) {
-                    Traceway.captureException(e, mapOf("checkout.step" to "pay"))
-                }
+                checkout.end()
             }.start()
         }
         button("Record action", R.id.record_action) {

@@ -56,6 +56,10 @@ android {
                 it.systemProperty("robolectric.logging.enabled", "false")
                 // Its downloads and native libraries go to the build directory, not /tmp.
                 it.systemProperty("java.io.tmpdir", it.temporaryDir.absolutePath)
+                // The wireframe gallery reads these; a change runs it again.
+                for (name in listOf("WIREFRAME_GALLERY_ONLY", "WIREFRAME_GALLERY_OUT")) {
+                    it.inputs.property(name, System.getenv(name) ?: "")
+                }
             }
         }
     }
@@ -98,6 +102,9 @@ dependencies {
     testImplementation("androidx.appcompat:appcompat:1.7.0")
     testImplementation("com.google.android.material:material:1.12.0")
     testImplementation("androidx.recyclerview:recyclerview:1.3.2")
+    // The wireframe gallery's layouts and pagers (the versions Material brings).
+    testImplementation("androidx.constraintlayout:constraintlayout:2.0.1")
+    testImplementation("androidx.viewpager2:viewpager2:1.0.0")
     testImplementation("androidx.fragment:fragment:1.8.9")
     testImplementation(platform("androidx.compose:compose-bom:2024.12.01"))
     testImplementation("androidx.compose.ui:ui-android:1.7.8")

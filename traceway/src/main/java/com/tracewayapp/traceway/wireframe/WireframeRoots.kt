@@ -5,9 +5,12 @@ import android.app.Activity
 import android.app.ActivityManager
 import android.app.Application
 import android.content.Context
+import android.graphics.Rect
+import android.os.Build
 import android.os.Bundle
 import android.view.View
 import android.view.ViewTreeObserver
+import android.view.WindowInsets
 import android.view.WindowManager
 import com.tracewayapp.traceway.internal.Cancellable
 import java.lang.ref.WeakReference
@@ -21,13 +24,22 @@ import java.util.WeakHashMap
  * (`WindowManagerGlobal`'s views, read by reflection, as Square's Curtains
  * and Radiography do). Where that cannot be read, the windows of the
  * activities registered with [addActivity] are used instead.
+ *
+ * The keyboard is a window of the input method's process, not in that list:
+ * an application window reports how much of it the keyboard covers
+ * ([Root.ime]), and the capture draws a neutral box there.
  */
-internal class RootViews {
-    /** One window: its root view, window type, dim behind it (0-1) and screen position in pixels. */
-    class Root(val view: View, val type: Int, val dim: Float, val x: Int, val y: Int)
+internal class WireframeRoots {
+    /**
+     * One window: its root view, window type, dim behind it (0-1), screen
+     * position in pixels, and how many pixels the keyboard covers at its
+     * bottom (0 when the keyboard is hidden; application windows only).
+     */
+    class Root(val view: View, val type: Int, val dim: Float, val x: Int, val y: Int, val ime: Int = 0)
 
     private val activities = ArrayList<WeakReference<Activity>>()
     private val location = IntArray(2)
+    private val visibleFrame = Rect()
     private val scratch = ArrayList<View>()
 
     fun addActivity(activity: Activity) {
@@ -92,12 +104,41 @@ internal class RootViews {
             0f
         }
         view.getLocationOnScreen(location)
-        return Root(view, type, dim, location[0], location[1])
+        val ime = if (type in 1..99) imeInset(view, location[1]) else 0
+        return Root(view, type, dim, location[0], location[1], ime)
+    }
+
+    /**
+     * How many pixels at the bottom of [view]'s window the keyboard covers:
+     * the window's IME inset (Android 11+), else what its visible frame
+     * leaves out at the bottom beyond the navigation bar, when that is more
+     * than a bar would take.
+     */
+    private fun imeInset(view: View, top: Int): Int = try {
+        if (Build.VERSION.SDK_INT >= 30) {
+            val insets = view.rootWindowInsets
+            if (insets == null || !insets.isVisible(WindowInsets.Type.ime())) {
+                0
+            } else {
+                insets.getInsets(WindowInsets.Type.ime()).bottom.coerceIn(0, view.height)
+            }
+        } else {
+            view.getWindowVisibleDisplayFrame(visibleFrame)
+            @Suppress("DEPRECATION")
+            val bar = if (Build.VERSION.SDK_INT >= 23) view.rootWindowInsets?.stableInsetBottom ?: 0 else 0
+            val covered = top + view.height - visibleFrame.bottom - bar
+            if (visibleFrame.isEmpty || covered < view.height * MIN_KEYBOARD_SHARE) 0 else covered.coerceAtMost(view.height)
+        }
+    } catch (_: Throwable) {
+        0
     }
 
     companion object {
         private const val FIRST_SUB_WINDOW = WindowManager.LayoutParams.FIRST_SUB_WINDOW
         private const val LAST_SUB_WINDOW = WindowManager.LayoutParams.LAST_SUB_WINDOW
+
+        /** Below Android 11, less of the window left out than this is the navigation bar, not a keyboard. */
+        private const val MIN_KEYBOARD_SHARE = 0.15f
 
         /** Application windows under system ones (toasts, overlays); otherwise as added. */
         private val BY_LAYER = Comparator<Root> { a, b -> layer(a.type).compareTo(layer(b.type)) }
@@ -158,13 +199,13 @@ private object WindowList {
 }
 
 /**
- * Frames of this app's windows: captures them with [ViewCapture] and
+ * Frames of this app's windows: captures them with [WireframeCapture] and
  * tells the recorder when something drew. An `OnDrawListener` sits on each
  * window; windows that open (a dialog, a menu) are found at the next capture
  * or, while nothing draws, by a check every half second.
  */
 internal class ViewFrameSource(
-    val roots: RootViews,
+    val roots: WireframeRoots,
     context: Context?,
     private val debug: Boolean = false,
     private val mainThread: MainThread = AndroidMainThread,
@@ -172,10 +213,13 @@ internal class ViewFrameSource(
     @Volatile
     private var onDraw: (() -> Unit)? = null
 
-    private val capture = ViewCapture(context) {
-        // A glyph's picture is ready (on its own thread): the screen changed.
+    private val capture = WireframeCapture(context) {
+        // A glyph or a picture is ready (on its own thread): the screen changed.
         mainThread.post(0) { onDraw?.invoke() }
     }
+
+    /** The pictures the capture records, as the replay image policy allows. */
+    val images: WireframeImages get() = capture.images
 
     override var maskAllInputs: Boolean
         get() = capture.maskAllInputs
@@ -185,8 +229,8 @@ internal class ViewFrameSource(
 
     private val listener = ViewTreeObserver.OnDrawListener { onDraw?.invoke() }
     private val observed = WeakHashMap<View, ViewTreeObserver>()
-    private val windows = ArrayList<RootViews.Root>()
-    private val polled = ArrayList<RootViews.Root>()
+    private val windows = ArrayList<WireframeRoots.Root>()
+    private val polled = ArrayList<WireframeRoots.Root>()
     private var lastRoots: Array<View?> = arrayOfNulls(0)
     private var poll: Cancellable? = null
     private var captures = 0
@@ -238,7 +282,7 @@ internal class ViewFrameSource(
     override fun reset() = capture.reset()
 
     /** Puts the draw listener on windows that do not have it yet; true when one was new. */
-    private fun listen(list: List<RootViews.Root>): Boolean {
+    private fun listen(list: List<WireframeRoots.Root>): Boolean {
         var added = false
         for (root in list) {
             val v = root.view
@@ -255,7 +299,7 @@ internal class ViewFrameSource(
     }
 
     /** Whether the windows on screen are others than at the last capture or check. */
-    private fun remember(list: List<RootViews.Root>): Boolean {
+    private fun remember(list: List<WireframeRoots.Root>): Boolean {
         var same = list.size == lastRoots.size
         if (same) {
             for (i in list.indices) {

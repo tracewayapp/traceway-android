@@ -65,14 +65,23 @@ object Traceway {
     val client: TracewayClient?
         get() = TracewayClient.instance
 
-    /** Reports a caught exception, with optional attributes. */
+    /** The current session's id (`session.id` on every record), or null before the SDK started. */
+    @JvmStatic
+    val currentSessionId: String?
+        get() = client?.currentSessionId
+
+    /**
+     * Reports a caught exception, with optional attributes and the screen it
+     * happened on. [TracewayOptions.ignoreErrors] and
+     * [TracewayOptions.beforeCapture] can drop it.
+     */
     @JvmStatic
     @JvmOverloads
     fun captureException(error: Throwable, attributes: Map<String, String>? = null) {
         client?.captureException(error, attributes)
     }
 
-    /** Reports a free-form message as an issue. */
+    /** Reports a free-form message as an issue, filtered like [captureException]. */
     @JvmStatic
     @JvmOverloads
     fun captureMessage(message: String, attributes: Map<String, String>? = null) {
@@ -115,22 +124,62 @@ object Traceway {
     }
 
     /**
-     * Reports the screen the user arrived at, as a route (`/checkout`).
-     * Activities and AndroidX fragments are reported automatically; call
-     * this from Compose Navigation or another router.
+     * Reports the screen the user arrived at, as a path (`/checkout`), and
+     * how ([action]: `push`, `pop`, `replace`, or `remove` for a screen taken
+     * away without arriving anywhere), from the screen [from]. [route] is the
+     * screen's route template (`/orders/{id}`) when the router knows it, so
+     * metrics group by it and issues carry it, as with [setRoute]. Activities
+     * and AndroidX fragments are reported automatically; call this from
+     * Compose Navigation or another router.
      */
     @JvmStatic
     @JvmOverloads
-    fun recordNavigation(path: String, action: String = "push") {
-        client?.recordNavigation(path, action)
+    fun recordNavigation(path: String, action: String = "push", from: String? = null, route: String? = null) {
+        client?.recordNavigation(path, action, from, route)
     }
 
-    /** Records a log line, e.g. from a Timber tree. [severity]: trace, debug, info, warn, error, fatal. */
+    /**
+     * Names the current screen by its route template (`/orders/:id`): issues
+     * and navigations carry it as `app.screen.route`, and metrics group by
+     * it. Lasts until the next screen; null removes it.
+     */
+    @JvmStatic
+    fun setRoute(template: String?) {
+        client?.setRoute(template)
+    }
+
+    /**
+     * Records a log line at [level] (from a Timber tree, say), shown on the
+     * session timeline; the console's minimum severity in the collection
+     * settings filters it.
+     */
+    @JvmStatic
+    @JvmOverloads
+    fun log(message: String, level: TracewayLogLevel = TracewayLogLevel.INFO, attributes: Map<String, String>? = null) {
+        client?.log(message, level, attributes)
+    }
+
+    /** Records a log line. [severity]: trace, debug, info, warn, error, fatal. */
+    @Deprecated(
+        "Use log(message, level), with a TracewayLogLevel.",
+        ReplaceWith("Traceway.log(message, TracewayLogLevel.INFO)", "com.tracewayapp.traceway.TracewayLogLevel"),
+    )
     @JvmStatic
     @JvmOverloads
     fun recordLog(message: String, severity: String = "info") {
-        client?.recordLog(message, severity)
+        client?.log(message, TracewayLogLevel.of(severity))
     }
+
+    /**
+     * Starts an interaction named [name] (`checkout`): a span that the
+     * requests made inside its [TracewayInteraction.run] are children of,
+     * and that exceptions and logs recorded there point to. End it with
+     * [TracewayInteraction.end]. Before [init] it records nothing.
+     */
+    @JvmStatic
+    @JvmOverloads
+    fun startInteraction(name: String, attributes: Map<String, Any>? = null): TracewayInteraction =
+        client?.startInteraction(name, attributes) ?: TracewayInteraction(null) { _, _ -> }
 
     /** The screen on top shows everything it loads: ends its time to full display (`app.screen.ttfd`). */
     @JvmStatic
@@ -158,13 +207,25 @@ object Traceway {
         client?.setMetricDimension(key, value)
     }
 
-    /** Masks [view] (and everything inside it) in wireframe recordings and tap records. */
+    /**
+     * Masks [view] and everything inside it in wireframe recordings and tap
+     * records, as [mode] says; null removes the mask. The same as setting
+     * [android.view.View.tracewayPrivacyMask].
+     */
+    @JvmStatic
+    @JvmOverloads
+    fun setPrivacyMask(view: View, mode: TracewayMaskMode? = TracewayMaskMode.blur()) {
+        PrivacyMasks.set(view, mode)
+    }
+
+    @Deprecated("Use setPrivacyMask(view, mode).", ReplaceWith("Traceway.setPrivacyMask(view, mode)"))
     @JvmStatic
     @JvmOverloads
     fun mask(view: View, mode: TracewayMaskMode = TracewayMaskMode.blur()) {
         PrivacyMasks.set(view, mode)
     }
 
+    @Deprecated("Use setPrivacyMask(view, null).", ReplaceWith("Traceway.setPrivacyMask(view, null)"))
     @JvmStatic
     fun unmask(view: View) {
         PrivacyMasks.set(view, null)

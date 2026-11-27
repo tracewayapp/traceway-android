@@ -4,21 +4,15 @@ package com.tracewayapp.traceway
  * Configuration for [Traceway.init]. Names and defaults follow the Flutter
  * and browser SDKs, so one Data Collection rule targets every client.
  *
- * The `capture*` flags, [screenCapture] and [sessions] are **ceilings**:
- * remote settings can lower what is collected but never raise it.
+ * The `capture*` flags, [screenCapture], [replayImages] and [sessions] are
+ * **ceilings**: remote settings can lower what is collected but never raise
+ * it.
  * [sampleRate], [baselineSampleRate] and [recordAllSessions] are defaults
  * that a rule can change either way.
  */
 data class TracewayOptions @JvmOverloads constructor(
     /** Share of exceptions and messages that are reported (0.0 - 1.0). */
     val sampleRate: Double = 1.0,
-
-    /**
-     * Record the screen as a wireframe: the view tree (and Jetpack Compose
-     * semantics) replayed as HTML by the dashboard's rrweb player. The last
-     * frames go up with an exception, and captures stream it.
-     */
-    val screenCapture: Boolean = false,
 
     /** Print debug info to logcat (tag `Traceway`). */
     val debug: Boolean = false,
@@ -36,30 +30,32 @@ data class TracewayOptions @JvmOverloads constructor(
     val attributes: Map<String, String> = emptyMap(),
 
     /**
-     * R8/ProGuard build UUID used to symbolicate obfuscated release crashes.
-     * Set it to `BuildConfig.TRACEWAY_PROGUARD_UUID` (injected by the
-     * `com.tracewayapp.symbols` Gradle plugin) so reported traces match the
-     * uploaded `mapping.txt`. Sent as `app.debug.proguard_uuid`.
+     * Record the screen as a wireframe: the view tree (and Jetpack Compose
+     * semantics) replayed as HTML by the dashboard's rrweb player. The last
+     * frames go up with an exception, and captures stream it. A ceiling for
+     * `replay`.
      */
-    val proguardUuid: String? = null,
+    val screenCapture: Boolean = false,
 
-    /** Wireframe frames held on the device; the upper bound of every clip. */
-    val maxBufferFrames: Int = 150,
+    /**
+     * The most session replay records of the pictures image views show:
+     * [TracewayImagePolicy.OFF] draws placeholders only, [TracewayImagePolicy.WIFI]
+     * pictures on an unmetered connection, [TracewayImagePolicy.ALWAYS] (the
+     * default) whatever the collection settings (`replay.images`, Wi-Fi by
+     * default) allow. A ceiling: the lower of the two applies.
+     */
+    val replayImages: TracewayImagePolicy = TracewayImagePolicy.ALWAYS,
 
     /** Most wireframe frames captured per second (1-30); only frames where something was drawn are captured. */
     val fps: Int = 10,
 
+    /** Wireframe frames held on the device; the upper bound of every clip. */
+    val maxBufferFrames: Int = 150,
+
     /** Keep SDK state and undelivered telemetry on disk across restarts. */
     val persistToDisk: Boolean = true,
 
-    /**
-     * The connection string a 1.x build of the app used. Unsent 1.x reports
-     * found on the device are delivered to that project's `/api/report`
-     * (and expire after 12 hours, the 1.x default).
-     */
-    val legacyConnectionString: String? = null,
-
-    /** Capture `System.out` / `System.err` lines and [Traceway.recordLog] calls. */
+    /** Capture `System.out` / `System.err` lines and [Traceway.log] calls. A ceiling for `console`. */
     val captureLogs: Boolean = true,
 
     /** Record HTTP calls made through [com.tracewayapp.traceway.network.TracewayOkHttpInterceptor]. */
@@ -109,6 +105,57 @@ data class TracewayOptions @JvmOverloads constructor(
     /** URL prefixes whose requests carry a W3C `traceparent` header naming their client span. */
     val propagateTraceHeaderUrls: List<String> = emptyList(),
 
+    /**
+     * Exceptions and messages not to report, matched against their first
+     * line `Type: message` (stack frames are not): a [String] matches when
+     * it occurs in it, a [Regex] when it finds a match. Null uses
+     * [DEFAULT_IGNORE_ERRORS]; an empty list reports everything. Crashes
+     * (uncaught exceptions that end the process) are always reported.
+     */
+    val ignoreErrors: List<Any>? = null,
+
+    /**
+     * Called before an exception or a message is recorded; return false to
+     * drop it. A callback that throws keeps the record (and logs in debug).
+     * Crashes are always reported and do not pass through it.
+     */
+    val beforeCapture: ((TracewayCapturedError) -> Boolean)? = null,
+
+    /**
+     * The connection string a 1.x build of the app used. Unsent 1.x reports
+     * found on the device are delivered to that project's `/api/report`
+     * (and expire after 12 hours, the 1.x default).
+     */
+    val legacyConnectionString: String? = null,
+
+    /**
+     * R8/ProGuard build UUID used to symbolicate obfuscated release crashes.
+     * Set it to `BuildConfig.TRACEWAY_PROGUARD_UUID` (injected by the
+     * `com.tracewayapp.symbols` Gradle plugin) so reported traces match the
+     * uploaded `mapping.txt`. Sent as `app.debug.proguard_uuid`.
+     */
+    val proguardUuid: String? = null,
+
     /** Like [propagateTraceHeaderUrls], for URLs matching a pattern. */
     val propagateTraceHeaderUrlPatterns: List<Regex> = emptyList(),
-)
+) {
+    companion object {
+        /**
+         * Errors not reported unless [ignoreErrors] says otherwise: a phone
+         * losing its connection, a request timing out or a server saying no
+         * is the network's doing, not a bug in the app.
+         */
+        @JvmField
+        val DEFAULT_IGNORE_ERRORS: List<Any> = listOf(
+            "UnknownHostException",
+            "SocketTimeoutException",
+            "ConnectException",
+            "SSLHandshakeException",
+            "NoRouteToHostException",
+            "Connection reset",
+            Regex("timeout", RegexOption.IGNORE_CASE),
+            Regex("status code (of )?4\\d{2}"),
+            Regex("failed: 4\\d{2}"),
+        )
+    }
+}

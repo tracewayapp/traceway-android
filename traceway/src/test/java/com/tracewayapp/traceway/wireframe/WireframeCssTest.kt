@@ -99,4 +99,27 @@ class WireframeCssTest {
         assertTrue(wireframeCss.startsWith("html,body{"))
         assertTrue(wireframeCss.endsWith("}\n"))
     }
+
+    @Test
+    fun `the stylesheet is the one every platform shares, byte for byte`() {
+        val shared = javaClass.getResource("/wireframe.css")!!.readText(Charsets.UTF_8)
+        assertEquals(shared, wireframeCss)
+    }
+
+    @Test
+    fun `the document and the nodes the recorder draws have the ids every platform uses`() {
+        val screen = VNode.element(screenNodeId, "div", mapOf("id" to "tw"), emptyList())
+        val ids = ArrayList<Int>()
+        fun walk(node: Map<*, *>) {
+            ids.add(node["id"] as Int)
+            (node["childNodes"] as? List<*>)?.forEach { walk(it as Map<*, *>) }
+        }
+        walk(serializeDocument(screen))
+        assertEquals(listOf(1, 2, 3, 4, 5, 6, 7, 8), ids)
+        assertEquals(listOf(9, 10, 12, 13, 14, 16), listOf(awayScreenTextBoxId, awayScreenTextId, keyboardNodeId, keyboardLabelBoxId, keyboardLabelTextId, firstCapturedNodeId))
+        val away = WireframeRecorder.awayScreen(400f, 800f)
+        assertEquals(screenNodeId, away.id)
+        assertEquals(awayScreenTextBoxId, away.children[0].id)
+        assertEquals(awayScreenTextId, away.children[0].children[0].id)
+    }
 }

@@ -3,6 +3,7 @@ package com.tracewayapp.traceway.wireframe
 import android.annotation.SuppressLint
 import android.content.Context
 import android.content.res.ColorStateList
+import android.content.res.Configuration
 import android.content.res.Resources
 import android.graphics.Bitmap
 import android.graphics.Canvas
@@ -30,13 +31,13 @@ import android.text.method.PasswordTransformationMethod
 import android.text.style.AbsoluteSizeSpan
 import android.text.style.BackgroundColorSpan
 import android.text.style.CharacterStyle
+import android.text.style.ClickableSpan
 import android.text.style.ForegroundColorSpan
 import android.text.style.RelativeSizeSpan
 import android.text.style.StrikethroughSpan
 import android.text.style.StyleSpan
 import android.text.style.TypefaceSpan
 import android.text.style.UnderlineSpan
-import android.util.Base64
 import android.util.TypedValue
 import android.view.SurfaceView
 import android.view.TextureView
@@ -58,100 +59,47 @@ import android.widget.TextView
 import android.widget.ToggleButton
 import com.tracewayapp.traceway.PrivacyMasks
 import com.tracewayapp.traceway.TracewayMaskMode
-import java.io.ByteArrayOutputStream
 import java.util.Arrays
 import java.util.WeakHashMap
-import java.util.concurrent.Executor
-import java.util.concurrent.Executors
-import kotlin.math.ceil
 import kotlin.math.max
 import kotlin.math.min
 
-/** What a capture keeps about one view (or Compose node) between frames. */
-internal class Rec(@JvmField val id: Int) {
-    /** Ids of the nodes it plays other roles with; role 0 is [id]. */
-    @JvmField var ids: IntArray? = null
-
-    /** The node made for each role last time, reused while it shows the same. */
-    @JvmField var prev: Array<VNode?> = arrayOfNulls(3)
-
-    /** Has been a node of its own: stays one, so its subtree does not move when it stops needing one. */
-    @JvmField var group = false
-
-    /** Its children are in a clipping, scrolled wrapper; sticky for the same reason. */
-    @JvmField var wrap = false
-
-    // The background found this frame, used after the children are walked.
-    @JvmField var bgKind = BG_NONE
-    @JvmField var bgFill = 0
-    @JvmField var bgShape: ShapeInfo? = null
-    @JvmField var bgL = 0
-    @JvmField var bgT = 0
-    @JvmField var bgR = 0
-    @JvmField var bgB = 0
-
-    /** Compose only: when the node was last seen, to forget nodes that left. */
-    @JvmField var seen = 0
-
-    /** Compose: the text the style in [lookCss] was read for. Views: a text field's label. */
-    @JvmField var lookText: String? = null
-    @JvmField var lookCss: String? = null
-    @JvmField var lookCls: String? = null
-    @JvmField var lookW = 0
-    @JvmField var lookH = 0
-
-    /** Compose: the color of the text in [lookCss]. */
-    @JvmField var lookColor = 0
-
-    companion object {
-        const val BG_NONE = 0
-        const val BG_COLOR = 1
-        const val BG_SHAPE = 2
-        const val BG_UNDERLINE = 3
-    }
-}
-
-/** The capture's children lists, reused frame after frame: last taken, first given back. */
-internal class ListStack {
-    private val lists = ArrayList<ArrayList<VNode>>()
-    private var top = 0
-
-    fun acquire(): ArrayList<VNode> {
-        if (top == lists.size) lists.add(ArrayList(16))
-        val list = lists[top++]
-        list.clear()
-        return list
-    }
-
-    fun release() {
-        if (top > 0) lists[--top].clear()
-    }
-
-    fun reset() {
-        while (top > 0) release()
-    }
-}
-
 /**
- * Turns the app's windows into a wireframe DOM: the Android counterpart of
- * the Flutter SDK's widget walk. Runs on the main thread, after a frame was
- * drawn.
+ * Turns the app's windows into a wireframe DOM, the Android counterpart of
+ * the iOS view walk and the Flutter widget walk. The pipeline, the same on
+ * every platform:
  *
- * Every view that draws something (a background, text, an image, a
- * control), clips, scrolls, fades or is transformed gets an element, nested
- * the way views draw, so CSS clips and fades their contents like Android
- * does; layout-only groups are folded into their children's offsets. All
- * geometry is in dp from the screen's top-left, accumulated while walking
- * (no `getLocationOnScreen` per view). Each view keeps its node ids for as
- * long as it lives, and a view that shows the same as last frame gives back
- * last frame's node: frames share structure, diffs skip what did not change,
- * and an unchanged view allocates nothing.
+ * roots → walk → convert → VNodes (stable ids, shared unchanged subtrees) →
+ * CSS → diff → rrweb events
  *
- * Jetpack Compose content is read from its semantics tree by
- * [ComposeCapture] when Compose is in the app.
+ * - **roots**: [WireframeRoots] lists the windows on screen (activities,
+ *   dialogs, popups), bottom first, with their dim and the keyboard's inset.
+ * - **walk**: [capture] visits each window's view tree on the main thread,
+ *   after a frame was drawn, in the order views draw (by z, then as listed);
+ *   what is invisible, empty or clipped away is skipped. At most 3000
+ *   views, 128 deep, are walked per capture, as on iOS.
+ * - **convert**: one converter per kind of view, named as on the other
+ *   platforms: `text`, `field`, `image`, `toggle`, `slider`, `progress`,
+ *   `ratingBar`, `nativePlaceholder` (web views, maps, video, surfaces),
+ *   `customDrawing`, `group` (with `scroll` for scrolled content), `dim`
+ *   and `keyboard`. Jetpack Compose content is converted from its semantics
+ *   tree by [WireframeComposeCapture].
+ * - **VNodes**: every view that draws something, clips, scrolls, fades or is
+ *   transformed gets an element, nested the way views draw, so CSS clips and
+ *   fades its contents like Android does; layout-only groups are folded into
+ *   their children's offsets. Geometry is in dp from the screen's top-left,
+ *   accumulated while walking. A view keeps its node ids for as long as it
+ *   lives, and a view that shows the same as last frame gives back last
+ *   frame's node: frames share their unchanged subtrees, and an unchanged
+ *   view allocates nothing.
+ * - **CSS**: inline styles from the builders in `WireframeCss.kt`, over the
+ *   shared stylesheet [wireframeCss]; icon glyphs ([WireframeGlyphs]) and
+ *   pictures ([WireframeImages]) are style nodes first in the screen.
+ * - **diff** and **rrweb events**: [diffScreens] turns two frames into an
+ *   rrweb mutation, and [WireframeRecorder] assembles clips of them.
  */
 @SuppressLint("NewApi")
-internal class ViewCapture(context: Context?, onGlyphReady: () -> Unit = {}) {
+internal class WireframeCapture(context: Context?, onAssetReady: () -> Unit = {}) {
     /** Text in editable fields is masked, as rrweb's `maskAllInputs` does. Password fields always are. */
     @Volatile
     var maskAllInputs = true
@@ -179,16 +127,20 @@ internal class ViewCapture(context: Context?, onGlyphReady: () -> Unit = {}) {
     @JvmField var density = 1f
 
     @JvmField val shapes = ShapeSampler()
-    @JvmField val glyphs = IconGlyphs(onGlyphReady)
+    @JvmField val glyphs = WireframeGlyphs(onAssetReady)
+
+    /** The pictures image views show, when the replay image policy allows them; off until the client sets it. */
+    @JvmField val images = WireframeImages(onAssetReady)
     private var screenPrev: VNode? = null
-    private var composeCapture: ComposeCapture? = null
+    private var keyboardPrev: VNode? = null
+    private var composeCapture: WireframeComposeCapture? = null
     private var composeChecked = false
     private val rectF = RectF()
     private val rect = Rect()
     private val values = FloatArray(9)
     @JvmField val look = TextLook()
     private val outline = Outline()
-    private val accents = WeakHashMap<Resources.Theme, Int>()
+    private val accents = WeakHashMap<Resources.Theme, Long>()
     private val typedValue = TypedValue()
     private val customDraw = HashMap<Class<*>, Boolean>()
     private val single = ArrayList<VNode>(1)
@@ -208,6 +160,9 @@ internal class ViewCapture(context: Context?, onGlyphReady: () -> Unit = {}) {
         private set
 
     private var views = 0
+
+    /** How deep the walk is in the view tree now. */
+    private var depth = 0
 
     /** Windows seen by a capture. */
     private val seenRoots = WeakHashMap<View, Boolean>()
@@ -234,12 +189,13 @@ internal class ViewCapture(context: Context?, onGlyphReady: () -> Unit = {}) {
      * The wireframe of [roots] (bottom first), or null when there is nothing
      * to show. The screen is the base application window's extent.
      */
-    fun capture(all: List<RootViews.Root>, timestampMs: Long, href: String?): WireframeFrame? {
+    fun capture(all: List<WireframeRoots.Root>, timestampMs: Long, href: String?): WireframeFrame? {
         val roots = withoutNewWindows(all)
         if (resetRequested) {
             resetRequested = false
             recs = WeakHashMap(256)
             screenPrev = null
+            keyboardPrev = null
             composeCapture?.reset()
         }
         lists.reset()
@@ -247,6 +203,7 @@ internal class ViewCapture(context: Context?, onGlyphReady: () -> Unit = {}) {
         if (roots.isEmpty()) return null
         nowMs = timestampMs
         views = 0
+        depth = 0
         val first = roots[0].view
         density = first.resources.displayMetrics.density.takeIf { it > 0f } ?: 1f
         inv = 1f / density
@@ -261,17 +218,13 @@ internal class ViewCapture(context: Context?, onGlyphReady: () -> Unit = {}) {
         val sh = (base.y + base.view.height).toFloat()
         if (sw <= 0f || sh <= 0f) return null
         glyphs.shown.clear()
+        images.beginCapture()
         val children = lists.acquire()
         try {
             for (root in roots) {
                 val v = root.view
                 val rec = rec(v)
-                if (root.dim > 0f) {
-                    sb.setLength(0)
-                    sb.append("left:0;top:0;width:").appendPx(sw * inv).append(";height:").appendPx(sh * inv)
-                        .append(";background-color:").appendColor(withAlpha(0xFF000000.toInt(), root.dim)).append(';')
-                    children.add(element(rec, 9, null, EMPTY))
-                }
+                if (root.dim > 0f) children.add(dim(rec, sw, sh, root.dim))
                 val x = root.x.toFloat()
                 val y = root.y.toFloat()
                 visitSafely(
@@ -279,7 +232,12 @@ internal class ViewCapture(context: Context?, onGlyphReady: () -> Unit = {}) {
                     max(0f, x), max(0f, y), min(sw, x + v.width), min(sh, y + v.height), MASK_NONE,
                 )
             }
-            glyphStyles(children)
+            if (base.ime > 0) {
+                children.add(keyboard(base, sw, sh))
+            } else {
+                keyboardPrev = null
+            }
+            imageStyles(children, glyphStyles(children))
             val screen = screenNode(children, sw * inv, sh * inv)
             lastViewCount = views
             return WireframeFrame(screen, sw * inv, sh * inv, timestampMs, href)
@@ -289,10 +247,46 @@ internal class ViewCapture(context: Context?, onGlyphReady: () -> Unit = {}) {
         }
     }
 
+    /**
+     * The keyboard as a neutral box over the bottom of [base], where its
+     * inset says it is, the same box the iOS SDK draws: the keyboard is
+     * another app's window, and its keys are never recorded.
+     */
+    private fun keyboard(base: WireframeRoots.Root, sw: Float, sh: Float): VNode {
+        val v = base.view
+        val top = (base.y + v.height - base.ime).toFloat().coerceIn(0f, sh)
+        val left = base.x.toFloat().coerceIn(0f, sw)
+        val right = min(sw, (base.x + v.width).toFloat())
+        val bottom = min(sh, (base.y + v.height).toFloat())
+        val dark = (v.resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK) == Configuration.UI_MODE_NIGHT_YES
+        sb.setLength(0)
+        sb.append("left:").appendPx(left * inv).append(";top:").appendPx(top * inv)
+            .append(";width:").appendPx(max(0f, right - left) * inv).append(";height:").appendPx(max(0f, bottom - top) * inv)
+            .append(';')
+            .append(if (dark) "background-color:#2c2c2e;color:#8e8e93;" else "background-color:#d1d3d9;color:#6d6d72;")
+            .append("display:flex;align-items:center;justify-content:center;font-size:13px;")
+        val prev = keyboardPrev
+        if (prev != null && contentEquals(prev.attributes["style"], sb)) return prev
+        val node = VNode.element(
+            keyboardNodeId, "div", mapOf("style" to sb.toString()),
+            listOf(VNode.text(keyboardLabelTextId, "Keyboard")),
+        )
+        keyboardPrev = node
+        return node
+    }
+
+    /** The shade a dialog's window casts over the windows below it, [amount] 0-1, over the whole screen. */
+    private fun dim(rec: Rec, sw: Float, sh: Float, amount: Float): VNode {
+        sb.setLength(0)
+        sb.append("left:0;top:0;width:").appendPx(sw * inv).append(";height:").appendPx(sh * inv)
+            .append(";background-color:").appendColor(withAlpha(0xFF000000.toInt(), amount)).append(';')
+        return element(rec, DIM_ROLE, null, EMPTY)
+    }
+
     /** [roots] without the windows above the first that no capture has seen yet (see [deferredWindow]). */
-    private fun withoutNewWindows(roots: List<RootViews.Root>): List<RootViews.Root> {
+    private fun withoutNewWindows(roots: List<WireframeRoots.Root>): List<WireframeRoots.Root> {
         deferredWindow = false
-        var kept: ArrayList<RootViews.Root>? = null
+        var kept: ArrayList<WireframeRoots.Root>? = null
         for (i in roots.indices) {
             val r = roots[i]
             val first = seenRoots.put(r.view, true) == null
@@ -308,7 +302,7 @@ internal class ViewCapture(context: Context?, onGlyphReady: () -> Unit = {}) {
 
     private fun screenNode(children: List<VNode>, w: Float, h: Float): VNode {
         sb.setLength(0)
-        sb.append("width:").appendPx(w).append(";height:").appendPx(h)
+        sb.append("width:").appendPx(w).append(";height:").appendPx(h).append(";font-family:").append(SCREEN_FONT)
         val prev = screenPrev
         if (prev != null && contentEquals(prev.attributes["style"], sb) && sameChildren(prev.children, children)) return prev
         val node = VNode.element(
@@ -324,7 +318,7 @@ internal class ViewCapture(context: Context?, onGlyphReady: () -> Unit = {}) {
      * A style node for each icon glyph shown lately, first on the screen (a
      * style draws nothing), in a stable order.
      */
-    private fun glyphStyles(children: ArrayList<VNode>) {
+    private fun glyphStyles(children: ArrayList<VNode>): Int {
         for (g in glyphs.shown) g.lastShownMs = nowMs
         var at = 0
         for (g in glyphs.all) {
@@ -336,6 +330,26 @@ internal class ViewCapture(context: Context?, onGlyphReady: () -> Unit = {}) {
                 g.node = node
             }
             children.add(at++, node)
+        }
+        return at
+    }
+
+    /**
+     * A style node for each picture shown in the last [WireframeImages.LINGER_MS],
+     * after the glyphs' (from [at]), in a stable order.
+     */
+    private fun imageStyles(children: ArrayList<VNode>, at: Int) {
+        for (image in images.shown) image.lastShownMs = nowMs
+        var i = at
+        for (image in images.all) {
+            val css = image.css ?: continue
+            if (image.failed || nowMs - image.lastShownMs > WireframeImages.LINGER_MS) continue
+            var node = image.node
+            if (node == null) {
+                node = VNode.element(nextId++, "style", mapOf("_cssText" to css), emptyList())
+                image.node = node
+            }
+            children.add(i++, node)
         }
     }
 
@@ -392,7 +406,7 @@ internal class ViewCapture(context: Context?, onGlyphReady: () -> Unit = {}) {
         return node
     }
 
-    fun text(rec: Rec, role: Int, text: CharSequence): VNode {
+    fun textNode(rec: Rec, role: Int, text: CharSequence): VNode {
         val prev = prev(rec, role)
         if (prev != null && prev.isText && contentEquals(prev.text, text)) return prev
         val node = VNode.text(id(rec, role), text.toString())
@@ -428,6 +442,9 @@ internal class ViewCapture(context: Context?, onGlyphReady: () -> Unit = {}) {
         val w = v.width
         val h = v.height
         if (w <= 0 || h <= 0) return
+        // A screen of thousands of views, or one nested deeper than any layout needs, is cut short
+        // rather than costing the frame.
+        if (views >= MAX_VIEWS) return
         views++
         val plain = v.scaleX == 1f && v.scaleY == 1f && v.rotation == 0f &&
             v.rotationX == 0f && v.rotationY == 0f
@@ -463,16 +480,23 @@ internal class ViewCapture(context: Context?, onGlyphReady: () -> Unit = {}) {
         val rt = (top - oy) * inv
         when (v) {
             is ViewGroup -> when {
-                v is WebView -> native(v, rec, out, rl, rt, w, h, plain, alpha, "Web view")
+                v is WebView -> nativePlaceholder(v, rec, out, rl, rt, w, h, plain, alpha, "Web view")
                 composeRoot(v) -> group(v, rec, out, ox, oy, left, top, w, h, plain, alpha, cl, ct, cr, cb, m, compose = true)
-                isMap(v) -> native(v, rec, out, rl, rt, w, h, plain, alpha, "Map")
+                isMap(v) -> nativePlaceholder(v, rec, out, rl, rt, w, h, plain, alpha, "Map")
                 else -> group(v, rec, out, ox, oy, left, top, w, h, plain, alpha, cl, ct, cr, cb, m, compose = false)
             }
-            is TextView -> textView(v, rec, out, rl, rt, w, h, plain, alpha, m)
-            is ImageView -> imageView(v, rec, out, rl, rt, w, h, plain, alpha, m)
-            is ProgressBar -> progress(v, rec, out, rl, rt, w, h, plain, alpha)
-            is SurfaceView, is TextureView -> native(v, rec, out, rl, rt, w, h, plain, alpha, nativeLabel(v))
-            else -> plainView(v, rec, out, rl, rt, w, h, plain, alpha)
+            is EditText -> field(v, rec, out, rl, rt, w, h, plain, alpha, m)
+            is TextView -> text(v, rec, out, rl, rt, w, h, plain, alpha, m)
+            is ImageView -> image(v, rec, out, rl, rt, w, h, plain, alpha, m)
+            is RatingBar -> ratingBar(v, rec, out, rl, rt, w, h, plain, alpha, m)
+            is AbsSeekBar -> slider(v, rec, out, rl, rt, w, h, plain, alpha, m)
+            is ProgressBar -> progress(v, rec, out, rl, rt, w, h, plain, alpha, m)
+            is SurfaceView, is TextureView -> nativePlaceholder(v, rec, out, rl, rt, w, h, plain, alpha, nativeLabel(v))
+            else -> if (!v.willNotDraw() && drawsItself(v.javaClass)) {
+                customDrawing(v, rec, out, rl, rt, w, h, plain, alpha, m)
+            } else {
+                box(v, rec, out, rl, rt, w, h, plain, alpha, m)
+            }
         }
     }
 
@@ -499,7 +523,20 @@ internal class ViewCapture(context: Context?, onGlyphReady: () -> Unit = {}) {
         cl: Float, ct: Float, cr: Float, cb: Float, mask: Int,
     ) {
         val n = g.childCount
-        if (n == 0) return
+        if (n == 0 || depth >= MAX_DEPTH) return
+        depth++
+        try {
+            visitChildrenInOrder(g, n, out, ox, oy, px, py, cl, ct, cr, cb, mask)
+        } finally {
+            depth--
+        }
+    }
+
+    private fun visitChildrenInOrder(
+        g: ViewGroup, n: Int, out: ArrayList<VNode>,
+        ox: Float, oy: Float, px: Float, py: Float,
+        cl: Float, ct: Float, cr: Float, cb: Float, mask: Int,
+    ) {
         var lifted = false
         for (i in 0 until n) {
             if (g.getChildAt(i).z != 0f) {
@@ -579,13 +616,14 @@ internal class ViewCapture(context: Context?, onGlyphReady: () -> Unit = {}) {
             (clippedByParent && overflows) || clipsOutline
         if (!needsNode) {
             // Layout only: the children are placed in the parent's element.
+            tabIndicator(v, rec, out, rl, rt)
             visitChildren(v, out, ox, oy, left, top, cl, ct, cr, cb, m)
             return
         }
         rec.group = true
         val kids = lists.acquire()
         try {
-            if (bg) backgroundNode(v, rec, kids, w, h)
+            if (bg) backgroundNode(v, rec, kids, w, h, m)
             // The children's space: this element's, or its local space when it is transformed.
             val lx = if (plain) left else 0f
             val ly = if (plain) top else 0f
@@ -607,30 +645,9 @@ internal class ViewCapture(context: Context?, onGlyphReady: () -> Unit = {}) {
             if (compose) {
                 composeCapture?.capture(v, rec, kids, m)
             }
+            tabIndicator(v, rec, kids, 0f, 0f)
             if (rec.wrap) {
-                val wl = if (clipsPadding) pl else 0
-                val wt = if (clipsPadding) pt else 0
-                val wr = if (clipsPadding) pr else 0
-                val wb = if (clipsPadding) pb else 0
-                if (!ccl.isNaN()) {
-                    ccl = max(ccl, lx + wl)
-                    cct = max(cct, ly + wt)
-                    ccr = min(ccr, lx + w - wr)
-                    ccb = min(ccb, ly + h - wb)
-                }
-                val content = lists.acquire()
-                val cx = lx - sx
-                val cy = ly - sy
-                visitChildren(v, content, cx, cy, cx, cy, ccl, cct, ccr, ccb, m)
-                sb.setLength(0)
-                sb.append("left:").appendPx((-wl - sx) * inv).append(";top:").appendPx((-wt - sy) * inv).append(';')
-                val c = element(rec, 2, null, content)
-                lists.release()
-                sb.setLength(0)
-                sb.append("left:").appendPx(wl * inv).append(";top:").appendPx(wt * inv)
-                    .append(";width:").appendPx((w - wl - wr) * inv).append(";height:").appendPx((h - wt - wb) * inv)
-                    .append(";overflow:hidden;")
-                kids.add(element(rec, 1, null, one(c)))
+                kids.add(scroll(v, rec, lx, ly, w, h, ccl, cct, ccr, ccb, m))
             } else {
                 visitChildren(v, kids, lx, ly, lx, ly, ccl, cct, ccr, ccb, m)
             }
@@ -645,9 +662,108 @@ internal class ViewCapture(context: Context?, onGlyphReady: () -> Unit = {}) {
         }
     }
 
+    private var tabIndicatorGetter: java.lang.reflect.Method? = null
+    private var tabIndicatorChecked: Class<*>? = null
+
+    /**
+     * The selected tab's indicator of a Material TabLayout, which the strip
+     * of tabs ([strip], the TabLayout's child) draws itself: where it was
+     * last drawn, in its color, at ([x], [y]) dp of [out]'s element. Read
+     * through `getTabSelectedIndicator()`, which a minified app may have
+     * renamed (then nothing).
+     */
+    private fun tabIndicator(strip: ViewGroup, rec: Rec, out: ArrayList<VNode>, x: Float, y: Float) {
+        val tabs = strip.parent as? ViewGroup ?: return
+        if (!tabs.javaClass.name.endsWith("TabLayout") && tabs.javaClass.superclass?.name?.endsWith("TabLayout") != true) return
+        if (tabIndicatorChecked !== tabs.javaClass) {
+            tabIndicatorChecked = tabs.javaClass
+            tabIndicatorGetter = try {
+                tabs.javaClass.getMethod("getTabSelectedIndicator")
+            } catch (_: Throwable) {
+                null
+            }
+        }
+        val d = try {
+            tabIndicatorGetter?.invoke(tabs) as? Drawable
+        } catch (_: Throwable) {
+            null
+        } ?: return
+        val b = d.bounds
+        if (b.isEmpty) return
+        val info = shapes.shape(d)
+        if (!info.visible) return
+        sb.setLength(0)
+        sb.append("left:").appendPx(x + b.left * inv).append(";top:").appendPx(y + b.top * inv)
+            .append(";width:").appendPx(b.width() * inv).append(";height:").appendPx(b.height() * inv).append(';')
+        shapeCss(info, info.fill, b.width().toFloat(), b.height().toFloat())
+        out.add(element(rec, TAB_INDICATOR_ROLE, null, EMPTY))
+    }
+
+    /**
+     * The children of a scrolled or padding-clipped group: a clip box (role
+     * 1, inset by the padding when the group clips to it) holding the content
+     * shifted by the scroll (role 2), so scrolling changes one style.
+     * ([lx], [ly]) is the group's origin in the children's space, and
+     * ([cl], [ct], [cr], [cb]) what clips above leave visible there.
+     */
+    private fun scroll(
+        v: ViewGroup, rec: Rec, lx: Float, ly: Float, w: Int, h: Int,
+        cl: Float, ct: Float, cr: Float, cb: Float, m: Int,
+    ): VNode {
+        val sx = v.scrollX
+        val sy = v.scrollY
+        val clipsPadding = v.clipToPadding
+        val wl = if (clipsPadding) v.paddingLeft else 0
+        val wt = if (clipsPadding) v.paddingTop else 0
+        val wr = if (clipsPadding) v.paddingRight else 0
+        val wb = if (clipsPadding) v.paddingBottom else 0
+        var ccl = cl
+        var cct = ct
+        var ccr = cr
+        var ccb = cb
+        if (!ccl.isNaN()) {
+            ccl = max(ccl, lx + wl)
+            cct = max(cct, ly + wt)
+            ccr = min(ccr, lx + w - wr)
+            ccb = min(ccb, ly + h - wb)
+        }
+        val content = lists.acquire()
+        val c: VNode
+        try {
+            val cx = lx - sx
+            val cy = ly - sy
+            visitChildren(v, content, cx, cy, cx, cy, ccl, cct, ccr, ccb, m)
+            sb.setLength(0)
+            sb.append("left:").appendPx((-wl - sx) * inv).append(";top:").appendPx((-wt - sy) * inv).append(';')
+            c = element(rec, 2, null, content)
+        } finally {
+            lists.release()
+        }
+        sb.setLength(0)
+        sb.append("left:").appendPx(wl * inv).append(";top:").appendPx(wt * inv)
+            .append(";width:").appendPx((w - wl - wr) * inv).append(";height:").appendPx((h - wt - wb) * inv)
+            .append(";overflow:hidden;")
+        return element(rec, 1, null, one(c))
+    }
+
     // ---- leaves -----------------------------------------------------------------
 
-    private fun textView(
+    /**
+     * An editable text field: drawn like [text], with its typed text masked
+     * (`maskAllInputs`), passwords as dots, and a Material field's label
+     * floated over its top edge when it is focused or filled.
+     */
+    private fun field(
+        v: EditText, rec: Rec, out: ArrayList<VNode>,
+        rl: Float, rt: Float, w: Int, h: Int, plain: Boolean, alpha: Float, m: Int,
+    ) = text(v, rec, out, rl, rt, w, h, plain, alpha, m)
+
+    /**
+     * A label or paragraph (any TextView, buttons and toggles included): its
+     * background, toggle and compound icons, then its text where its layout
+     * draws it.
+     */
+    private fun text(
         v: TextView, rec: Rec, out: ArrayList<VNode>,
         rl: Float, rt: Float, w: Int, h: Int, plain: Boolean, alpha: Float, m: Int,
     ) {
@@ -663,8 +779,8 @@ internal class ViewCapture(context: Context?, onGlyphReady: () -> Unit = {}) {
         rec.group = true
         val kids = lists.acquire()
         try {
-            if (bg) backgroundNode(v, rec, kids, w, h)
-            if (toggle != TOGGLE_NONE) toggleNode(v as CompoundButton, rec, kids, toggle, w, h)
+            if (bg) backgroundNode(v, rec, kids, w, h, m)
+            if (toggle != TOGGLE_NONE) toggle(v as CompoundButton, rec, kids, toggle, w, h)
             if (icons) compoundIcons(v, rec, kids, w, h, m)
             addText(v, rec, kids, 0f, 0f, w, h, m)
             sb.setLength(0)
@@ -749,12 +865,12 @@ internal class ViewCapture(context: Context?, onGlyphReady: () -> Unit = {}) {
             if (password) {
                 tb.setLength(0)
                 for (i in 0 until shown.length) tb.append('•')
-                kids.add(text(rec, 2, tb))
+                kids.add(textNode(rec, 2, tb))
             } else if (masked) {
                 tb.setLength(0)
-                kids.add(text(rec, 2, maskText(shown, tb)))
-            } else if (shown !is Spanned || !spans(rec, shown, kids)) {
-                kids.add(text(rec, 2, shown))
+                kids.add(textNode(rec, 2, maskText(shown, tb)))
+            } else if (shown !is Spanned || !spans(rec, shown, kids, v.linkTextColors?.getColorForState(v.drawableState, 0) ?: l.color)) {
+                kids.add(textNode(rec, 2, shown))
             }
             sb.setLength(0)
             sb.append("left:").appendPx(bl + tl * inv).append(";top:").appendPx(bt + tt * inv)
@@ -822,10 +938,13 @@ internal class ViewCapture(context: Context?, onGlyphReady: () -> Unit = {}) {
         } else {
             label
         }
-        val t = text(rec, LABEL_ROLE + 1, shown)
+        val t = textNode(rec, LABEL_ROLE + 1, shown)
         val size = 12f
+        // On the outline of an outlined box; inside a filled box (its background paints), just above the text.
+        val filled = rec.bgKind == Rec.BG_SHAPE && (rec.bgFill ushr 24) >= 0x80
+        val top = if (filled) bt + v.totalPaddingTop * inv - size * 1.2f else bt - size * 0.6f
         sb.setLength(0)
-        sb.append("left:").appendPx(bl + v.totalPaddingLeft * inv).append(";top:").appendPx(bt - size * 0.6f)
+        sb.append("left:").appendPx(bl + v.totalPaddingLeft * inv).append(";top:").appendPx(top)
             .append(";font-size:").appendPx(size).append(";line-height:").appendPx(size * 1.2f).append(";color:")
             .appendColor(if (v.isFocused) accent(v) else v.currentHintTextColor).append(';')
         out.add(element(rec, LABEL_ROLE, "t n", one(t)))
@@ -833,16 +952,18 @@ internal class ViewCapture(context: Context?, onGlyphReady: () -> Unit = {}) {
 
     /**
      * Rich text as one span per run of the same style, when its spans change
-     * how it looks. False when it is plain.
+     * how it looks; a link (a clickable span) in [linkColor], underlined, as
+     * TextView draws it. False when it is plain.
      */
-    private fun spans(rec: Rec, text: Spanned, out: ArrayList<VNode>): Boolean {
+    private fun spans(rec: Rec, text: Spanned, out: ArrayList<VNode>, linkColor: Int): Boolean {
         val len = text.length
         val spans = text.getSpans(0, len, CharacterStyle::class.java)
         if (spans.isEmpty()) return false
         var styled = false
         for (s in spans) {
             if (s is ForegroundColorSpan || s is StyleSpan || s is AbsoluteSizeSpan || s is RelativeSizeSpan ||
-                s is UnderlineSpan || s is StrikethroughSpan || s is BackgroundColorSpan || s is TypefaceSpan
+                s is UnderlineSpan || s is StrikethroughSpan || s is BackgroundColorSpan || s is TypefaceSpan ||
+                s is ClickableSpan
             ) {
                 if (text.getSpanStart(s) < text.getSpanEnd(s)) {
                     styled = true
@@ -879,11 +1000,15 @@ internal class ViewCapture(context: Context?, onGlyphReady: () -> Unit = {}) {
                     is StrikethroughSpan -> strike = true
                     is BackgroundColorSpan -> background = s.backgroundColor
                     is TypefaceSpan -> if (s.family == "monospace") mono = true
+                    is ClickableSpan -> {
+                        if (linkColor != 0) color = linkColor
+                        underline = true
+                    }
                 }
             }
             tb.setLength(0)
             tb.append(text, i, next)
-            val t = text(rec, SPAN_ROLE + 2 * run + 1, tb)
+            val t = textNode(rec, SPAN_ROLE + 2 * run + 1, tb)
             sb.setLength(0)
             sb.appendFont(color, weight, italic, underline, strike, base.letterSpacing, mono)
             if (size != base.fontSize) sb.append("font-size:").appendPx(size).append(';')
@@ -951,7 +1076,8 @@ internal class ViewCapture(context: Context?, onGlyphReady: () -> Unit = {}) {
         return leaf !is ColorDrawable && !pictureLike(leaf)
     }
 
-    private fun imageView(
+    /** An ImageView: its background and what its drawable shows. */
+    private fun image(
         v: ImageView, rec: Rec, out: ArrayList<VNode>,
         rl: Float, rt: Float, w: Int, h: Int, plain: Boolean, alpha: Float, m: Int,
     ) {
@@ -959,13 +1085,13 @@ internal class ViewCapture(context: Context?, onGlyphReady: () -> Unit = {}) {
         val d = v.drawable
         if (!bg && !rec.group && plain && alpha >= 0.999f && !v.clipToOutline) {
             // Only the picture: its element goes straight into the parent's.
-            if (d != null) image(v, rec, out, d, rl, rt, w, h, m)
+            if (d != null) picture(v, rec, out, d, rl, rt, w, h, m)
             return
         }
         val kids = lists.acquire()
         try {
-            if (bg) backgroundNode(v, rec, kids, w, h)
-            if (d != null) image(v, rec, kids, d, 0f, 0f, w, h, m)
+            if (bg) backgroundNode(v, rec, kids, w, h, m)
+            if (d != null) picture(v, rec, kids, d, 0f, 0f, w, h, m)
             if (kids.isEmpty() && rec.bgKind == Rec.BG_NONE) return
             rec.group = true
             sb.setLength(0)
@@ -979,7 +1105,7 @@ internal class ViewCapture(context: Context?, onGlyphReady: () -> Unit = {}) {
     }
 
     /** What an ImageView's drawable shows: a color, a shape, an icon or an image placeholder. */
-    private fun image(v: ImageView, rec: Rec, out: ArrayList<VNode>, d: Drawable, bl: Float, bt: Float, w: Int, h: Int, m: Int) {
+    private fun picture(v: ImageView, rec: Rec, out: ArrayList<VNode>, d: Drawable, bl: Float, bt: Float, w: Int, h: Int, m: Int) {
         val b = d.bounds
         val iw = d.intrinsicWidth
         val ih = d.intrinsicHeight
@@ -995,6 +1121,11 @@ internal class ViewCapture(context: Context?, onGlyphReady: () -> Unit = {}) {
             v.imageMatrix.mapRect(rectF)
         }
         rectF.offset(pl.toFloat(), pt.toFloat())
+        // Where the whole drawable lands before the view's clip: a recorded picture is sized and offset by it.
+        val dl = rectF.left
+        val dt = rectF.top
+        val dw = rectF.width()
+        val dh = rectF.height()
         val clipL = if (v.cropToPadding) pl.toFloat() else 0f
         val clipT = if (v.cropToPadding) pt.toFloat() else 0f
         val clipR = if (v.cropToPadding) (pl + cw).toFloat() else w.toFloat()
@@ -1031,18 +1162,36 @@ internal class ViewCapture(context: Context?, onGlyphReady: () -> Unit = {}) {
                 }
                 out.add(element(rec, 1, glyph?.iconClass ?: "ic", EMPTY))
             }
-            else -> out.add(element(rec, 1, "im", EMPTY))
+            else -> {
+                val bitmap = if (m == MASK_NONE && images.allowed) WireframeImages.bitmapOf(d) else null
+                val picture = bitmap?.let { images.lookup(it, dw * inv, dh * inv) }
+                if (picture != null) {
+                    sb.append("background-size:").appendPx(dw * inv).append(' ').appendPx(dh * inv)
+                        .append(";background-position:").appendPx((dl - x) * inv).append(' ').appendPx((dt - y) * inv).append(';')
+                }
+                out.add(element(rec, 1, picture?.imageClass ?: "im", EMPTY))
+            }
         }
     }
 
-    private fun plainView(v: View, rec: Rec, out: ArrayList<VNode>, rl: Float, rt: Float, w: Int, h: Int, plain: Boolean, alpha: Float) {
+    /** A view of no kind the wireframe knows that draws itself (`onDraw`): its background, marked `cp`. */
+    private fun customDrawing(v: View, rec: Rec, out: ArrayList<VNode>, rl: Float, rt: Float, w: Int, h: Int, plain: Boolean, alpha: Float, m: Int) =
+        painted(v, rec, out, rl, rt, w, h, plain, alpha, m, custom = true)
+
+    /** Any other view: its background, when it has one. */
+    private fun box(v: View, rec: Rec, out: ArrayList<VNode>, rl: Float, rt: Float, w: Int, h: Int, plain: Boolean, alpha: Float, m: Int) =
+        painted(v, rec, out, rl, rt, w, h, plain, alpha, m, custom = false)
+
+    private fun painted(
+        v: View, rec: Rec, out: ArrayList<VNode>, rl: Float, rt: Float, w: Int, h: Int,
+        plain: Boolean, alpha: Float, m: Int, custom: Boolean,
+    ) {
         val bg = background(v, rec, w, h)
-        val custom = !v.willNotDraw() && drawsItself(v.javaClass)
         if (!bg && !custom) return
         rec.group = true
         val kids = lists.acquire()
         try {
-            if (bg) backgroundNode(v, rec, kids, w, h)
+            if (bg) backgroundNode(v, rec, kids, w, h, m)
             sb.setLength(0)
             geometry(v, rl, rt, w, h, plain, alpha)
             if (rec.bgKind != Rec.BG_NONE && !bgInset(rec, w, h)) backgroundCss(v, rec, w, h)
@@ -1054,8 +1203,8 @@ internal class ViewCapture(context: Context?, onGlyphReady: () -> Unit = {}) {
     }
 
     /** A view whose pixels the wireframe cannot read (a web view, a map, a video): a labeled placeholder. */
-    private fun native(v: View, rec: Rec, out: ArrayList<VNode>, rl: Float, rt: Float, w: Int, h: Int, plain: Boolean, alpha: Float, label: String) {
-        val t = text(rec, 1, label)
+    private fun nativePlaceholder(v: View, rec: Rec, out: ArrayList<VNode>, rl: Float, rt: Float, w: Int, h: Int, plain: Boolean, alpha: Float, label: String) {
+        val t = textNode(rec, 1, label)
         sb.setLength(0)
         geometry(v, rl, rt, w, h, plain, alpha)
         out.add(element(rec, 0, "pv", one(t)))
@@ -1096,11 +1245,12 @@ internal class ViewCapture(context: Context?, onGlyphReady: () -> Unit = {}) {
         return if (v is CheckBox || button != null) TOGGLE_CHECKBOX else TOGGLE_NONE
     }
 
-    private fun toggleNode(v: CompoundButton, rec: Rec, out: ArrayList<VNode>, kind: Int, w: Int, h: Int) {
+    /** A checkbox, radio button or switch, drawn from its state where the button draws it. */
+    private fun toggle(v: CompoundButton, rec: Rec, out: ArrayList<VNode>, kind: Int, w: Int, h: Int) {
         val checked = v.isChecked
         val accent = accent(v)
         if (kind == TOGGLE_SWITCH) {
-            switchNode(v, rec, out, checked, accent, w, h)
+            switchToggle(v, rec, out, checked, accent, w, h)
             return
         }
         val button = if (Build.VERSION.SDK_INT >= 23) v.buttonDrawable else null
@@ -1152,12 +1302,18 @@ internal class ViewCapture(context: Context?, onGlyphReady: () -> Unit = {}) {
         }
     }
 
-    private fun switchNode(v: CompoundButton, rec: Rec, out: ArrayList<VNode>, on: Boolean, accent: Int, w: Int, h: Int) {
+    /**
+     * A switch: its track and thumb where they are drawn, in the colors
+     * their drawables paint (a Material switch tints them itself, not with
+     * the theme's accent); the accent and outline colors when they cannot
+     * be read.
+     */
+    private fun switchToggle(v: CompoundButton, rec: Rec, out: ArrayList<VNode>, on: Boolean, accent: Int, w: Int, h: Int) {
         var trackW: Float
         var trackH: Float
         val cx: Float
         val cy: Float
-        val track = (v as? Switch)?.trackDrawable
+        val track = switchPart(v, thumb = false)
         if (track != null && !track.bounds.isEmpty) {
             trackW = track.bounds.width() * inv
             trackH = track.bounds.height() * inv
@@ -1177,12 +1333,24 @@ internal class ViewCapture(context: Context?, onGlyphReady: () -> Unit = {}) {
         }
         var active = accent
         var inactive = if (compact) 0xFF9E9E9E.toInt() else DEFAULT_OUTLINE
-        if (!v.isEnabled) {
+        var fill = 0
+        var thumbColor = 0
+        if (track != null && !track.bounds.isEmpty) {
+            val info = shapes.shape(track)
+            if ((info.fill ushr 24) >= 24) {
+                if (on && !compact) active = info.fill else fill = info.fill
+            }
+            if (!on && info.strokePx > 0f && (info.stroke ushr 24) >= 48) inactive = info.stroke
+            val thumbDrawable = switchPart(v, thumb = true)
+            if (thumbDrawable != null && !thumbDrawable.bounds.isEmpty) thumbColor = shapes.dominant(thumbDrawable)
+        }
+        if (!v.isEnabled && thumbColor == 0) {
             active = withAlpha(active, 0.38f)
             inactive = withAlpha(inactive, 0.38f)
         }
         val knob = if (compact) 20f else if (on) 24f else 16f
         val thumb = when {
+            thumbColor != 0 -> thumbColor
             compact -> if (on) active else 0xFFFAFAFA.toInt()
             on -> 0xFFFFFFFF.toInt()
             else -> inactive
@@ -1191,87 +1359,177 @@ internal class ViewCapture(context: Context?, onGlyphReady: () -> Unit = {}) {
         WidgetCss.switchThumb(sb, trackW, trackH, knob, on, thumb, compact)
         val t = element(rec, TOGGLE_ROLE + 2, null, EMPTY)
         sb.setLength(0)
-        WidgetCss.switchTrack(sb, cx, cy, trackW, trackH, on, active, inactive, compact)
+        WidgetCss.switchTrack(sb, cx, cy, trackW, trackH, on, active, inactive, compact, fill)
         if (compact) sb.append("overflow:visible;")
         out.add(element(rec, TOGGLE_ROLE + 1, null, one(t)))
     }
 
-    private fun progress(v: ProgressBar, rec: Rec, out: ArrayList<VNode>, rl: Float, rt: Float, w: Int, h: Int, plain: Boolean, alpha: Float) {
-        val accent = accent(v)
-        val pl = v.paddingLeft
-        val pr = v.paddingRight
-        val cw = (w - pl - v.paddingRight).coerceAtLeast(0) * inv
-        val ch = (h - v.paddingTop - v.paddingBottom).coerceAtLeast(0) * inv
-        val min = if (Build.VERSION.SDK_INT >= 26) v.min else 0
-        val fraction = if (v.max > min) ((v.progress - min).toFloat() / (v.max - min)).coerceIn(0f, 1f) else 0f
-        val color = v.progressTintList?.defaultColor ?: v.indeterminateTintList?.defaultColor ?: accent
+    private val switchParts = HashMap<Class<*>, Array<java.lang.reflect.Method?>>()
+
+    /**
+     * A switch's track or thumb drawable: the framework Switch's, or
+     * SwitchCompat's (and MaterialSwitch's) through their public getters,
+     * which a minified app may have renamed (then null).
+     */
+    private fun switchPart(v: CompoundButton, thumb: Boolean): Drawable? {
+        if (v is Switch) return if (thumb) v.thumbDrawable else v.trackDrawable
+        val methods = switchParts.getOrPut(v.javaClass) {
+            fun find(name: String) = try {
+                v.javaClass.getMethod(name).takeIf { Drawable::class.java.isAssignableFrom(it.returnType) }
+            } catch (_: Throwable) {
+                null
+            }
+            arrayOf(find("getTrackDrawable"), find("getThumbDrawable"))
+        }
+        return try {
+            methods[if (thumb) 1 else 0]?.invoke(v) as? Drawable
+        } catch (_: Throwable) {
+            null
+        }
+    }
+
+    /** A rating bar's stars, as text in its color. */
+    private fun ratingBar(v: RatingBar, rec: Rec, out: ArrayList<VNode>, rl: Float, rt: Float, w: Int, h: Int, plain: Boolean, alpha: Float, m: Int) {
         val kids = lists.acquire()
         try {
-            val wd = w * inv
+            val pl = v.paddingLeft
+            val cw = (w - pl - v.paddingRight).coerceAtLeast(0) * inv
             val hd = h * inv
-            when {
-                v is RatingBar -> {
-                    val stars = v.numStars.coerceIn(1, 10)
-                    val full = Math.round(v.rating).coerceIn(0, stars)
-                    tb.setLength(0)
-                    for (i in 0 until stars) tb.append(if (i < full) '★' else '☆')
-                    val t = text(rec, PART_ROLE + 1, tb)
-                    sb.setLength(0)
-                    sb.append("left:").appendPx(pl * inv).append(";top:0;width:").appendPx(cw).append(";height:").appendPx(hd)
-                        .append(";font-size:").appendPx(min(hd * 0.8f, cw / stars * 1.1f)).append(";line-height:").appendPx(hd)
-                        .append(";color:").appendColor(color).append(';')
-                    kids.add(element(rec, PART_ROLE, "t n", one(t)))
-                }
-                v is AbsSeekBar -> {
-                    val inactive = v.progressBackgroundTintList?.defaultColor ?: withAlpha(color, 0.3f)
-                    val thumb = v.thumbTintList?.defaultColor ?: color
-                    val cy = hd / 2
-                    sb.setLength(0)
-                    WidgetCss.sliderTrack(sb, pl * inv, cw, cy, inactive)
-                    kids.add(element(rec, PART_ROLE, null, EMPTY))
-                    sb.setLength(0)
-                    WidgetCss.sliderTrack(sb, pl * inv, cw * fraction, cy, color)
-                    kids.add(element(rec, PART_ROLE + 1, null, EMPTY))
-                    sb.setLength(0)
-                    WidgetCss.sliderThumb(sb, pl * inv + cw * fraction, cy, thumb)
-                    kids.add(element(rec, PART_ROLE + 2, null, EMPTY))
-                }
-                w > h * 2.5f -> {
-                    val barH = min(ch, 4f).coerceAtLeast(1f)
-                    val value = if (v.isIndeterminate) null else fraction
-                    val track = v.progressBackgroundTintList?.defaultColor ?: withAlpha(color, 0.24f)
-                    sb.setLength(0)
-                    WidgetCss.linearBar(sb, value, color)
-                    val bar = element(rec, PART_ROLE + 1, null, EMPTY)
-                    sb.setLength(0)
-                    sb.append("left:").appendPx(pl * inv).append(";top:").appendPx((hd - barH) / 2)
-                        .append(";width:").appendPx(cw).append(";height:").appendPx(barH).append(';')
-                    WidgetCss.linearTrack(sb, barH, track)
-                    kids.add(element(rec, PART_ROLE, null, one(bar)))
-                }
-                else -> {
-                    val value = if (v.isIndeterminate) null else fraction
-                    val track = v.progressBackgroundTintList?.defaultColor
-                    sb.setLength(0)
-                    WidgetCss.circular(sb, wd, hd, value, color, track, stroke = max(2f, min(wd, hd) / 12f))
-                    kids.add(element(rec, PART_ROLE, null, EMPTY))
-                }
-            }
-            val bg = background(v, rec, w, h)
-            if (bg && bgInset(rec, w, h)) {
-                // Under the indicator.
-                val at = kids.size
-                backgroundNode(v, rec, kids, w, h)
-                if (kids.size > at) kids.add(0, kids.removeAt(kids.size - 1))
-            }
-            rec.group = true
+            val stars = v.numStars.coerceIn(1, 10)
+            val full = Math.round(v.rating).coerceIn(0, stars)
+            tb.setLength(0)
+            for (i in 0 until stars) tb.append(if (i < full) '★' else '☆')
+            val t = textNode(rec, PART_ROLE + 1, tb)
             sb.setLength(0)
-            geometry(v, rl, rt, w, h, plain, alpha)
-            if (bg && !bgInset(rec, w, h)) backgroundCss(v, rec, w, h)
-            out.add(element(rec, 0, null, kids))
+            sb.append("left:").appendPx(pl * inv).append(";top:0;width:").appendPx(cw).append(";height:").appendPx(hd)
+                .append(";font-size:").appendPx(min(hd * 0.8f, cw / stars * 1.1f)).append(";line-height:").appendPx(hd)
+                .append(";color:").appendColor(indicatorColor(v)).append(';')
+            kids.add(element(rec, PART_ROLE, "t n", one(t)))
+            indicatorBox(v, rec, out, kids, rl, rt, w, h, plain, alpha, m)
         } finally {
             lists.release()
         }
+    }
+
+    /** A seek bar: its track, the part up to the value, and the thumb. */
+    private fun slider(v: AbsSeekBar, rec: Rec, out: ArrayList<VNode>, rl: Float, rt: Float, w: Int, h: Int, plain: Boolean, alpha: Float, m: Int) {
+        val kids = lists.acquire()
+        try {
+            val pl = v.paddingLeft
+            val cw = (w - pl - v.paddingRight).coerceAtLeast(0) * inv
+            var color = indicatorColor(v)
+            val fraction = fraction(v)
+            var inactive = v.progressBackgroundTintList?.defaultColor ?: withAlpha(color, 0.3f)
+            var thumb = v.thumbTintList?.defaultColor ?: color
+            val d = v.progressDrawable
+            if (d != null && !d.bounds.isEmpty) {
+                // What the track paints, before and after the value.
+                if (fraction > 0.04f) shapes.pixelAt(d, fraction / 2, 0.5f).takeIf { (it ushr 24) >= 128 }?.let { color = it }
+                if (fraction < 0.96f) shapes.pixelAt(d, (1 + fraction) / 2, 0.5f).takeIf { (it ushr 24) >= 24 }?.let { inactive = it }
+                v.thumb?.takeIf { !it.bounds.isEmpty }?.let { t -> shapes.dominant(t).takeIf { it != 0 }?.let { thumb = it } }
+            }
+            val cy = h * inv / 2
+            // Right to left, a seek bar fills from the right (mirrorForRtl, on in the platform's styles).
+            val rtl = v.layoutDirection == View.LAYOUT_DIRECTION_RTL
+            val at = if (rtl) pl * inv + cw * (1 - fraction) else pl * inv + cw * fraction
+            sb.setLength(0)
+            WidgetCss.sliderTrack(sb, pl * inv, cw, cy, inactive)
+            kids.add(element(rec, PART_ROLE, null, EMPTY))
+            sb.setLength(0)
+            WidgetCss.sliderTrack(sb, if (rtl) at else pl * inv, cw * fraction, cy, color)
+            kids.add(element(rec, PART_ROLE + 1, null, EMPTY))
+            sb.setLength(0)
+            WidgetCss.sliderThumb(sb, at, cy, thumb)
+            kids.add(element(rec, PART_ROLE + 2, null, EMPTY))
+            indicatorBox(v, rec, out, kids, rl, rt, w, h, plain, alpha, m)
+        } finally {
+            lists.release()
+        }
+    }
+
+    /** A progress indicator, spinners included: a bar when it is wide, a ring otherwise. */
+    private fun progress(v: ProgressBar, rec: Rec, out: ArrayList<VNode>, rl: Float, rt: Float, w: Int, h: Int, plain: Boolean, alpha: Float, m: Int) {
+        val kids = lists.acquire()
+        try {
+            val pl = v.paddingLeft
+            val cw = (w - pl - v.paddingRight).coerceAtLeast(0) * inv
+            val ch = (h - v.paddingTop - v.paddingBottom).coerceAtLeast(0) * inv
+            val wd = w * inv
+            val hd = h * inv
+            var color = indicatorColor(v)
+            val value = if (v.isIndeterminate) null else fraction(v)
+            // The colors its drawable paints (a Material indicator's own), where it is not animating.
+            val d = if (value == null) null else v.progressDrawable?.takeIf { !it.bounds.isEmpty }
+            var sampledTrack = 0
+            if (d != null && value != null) {
+                if (w > h * 2.5f) {
+                    if (value > 0.04f) shapes.pixelAt(d, value / 2, 0.5f).takeIf { (it ushr 24) >= 128 }?.let { color = it }
+                    if (value < 0.96f) sampledTrack = shapes.pixelAt(d, (1 + value) / 2, 0.5f).takeIf { (it ushr 24) >= 24 } ?: 0
+                } else if (value > 0.04f) {
+                    // Halfway along the arc, which starts at the top and runs clockwise; the ring may be drawn
+                    // smaller than the view (a Material indicator's own size), so outside in.
+                    val angle = Math.toRadians(-90.0 + 180.0 * value)
+                    for (r in RING_RADII) {
+                        val p = shapes.pixelAt(d, 0.5f + r * Math.cos(angle).toFloat(), 0.5f + r * Math.sin(angle).toFloat())
+                        if ((p ushr 24) >= 128) {
+                            color = p
+                            break
+                        }
+                    }
+                }
+            }
+            if (w > h * 2.5f) {
+                val barH = min(ch, 4f).coerceAtLeast(1f)
+                val track = sampledTrack.takeIf { it != 0 } ?: v.progressBackgroundTintList?.defaultColor ?: withAlpha(color, 0.24f)
+                sb.setLength(0)
+                WidgetCss.linearBar(sb, value, color, rtl = v.layoutDirection == View.LAYOUT_DIRECTION_RTL)
+                val bar = element(rec, PART_ROLE + 1, null, EMPTY)
+                sb.setLength(0)
+                sb.append("left:").appendPx(pl * inv).append(";top:").appendPx((hd - barH) / 2)
+                    .append(";width:").appendPx(cw).append(";height:").appendPx(barH).append(';')
+                WidgetCss.linearTrack(sb, barH, track)
+                kids.add(element(rec, PART_ROLE, null, one(bar)))
+            } else {
+                val track = v.progressBackgroundTintList?.defaultColor
+                sb.setLength(0)
+                WidgetCss.circular(sb, wd, hd, value, color, track, stroke = max(2f, min(wd, hd) / 12f))
+                kids.add(element(rec, PART_ROLE, null, EMPTY))
+            }
+            indicatorBox(v, rec, out, kids, rl, rt, w, h, plain, alpha, m)
+        } finally {
+            lists.release()
+        }
+    }
+
+    private fun indicatorColor(v: ProgressBar): Int =
+        v.progressTintList?.defaultColor ?: v.indeterminateTintList?.defaultColor ?: accent(v)
+
+    private fun fraction(v: ProgressBar): Float {
+        val min = if (Build.VERSION.SDK_INT >= 26) v.min else 0
+        return if (v.max > min) ((v.progress - min).toFloat() / (v.max - min)).coerceIn(0f, 1f) else 0f
+    }
+
+    /** The element of a rating bar, slider or progress indicator around its [parts], with its background. */
+    private fun indicatorBox(
+        v: ProgressBar, rec: Rec, out: ArrayList<VNode>, parts: ArrayList<VNode>,
+        rl: Float, rt: Float, w: Int, h: Int, plain: Boolean, alpha: Float, m: Int,
+    ) {
+        val bg = background(v, rec, w, h)
+        if (bg && bgInset(rec, w, h)) {
+            // Under the indicator.
+            val at = parts.size
+            backgroundNode(v, rec, parts, w, h, m)
+            if (parts.size > at) {
+                val under = ArrayList(parts.subList(at, parts.size))
+                parts.subList(at, parts.size).clear()
+                parts.addAll(0, under)
+            }
+        }
+        rec.group = true
+        sb.setLength(0)
+        geometry(v, rl, rt, w, h, plain, alpha)
+        if (bg && !bgInset(rec, w, h)) backgroundCss(v, rec, w, h)
+        out.add(element(rec, 0, null, parts))
     }
 
     // ---- backgrounds ------------------------------------------------------------
@@ -1280,6 +1538,8 @@ internal class ViewCapture(context: Context?, onGlyphReady: () -> Unit = {}) {
     private fun background(v: View, rec: Rec, w: Int, h: Int): Boolean {
         rec.bgKind = Rec.BG_NONE
         rec.bgShape = null
+        rec.bgBitmap = null
+        rec.bgPictured = false
         val d = v.background ?: return false
         val leaf = unwrap(d) ?: return false
         if (leaf is RippleDrawable && contentLayers(leaf) == 0) return false
@@ -1301,7 +1561,9 @@ internal class ViewCapture(context: Context?, onGlyphReady: () -> Unit = {}) {
             rec.bgFill = color
             return true
         }
+        if (leaf is LayerDrawable && leaf !is RippleDrawable && tint == null && edges(leaf, rec)) return true
         val info = shapes.shape(leaf)
+        if (info.image && leaf is BitmapDrawable) rec.bgBitmap = leaf.bitmap
         rec.bgFill = info.fill
         if (tint != null && leaf is GradientDrawable && info.gradientColors == null) {
             rec.bgFill = withAlpha(tint.getColorForState(v.drawableState, info.fill), (info.fill ushr 24) / 255f)
@@ -1317,26 +1579,110 @@ internal class ViewCapture(context: Context?, onGlyphReady: () -> Unit = {}) {
         return true
     }
 
-    /** A text field whose background draws only an underline. */
+    /**
+     * A layer list of two plain colors, as XML draws a one-side border or a
+     * divider: the top one inset over the bottom one (the top color is the
+     * fill, the bottom one borders as wide as the insets), or a thin line of
+     * the top color along one edge of the bottom one.
+     */
+    private fun edges(d: LayerDrawable, rec: Rec): Boolean {
+        if (d.numberOfLayers != 2) return false
+        val under = d.getDrawable(0) ?: return false
+        val over = d.getDrawable(1) ?: return false
+        val edge = solidColor(under) ?: return false
+        val fill = solidColor(over) ?: return false
+        val ub = under.bounds
+        val ob = over.bounds
+        if (ub.isEmpty || ob.isEmpty) return false
+        val l = ob.left - ub.left
+        val t = ob.top - ub.top
+        val r = ub.right - ob.right
+        val b = ub.bottom - ob.bottom
+        if (l < 0 || t < 0 || r < 0 || b < 0 || (l or t or r or b) == 0) return false
+        rec.bgKind = Rec.BG_EDGES
+        rec.edgeL = 0
+        rec.edgeT = 0
+        rec.edgeR = 0
+        rec.edgeB = 0
+        val lineH = ob.height()
+        val lineW = ob.width()
+        when {
+            // A line along one edge over the fill (a tab bar's divider): the fill, and the line as that edge.
+            l == 0 && r == 0 && b == 0 && lineH * 4 <= ub.height() -> { rec.bgFill = edge; rec.bgEdge = fill; rec.edgeB = lineH }
+            l == 0 && r == 0 && t == 0 && lineH * 4 <= ub.height() -> { rec.bgFill = edge; rec.bgEdge = fill; rec.edgeT = lineH }
+            t == 0 && b == 0 && r == 0 && lineW * 4 <= ub.width() -> { rec.bgFill = edge; rec.bgEdge = fill; rec.edgeR = lineW }
+            t == 0 && b == 0 && l == 0 && lineW * 4 <= ub.width() -> { rec.bgFill = edge; rec.bgEdge = fill; rec.edgeL = lineW }
+            else -> {
+                rec.bgFill = fill
+                rec.bgEdge = edge
+                rec.edgeL = l
+                rec.edgeT = t
+                rec.edgeR = r
+                rec.edgeB = b
+            }
+        }
+        rec.bgL = ub.left
+        rec.bgT = ub.top
+        rec.bgR = ub.right
+        rec.bgB = ub.bottom
+        return true
+    }
+
+    /** The one color [d] paints all over, or null when it paints a shape, a gradient or a picture. */
+    private fun solidColor(d: Drawable): Int? {
+        val leaf = unwrap(d) ?: return null
+        if (leaf is ColorDrawable) return leaf.color
+        if (Build.VERSION.SDK_INT >= 24 && leaf is GradientDrawable && leaf.shape == GradientDrawable.RECTANGLE &&
+            leaf.cornerRadius == 0f && leaf.cornerRadii == null && (leaf.colors?.size ?: 0) < 2
+        ) {
+            return leaf.color?.getColorForState(leaf.state, 0)
+        }
+        return null
+    }
+
+    /**
+     * A text field whose background draws only an underline: at the bottom
+     * of where the background draws, inside its insets (AppCompat's field
+     * background is inset 4 dp at the sides and 7 dp at the bottom).
+     */
     private fun underline(v: EditText, rec: Rec, w: Int, h: Int): Boolean {
         rec.bgKind = Rec.BG_UNDERLINE
         rec.bgFill = if (v.isFocused) accent(v) else withAlpha(v.currentHintTextColor, 1f)
-        rec.bgL = 0
-        rec.bgT = 0
-        rec.bgR = w
-        rec.bgB = h
+        if (rec.bgR <= rec.bgL || rec.bgB <= rec.bgT || rec.bgB > h || rec.bgR > w) {
+            rec.bgL = 0
+            rec.bgT = 0
+            rec.bgR = w
+            rec.bgB = h
+        }
         return true
     }
 
     private fun bgInset(rec: Rec, w: Int, h: Int): Boolean =
         rec.bgL != 0 || rec.bgT != 0 || rec.bgR != w || rec.bgB != h
 
-    /** The background as its own element, when it does not fill the view (a button's inset shape). */
-    private fun backgroundNode(v: View, rec: Rec, out: ArrayList<VNode>, w: Int, h: Int) {
-        if (rec.bgKind == Rec.BG_NONE || !bgInset(rec, w, h)) return
+    /**
+     * The background as its own element, when it does not fill the view (a
+     * button's inset shape); before it, a bitmap background's picture when
+     * the frame records pictures and [m] masks nothing.
+     */
+    private fun backgroundNode(v: View, rec: Rec, out: ArrayList<VNode>, w: Int, h: Int, m: Int) {
+        if (rec.bgKind == Rec.BG_NONE) return
         val bw = rec.bgR - rec.bgL
         val bh = rec.bgB - rec.bgT
         if (bw <= 0 || bh <= 0) return
+        val bitmap = rec.bgBitmap
+        if (bitmap != null && m == MASK_NONE && images.allowed) {
+            val picture = images.lookup(bitmap, bw * inv, bh * inv)
+            if (picture != null) {
+                rec.bgPictured = true
+                sb.setLength(0)
+                sb.append("left:").appendPx(rec.bgL * inv).append(";top:").appendPx(rec.bgT * inv)
+                    .append(";width:").appendPx(bw * inv).append(";height:").appendPx(bh * inv)
+                    .append(";background-size:100% 100%;")
+                out.add(element(rec, BG_PICTURE_ROLE, picture.imageClass, EMPTY))
+            }
+        }
+        if (!bgInset(rec, w, h)) return
         sb.setLength(0)
         sb.append("left:").appendPx(rec.bgL * inv).append(";top:").appendPx(rec.bgT * inv)
             .append(";width:").appendPx(bw * inv).append(";height:").appendPx(bh * inv).append(';')
@@ -1359,16 +1705,36 @@ internal class ViewCapture(context: Context?, onGlyphReady: () -> Unit = {}) {
                 val width = if (v.isFocused) 2f else 1f
                 sb.append("box-shadow:inset 0 ").appendPx(-width).append(" 0 0 ").appendColor(rec.bgFill).append(';')
             }
+            Rec.BG_EDGES -> {
+                sb.appendFill(rec.bgFill)
+                sb.append("box-shadow:")
+                var first = true
+                fun edge(x: Int, y: Int) {
+                    if (x == 0 && y == 0) return
+                    if (!first) sb.append(',')
+                    first = false
+                    sb.append("inset ").appendPx(x * inv).append(' ').appendPx(y * inv).append(" 0 0 ").appendColor(rec.bgEdge)
+                }
+                edge(rec.edgeL, 0)
+                edge(0, rec.edgeT)
+                edge(-rec.edgeR, 0)
+                edge(0, -rec.edgeB)
+                sb.append(';')
+            }
             Rec.BG_SHAPE -> {
                 val info = rec.bgShape ?: return
-                shapeCss(info, rec.bgFill, w.toFloat(), h.toFloat(), elevation, shadow)
+                shapeCss(info, rec.bgFill, w.toFloat(), h.toFloat(), elevation, shadow, pictured = rec.bgPictured)
             }
         }
     }
 
-    private fun shapeCss(info: ShapeInfo, fill: Int, w: Float, h: Float, elevation: Float = 0f, shadow: Int = 0) {
+    private fun shapeCss(
+        info: ShapeInfo, fill: Int, w: Float, h: Float,
+        elevation: Float = 0f, shadow: Int = 0, pictured: Boolean = false,
+    ) {
         if (info.image) {
-            sb.append("background-color:rgba(158,158,158,.22);")
+            // A bitmap: its picture is a node of its own, or this placeholder tint.
+            if (!pictured) sb.append("background-color:rgba(158,158,158,.22);")
         } else {
             sb.appendFill(fill)
             val colors = info.gradientColors
@@ -1437,7 +1803,7 @@ internal class ViewCapture(context: Context?, onGlyphReady: () -> Unit = {}) {
             composeChecked = true
             composeCapture = if (ComposeSupport.available) {
                 try {
-                    ComposeCapture(this)
+                    WireframeComposeCapture(this)
                 } catch (_: Throwable) {
                     null
                 }
@@ -1455,11 +1821,14 @@ internal class ViewCapture(context: Context?, onGlyphReady: () -> Unit = {}) {
     /** The theme's primary color (a filled button's), cached per theme. */
     fun primary(v: View): Int = themeColor(v, PRIMARY_ATTRS, primaries)
 
-    private val primaries = WeakHashMap<Resources.Theme, Int>()
+    private val primaries = WeakHashMap<Resources.Theme, Long>()
 
-    private fun themeColor(v: View, attrs: IntArray, cache: WeakHashMap<Resources.Theme, Int>): Int {
+    private fun themeColor(v: View, attrs: IntArray, cache: WeakHashMap<Resources.Theme, Long>): Int {
         val theme = v.context.theme ?: return DEFAULT_PRIMARY
-        cache[theme]?.let { return it }
+        // Themes are equal by their style, whatever the configuration: a day-night theme is one key in the
+        // light and in the dark, so a color is kept with the night mode it was read in.
+        val night = v.resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK
+        cache[theme]?.let { if ((it ushr 32).toInt() == night) return it.toInt() }
         var color = DEFAULT_PRIMARY
         for (attr in attrs) {
             try {
@@ -1483,7 +1852,7 @@ internal class ViewCapture(context: Context?, onGlyphReady: () -> Unit = {}) {
             } catch (_: Throwable) {
             }
         }
-        cache[theme] = color
+        cache[theme] = (night.toLong() shl 32) or (color.toLong() and 0xFFFFFFFFL)
         return color
     }
 
@@ -1512,9 +1881,12 @@ internal class ViewCapture(context: Context?, onGlyphReady: () -> Unit = {}) {
         const val MASK_BLUR = 1
 
         private const val BG_ROLE = 3
+        private const val DIM_ROLE = 9
+        private const val BG_PICTURE_ROLE = 7
         private const val TOGGLE_ROLE = 4
         private const val PART_ROLE = 4
         private const val ICON_ROLE = 10
+        private const val TAB_INDICATOR_ROLE = 14
         private const val LABEL_ROLE = 15
         private const val SPAN_ROLE = 20
         private const val MAX_RUNS = 60
@@ -1526,6 +1898,15 @@ internal class ViewCapture(context: Context?, onGlyphReady: () -> Unit = {}) {
         private const val TOGGLE_CHECKBOX = 1
         private const val TOGGLE_RADIO = 2
         private const val TOGGLE_SWITCH = 3
+
+        /** Where along its radius (a share of the view's side) a progress ring is looked for. */
+        private val RING_RADII = floatArrayOf(0.46f, 0.42f, 0.38f, 0.34f)
+
+        /** Views a capture walks at most (the iOS SDK's node budget); the rest of the screen is left out. */
+        private const val MAX_VIEWS = 3000
+
+        /** How deep a capture walks into the view tree (the iOS SDK's depth limit). */
+        private const val MAX_DEPTH = 128
 
         /** Drawables at most this big (dp) in an ImageView are icons. */
         private const val ICON_MAX_DP = 64f
@@ -1640,6 +2021,83 @@ internal class ViewCapture(context: Context?, onGlyphReady: () -> Unit = {}) {
     }
 }
 
+/** What a capture keeps about one view (or Compose node) between frames. */
+internal class Rec(@JvmField val id: Int) {
+    /** Ids of the nodes it plays other roles with; role 0 is [id]. */
+    @JvmField var ids: IntArray? = null
+
+    /** The node made for each role last time, reused while it shows the same. */
+    @JvmField var prev: Array<VNode?> = arrayOfNulls(3)
+
+    /** Has been a node of its own: stays one, so its subtree does not move when it stops needing one. */
+    @JvmField var group = false
+
+    /** Its children are in a clipping, scrolled wrapper; sticky for the same reason. */
+    @JvmField var wrap = false
+
+    // The background found this frame, used after the children are walked.
+    @JvmField var bgKind = BG_NONE
+    @JvmField var bgFill = 0
+    @JvmField var bgShape: ShapeInfo? = null
+    @JvmField var bgL = 0
+    @JvmField var bgT = 0
+    @JvmField var bgR = 0
+    @JvmField var bgB = 0
+
+    /** [BG_EDGES]: the borders' color and widths (pixels). */
+    @JvmField var bgEdge = 0
+    @JvmField var edgeL = 0
+    @JvmField var edgeT = 0
+    @JvmField var edgeR = 0
+    @JvmField var edgeB = 0
+
+    /** The bitmap a bitmap background shows this frame, and whether its picture is drawn by a node of its own. */
+    @JvmField var bgBitmap: android.graphics.Bitmap? = null
+    @JvmField var bgPictured = false
+
+    /** Compose only: when the node was last seen, to forget nodes that left. */
+    @JvmField var seen = 0
+
+    /** Compose: the text the style in [lookCss] was read for. Views: a text field's label. */
+    @JvmField var lookText: String? = null
+    @JvmField var lookCss: String? = null
+    @JvmField var lookCls: String? = null
+    @JvmField var lookW = 0
+    @JvmField var lookH = 0
+
+    /** Compose: the color of the text in [lookCss]. */
+    @JvmField var lookColor = 0
+
+    companion object {
+        const val BG_NONE = 0
+        const val BG_COLOR = 1
+        const val BG_SHAPE = 2
+        const val BG_UNDERLINE = 3
+        const val BG_EDGES = 4
+    }
+}
+
+/** The capture's children lists, reused frame after frame: last taken, first given back. */
+internal class ListStack {
+    private val lists = ArrayList<ArrayList<VNode>>()
+    private var top = 0
+
+    fun acquire(): ArrayList<VNode> {
+        if (top == lists.size) lists.add(ArrayList(16))
+        val list = lists[top++]
+        list.clear()
+        return list
+    }
+
+    fun release() {
+        if (top > 0) lists[--top].clear()
+    }
+
+    fun reset() {
+        while (top > 0) release()
+    }
+}
+
 /** What a drawable paints as a box: read once per state, by drawing a few pixels of it. */
 internal class ShapeInfo {
     @JvmField var key = 0L
@@ -1748,7 +2206,14 @@ internal class ShapeSampler {
         if (Build.VERSION.SDK_INT >= 24) {
             outline.setEmpty()
             d.getOutline(outline)
-            if (outline.getRect(rect)) info.radiusPx = outline.radius
+            if (outline.getRect(rect)) {
+                info.radiusPx = outline.radius
+            } else if (!outline.isEmpty && info.visible) {
+                val radii = cornerRadii(d)
+                if (radii != null) {
+                    if (radii.all { Math.abs(it - radii[0]) < 1f }) info.radiusPx = radii[0] else info.radiiPx = radii
+                }
+            }
         }
     }
 
@@ -1778,7 +2243,13 @@ internal class ShapeSampler {
         }
         bm.getPixels(pixels, 0, 8, 0, 0, 8, 1)
         val fill = pixels[7]
-        if (wantFill) info.fill = fill
+        if (wantFill) {
+            info.fill = fill
+        } else if (info.gradientColors == null && (fill ushr 24) >= 8 && isOutline(fill or 0xFF000000.toInt(), info.fill or 0xFF000000.toInt())) {
+            // A shape's own tint (android:tint, as a framework button's colorButtonNormal) paints over its solid
+            // color; only drawing it tells.
+            info.fill = fill
+        }
         var run = 0
         var best = 0
         var bestA = 0
@@ -1805,6 +2276,87 @@ internal class ShapeSampler {
         val dg = ((p shr 8) and 0xff) - ((fill shr 8) and 0xff)
         val db = (p and 0xff) - (fill and 0xff)
         return Math.abs(dr) + Math.abs(dg) + Math.abs(db) > 48
+    }
+
+    /** The color [d] paints at ([fx], [fy]) of its bounds (fractions); 0 where it paints nothing. */
+    fun pixelAt(d: Drawable, fx: Float, fy: Float): Int {
+        val c = canvas ?: return 0
+        val bm = bitmap ?: return 0
+        val b = d.bounds
+        if (b.width() <= 0 || b.height() <= 0) return 0
+        bm.eraseColor(0)
+        val save = c.save()
+        try {
+            c.clipRect(0f, 0f, 1f, 1f)
+            c.translate(0.5f - (b.left + b.width() * fx), 0.5f - (b.top + b.height() * fy))
+            d.draw(c)
+        } catch (_: Throwable) {
+            return 0
+        } finally {
+            c.restoreToCount(save)
+        }
+        return bm.getPixel(0, 0)
+    }
+
+    private val cornerBitmap: Bitmap? = try {
+        Bitmap.createBitmap(CORNER_PX, CORNER_PX, Bitmap.Config.ARGB_8888)
+    } catch (_: Throwable) {
+        null
+    }
+    private val cornerCanvas: Canvas? = cornerBitmap?.let { Canvas(it) }
+    private val diagonal = IntArray(CORNER_PX)
+
+    /**
+     * The radius of each corner of [d] (pixels, top-left clockwise), for a
+     * shape whose outline is not one rounded rectangle (a Material shape
+     * rounded only at some corners): where the shape starts along the
+     * diagonal of each corner, drawn first at a scale where the largest
+     * possible radius fills [CORNER_PX] pixels, then closer around what that
+     * found.
+     */
+    private fun cornerRadii(d: Drawable): FloatArray? {
+        val b = d.bounds
+        val max = min(b.width(), b.height()) / 2f
+        if (max < 2f) return null
+        val radii = FloatArray(8)
+        for (corner in 0 until 4) {
+            var s = CORNER_PX / max
+            var k = crossing(d, corner, s)
+            if (k < 0) return null
+            if (k in 1..CORNER_PX / 4) {
+                s = CORNER_PX / min(max, (k + 1) / s / CORNER_CROSSING * 1.5f)
+                k = crossing(d, corner, s)
+                if (k < 0) return null
+            }
+            val r = if (k == 0) 0f else min(max, (k + 0.5f) / s / CORNER_CROSSING)
+            radii[2 * corner] = r
+            radii[2 * corner + 1] = r
+        }
+        return radii
+    }
+
+    /** The first pixel along the diagonal of [corner] of [d], drawn at [scale], that the shape covers; -1 for none. */
+    private fun crossing(d: Drawable, corner: Int, scale: Float): Int {
+        val c = cornerCanvas ?: return -1
+        val bm = cornerBitmap ?: return -1
+        val b = d.bounds
+        bm.eraseColor(0)
+        val save = c.save()
+        try {
+            when (corner) {
+                0 -> { c.scale(scale, scale); c.translate(-b.left.toFloat(), -b.top.toFloat()) }
+                1 -> { c.scale(-scale, scale); c.translate(-b.right.toFloat(), -b.top.toFloat()) }
+                2 -> { c.scale(-scale, -scale); c.translate(-b.right.toFloat(), -b.bottom.toFloat()) }
+                else -> { c.scale(scale, -scale); c.translate(-b.left.toFloat(), -b.bottom.toFloat()) }
+            }
+            d.draw(c)
+        } catch (_: Throwable) {
+            return -1
+        } finally {
+            c.restoreToCount(save)
+        }
+        for (i in 0 until CORNER_PX) diagonal[i] = bm.getPixel(i, i)
+        return diagonal.indexOfFirst { (it ushr 24) >= 128 }
     }
 
     /** The most opaque color [d] draws (an icon's tint), opaque; 0 when it draws nothing. */
@@ -1843,6 +2395,14 @@ internal class ShapeSampler {
         return info.dominant
     }
 
+    private companion object {
+        /** The side of the bitmap a shape's corners are read in. */
+        const val CORNER_PX = 24
+
+        /** A quarter circle of radius r crosses its corner's diagonal r times this in from the corner (1 - 1/sqrt 2). */
+        const val CORNER_CROSSING = 0.2929f
+    }
+
     private fun orientation(o: GradientDrawable.Orientation?): FloatArray = when (o) {
         GradientDrawable.Orientation.TOP_BOTTOM -> floatArrayOf(0.5f, 0f, 0.5f, 1f)
         GradientDrawable.Orientation.TR_BL -> floatArrayOf(1f, 0f, 0f, 1f)
@@ -1853,131 +2413,5 @@ internal class ShapeSampler {
         GradientDrawable.Orientation.LEFT_RIGHT -> floatArrayOf(0f, 0.5f, 1f, 0.5f)
         GradientDrawable.Orientation.TL_BR -> floatArrayOf(0f, 0f, 1f, 1f)
         null -> floatArrayOf(0.5f, 0f, 0.5f, 1f)
-    }
-}
-
-/**
- * Pictures of the icons the app shows, so the replay draws each icon's shape
- * instead of a square, as the Flutter SDK does for icon fonts.
- *
- * The first time a vector icon shows at a size, it is drawn once into a
- * small PNG (encoded off the main thread); the replay uses it as a CSS mask
- * over the icon's color, so one picture serves every color the icon takes.
- * Until it is ready the icon is a square. Bitmaps (photos, avatars) are
- * never drawn.
- */
-internal class IconGlyphs(
-    private val onReady: () -> Unit,
-    private val pixelRatio: Float = 2f,
-    private val maxGlyphs: Int = 300,
-) {
-    class Glyph(val cls: String, val wPx: Int, val hPx: Int) {
-        /** `ic <cls>`: the class an icon with this glyph carries. */
-        val iconClass = "ic $cls"
-
-        /** The rule that shows it, once drawn. */
-        @Volatile
-        var css: String? = null
-        var node: VNode? = null
-        var lastShownMs = Long.MIN_VALUE / 2
-    }
-
-    private class Key(val state: Any, val w: Int, val h: Int) {
-        override fun equals(other: Any?): Boolean = other is Key && other.state === state && other.w == w && other.h == h
-        override fun hashCode(): Int = (System.identityHashCode(state) * 31 + w) * 31 + h
-    }
-
-    private val byDrawable = WeakHashMap<Drawable, Glyph>()
-    private val byKey = HashMap<Key, Glyph>()
-
-    /**
-     * Glyphs by what they draw: a picture is a mask, so the same icon tinted
-     * another color (a mutated copy, with a state of its own) is one glyph.
-     */
-    private val byShape = HashMap<Long, Glyph>()
-    val all = ArrayList<Glyph>()
-
-    /** Glyphs on the screen being captured. */
-    val shown = ArrayList<Glyph>()
-
-    private val executor: Executor by lazy {
-        Executors.newSingleThreadExecutor { r -> Thread(r, "TracewayGlyphs").apply { isDaemon = true; priority = Thread.MIN_PRIORITY } }
-    }
-
-    /** The glyph of [d] drawn at [wPx] x [hPx], drawn now if it is new; null when too many were drawn. */
-    fun lookup(d: Drawable, wPx: Int, hPx: Int, density: Float): Glyph? {
-        if (wPx <= 0 || hPx <= 0) return null
-        byDrawable[d]?.let { if (it.wPx == wPx && it.hPx == hPx) return it }
-        val key = Key(d.constantState ?: d, wPx, hPx)
-        var g = byKey[key]
-        if (g == null) {
-            if (all.size >= maxGlyphs) return null
-            val bitmap = draw(d, wPx, hPx, density)
-            val shape = bitmap?.let { shapeOf(it) }
-            g = shape?.let { byShape[it] }
-            if (g != null) {
-                bitmap?.recycle()
-            } else {
-                g = Glyph("g${all.size}", wPx, hPx)
-                all.add(g)
-                if (shape != null) byShape[shape] = g
-                if (bitmap != null) encode(g, bitmap)
-            }
-            byKey[key] = g
-        }
-        byDrawable[d] = g
-        return g
-    }
-
-    /** [d] drawn at its bounds, [wPx] x [hPx] at the glyphs' pixel ratio; null when it cannot be. */
-    private fun draw(d: Drawable, wPx: Int, hPx: Int, density: Float): Bitmap? {
-        val scale = pixelRatio / density
-        val bw = ceil(wPx * scale).toInt()
-        val bh = ceil(hPx * scale).toInt()
-        if (bw <= 0 || bh <= 0 || bw > 256 || bh > 256) return null
-        return try {
-            val bm = Bitmap.createBitmap(bw, bh, Bitmap.Config.ARGB_8888)
-            val c = Canvas(bm)
-            c.scale(scale, scale)
-            val b = d.bounds
-            c.translate(-b.left.toFloat(), -b.top.toFloat())
-            d.draw(c)
-            bm
-        } catch (_: Throwable) {
-            null
-        }
-    }
-
-    /** A hash of where [bitmap] is opaque: its shape, whatever its color. */
-    private fun shapeOf(bitmap: Bitmap): Long {
-        val w = bitmap.width
-        val h = bitmap.height
-        val row = IntArray(w)
-        var hash = 1125899906842597L
-        hash = hash * 31 + w
-        hash = hash * 31 + h
-        for (y in 0 until h) {
-            bitmap.getPixels(row, 0, w, 0, y, w, 1)
-            for (p in row) hash = hash * 31 + ((p ushr 24) shr 3)
-        }
-        return hash
-    }
-
-    /** Encodes [bitmap] as [g]'s picture, off the main thread. */
-    private fun encode(g: Glyph, bitmap: Bitmap) {
-        executor.execute {
-            try {
-                val png = ByteArrayOutputStream(1024)
-                bitmap.compress(Bitmap.CompressFormat.PNG, 100, png)
-                val data = Base64.encodeToString(png.toByteArray(), Base64.NO_WRAP)
-                g.css = ".ic.${g.cls}::before{inset:0;border-radius:0;opacity:1;" +
-                    "mask:url(data:image/png;base64,$data) 0 0/100% 100% no-repeat}"
-                onReady()
-            } catch (_: Throwable) {
-                // Without its picture the icon stays a square.
-            } finally {
-                bitmap.recycle()
-            }
-        }
     }
 }

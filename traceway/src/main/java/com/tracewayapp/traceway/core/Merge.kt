@@ -1,5 +1,6 @@
 package com.tracewayapp.traceway.core
 
+import com.tracewayapp.traceway.TracewayImagePolicy
 import com.tracewayapp.traceway.internal.Json
 import com.tracewayapp.traceway.internal.Rfc3339
 import com.tracewayapp.traceway.internal.asFiniteDouble
@@ -242,6 +243,7 @@ internal fun applyOverlay(base: Settings, overlay: JsonObject): Settings {
         Mode.from(replay["mode"])?.let { out.replayMode = it }
         rate(replay["sessionSampleRate"])?.let { out.replaySessionSampleRate = it }
         (replay["maskAllInputs"] as? Boolean)?.let { out.replayMaskAllInputs = it }
+        TracewayImagePolicy.from(replay["images"])?.let { out.replayImages = it }
         // `captureMode` (video or wireframe) is the Flutter SDK's; Android always records a wireframe.
     }
 
@@ -294,6 +296,7 @@ internal fun applyLimits(ceilings: Ceilings, overlay: JsonObject?): Ceilings {
         replay = if (replay == null) ceilings.replay else lowerMode(ceilings.replay, replay),
         sessions = ceilings.sessions,
         metrics = ceilings.metrics && limits["metrics"] != "off",
+        replayImages = ceilings.replayImages,
     )
 }
 
@@ -306,6 +309,12 @@ internal fun clampToCeilings(settings: Settings, ceilings: Ceilings): Settings {
         target.mode = lowerMode(target.mode, ceilings.signals.getValue(signal))
     }
     out.replayMode = lowerMode(out.replayMode, ceilings.replay)
+    // No replay, no pictures in it: the app's screen capture or the plan's limits turned it off.
+    out.replayImages = if (ceilings.replay == Mode.OFF) {
+        TracewayImagePolicy.OFF
+    } else {
+        TracewayImagePolicy.lower(out.replayImages, ceilings.replayImages)
+    }
     out.sessionsEnabled = out.sessionsEnabled && ceilings.sessions
     out.metrics.enabled = out.metrics.enabled && ceilings.metrics
     return out

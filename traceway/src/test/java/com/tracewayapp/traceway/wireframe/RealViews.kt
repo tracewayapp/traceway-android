@@ -14,10 +14,17 @@ import org.robolectric.android.controller.ActivityController
 
 /** An activity with the Material 3 theme apps use, for the views of a test. */
 internal open class TestActivity : AppCompatActivity() {
+    protected open val themeId: Int = com.google.android.material.R.style.Theme_Material3_Light_NoActionBar
+
     override fun onCreate(savedInstanceState: Bundle?) {
-        setTheme(com.google.android.material.R.style.Theme_Material3_Light_NoActionBar)
+        setTheme(themeId)
         super.onCreate(savedInstanceState)
     }
+}
+
+/** The Material 3 day-night theme: dark under the `night` qualifier. */
+internal class DayNightActivity : TestActivity() {
+    override val themeId: Int = com.google.android.material.R.style.Theme_Material3_DayNight_NoActionBar
 }
 
 /**
@@ -27,11 +34,11 @@ internal open class TestActivity : AppCompatActivity() {
  */
 internal class RealScreen(val controller: ActivityController<out TestActivity>) {
     val activity: TestActivity get() = controller.get()
-    val capture = ViewCapture(activity)
+    val capture = WireframeCapture(activity)
     val density: Float get() = activity.resources.displayMetrics.density
     var now = 1_767_268_800_000L
-    private val roots = RootViews()
-    private val windows = ArrayList<RootViews.Root>()
+    private val roots = WireframeRoots()
+    private val windows = ArrayList<WireframeRoots.Root>()
 
     fun px(dp: Float): Int = Math.round(dp * density)
 
@@ -45,7 +52,7 @@ internal class RealScreen(val controller: ActivityController<out TestActivity>) 
     }
 
     /** The windows on screen now, bottom first, drawn as a frame would draw them. */
-    fun windows(): List<RootViews.Root> {
+    fun windows(): List<WireframeRoots.Root> {
         idle()
         roots.current(windows)
         for (w in windows) draw(w.view)
@@ -110,9 +117,11 @@ internal class RealScreen(val controller: ActivityController<out TestActivity>) 
             org.robolectric.shadows.ShadowChoreographer.setFrameDelay(java.time.Duration.ofMillis(16))
         }
 
-        fun open(content: (TestActivity) -> View): RealScreen {
+        fun open(content: (TestActivity) -> View): RealScreen = open(TestActivity::class.java, content)
+
+        fun open(activity: Class<out TestActivity>, content: (TestActivity) -> View): RealScreen {
             framesAt60Hz()
-            val controller = Robolectric.buildActivity(TestActivity::class.java).setup()
+            val controller = Robolectric.buildActivity(activity).setup()
             controller.get().setContentView(content(controller.get()))
             val screen = RealScreen(controller)
             screen.idle()

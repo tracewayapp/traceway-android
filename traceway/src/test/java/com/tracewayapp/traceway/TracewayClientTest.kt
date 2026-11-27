@@ -12,6 +12,8 @@ import com.tracewayapp.traceway.otel.Otlp
 import com.tracewayapp.traceway.otel.SeenRequest
 import com.tracewayapp.traceway.replay.FakeReplaySource
 import io.opentelemetry.api.common.AttributeKey
+import io.opentelemetry.api.logs.Severity
+import io.opentelemetry.api.trace.StatusCode
 import io.opentelemetry.sdk.logs.data.LogRecordData
 import io.opentelemetry.sdk.common.CompletableResultCode
 import io.opentelemetry.sdk.logs.export.LogRecordExporter
@@ -129,7 +131,7 @@ class TracewayClientTest {
     @Test
     fun breadcrumbsStayOnTheDeviceUntilAnExceptionFlushesThem() {
         val client = start()
-        client.recordLog("opening checkout")
+        client.log("opening checkout")
         client.recordAction("cart", "add_item", mapOf("sku" to "A1"))
         client.recordNavigation("/checkout")
         client.flush(2000)
@@ -174,7 +176,7 @@ class TracewayClientTest {
     @Test
     fun messagesAreSentAtOnceAndDoNotFlushTheBuffer() {
         val client = start()
-        client.recordLog("a breadcrumb")
+        client.log("a breadcrumb")
         client.captureMessage("hello")
         client.flush(2000)
         assertEquals("hello", named("traceway.message").single().bodyValue?.asString())
@@ -197,7 +199,7 @@ class TracewayClientTest {
     @Test
     fun sampleRateZeroDropsErrorsAndTheirBreadcrumbs() {
         val client = start(TracewayOptions(sampleRate = 0.0))
-        client.recordLog("context")
+        client.log("context")
         client.captureException(IllegalStateException("dropped"))
         client.flush(2000)
         assertTrue(named("exception").isEmpty())
@@ -213,7 +215,7 @@ class TracewayClientTest {
                 collection = mapOf("signals" to mapOf("console" to mapOf("mode" to "stream"), "custom" to mapOf("mode" to "stream"))),
             ),
         )
-        client.recordLog("never")
+        client.log("never")
         client.track("checkout_failed")
         client.flush(2000)
         assertTrue(named(null).isEmpty())
@@ -223,7 +225,7 @@ class TracewayClientTest {
     @Test
     fun recordAllSessionsStreamsBreadcrumbs() {
         val client = start(TracewayOptions(recordAllSessions = true))
-        client.recordLog("streamed")
+        client.log("streamed")
         client.flush(2000)
         assertEquals(1, named(null).size)
         assertEquals(0, client.bufferedCount)
@@ -251,7 +253,7 @@ class TracewayClientTest {
                 ),
             ),
         )
-        client.recordLog("before")
+        client.log("before")
         client.track("checkout_failed")
         client.flush(2000)
         assertTrue(named(null).isEmpty())
@@ -260,6 +262,230 @@ class TracewayClientTest {
         assertEquals(1, named(null).size)
         assertEquals(2, named("checkout_failed").size)
         assertEquals("checkout-failed-twice", named("traceway.trigger.fired").single().attr("traceway.trigger.id"))
+    }
+
+    // ---------------------------------------------------------------- logs, screens, filters
+
+    @Test
+    fun logLinesCarryTheirLevelAndSourceButNoEventName() {
+        val client = start(TracewayOptions(recordAllSessions = true))
+        Traceway.log("payment declined", TracewayLogLevel.WARN, mapOf("order.id" to "o-1"))
+        @Suppress("DEPRECATION")
+        client.recordLog("the old way", "error")
+        client.log("Traceway: the SDK's own line")
+        client.flush(2000)
+        val lines = named(null)
+        assertEquals(listOf("payment declined", "the old way"), lines.map { it.bodyValue?.asString() })
+        val first = lines[0]
+        assertEquals(Severity.WARN, first.severity)
+        assertEquals("WARN", first.severityText)
+        assertEquals("api", first.attr("log.source"))
+        assertEquals("o-1", first.attr("order.id"))
+        assertEquals(Severity.ERROR, lines[1].severity)
+        assertEquals("ERROR", lines[1].severityText)
+    }
+
+    @Test
+    fun issuesAndNavigationsCarryTheScreenTheyHappenedOn() {
+        val client = start()
+        Traceway.recordNavigation("/cart")
+        scheduler.advance(500)
+        Traceway.recordNavigation("/orders/8841", "push", from = "/cart")
+        Traceway.setRoute("orders/:id")
+        scheduler.advance(1200)
+        client.captureException(IllegalStateException("x"))
+        client.captureMessage("hello", mapOf("app.screen.name" to "/the-callers"))
+        Traceway.recordNavigation("/orders/8841", "replace")
+        Traceway.recordNavigation("/home")
+        client.captureException(IllegalStateException("y"))
+        client.flush(2000)
+        val exception = named("exception").first()
+        assertEquals("/orders/8841", exception.attr("app.screen.name"))
+        assertEquals("/orders/:id", exception.attr("app.screen.route"))
+        assertEquals("/cart", exception.attr("app.screen.previous"))
+        assertEquals(1200L, exception.attr("app.screen.duration_ms"))
+        val message = named("traceway.message").single()
+        assertEquals("the caller's attributes win", "/the-callers", message.attr("app.screen.name"))
+        assertEquals("/orders/:id", message.attr("app.screen.route"))
+        val navigations = named("browser.navigation")
+        assertEquals("/cart", navigations[1].attr("navigation.from"))
+        assertNull("set after the navigation", navigations[1].attr("app.screen.route"))
+        assertEquals("/orders/:id", navigations[2].attr("app.screen.route"))
+        assertNull("another screen has a route of its own", navigations[3].attr("app.screen.route"))
+        assertNull(named("exception").last().attr("app.screen.route"))
+        assertEquals("/orders/8841", named("exception").last().attr("app.screen.previous"))
+    }
+
+    @Test
+    fun aNavigationCanNameItsRouteTemplate() {
+        val client = start()
+        Traceway.recordNavigation("/orders/8841", from = "/cart", route = "orders/{id}")
+        client.captureException(IllegalStateException("x"))
+        Traceway.recordNavigation("/home")
+        client.captureException(IllegalStateException("y"))
+        client.flush(2000)
+        val navigations = named("browser.navigation")
+        assertEquals("/orders/{id}", navigations[0].attr("app.screen.route"))
+        assertEquals("/orders/{id}", named("exception").first().attr("app.screen.route"))
+        assertNull("the next screen starts without one", navigations[1].attr("app.screen.route"))
+    }
+
+    @Test
+    fun ignoredErrorsAndBeforeCaptureDropIssues() {
+        val seen = ArrayList<TracewayCapturedError>()
+        val client = start(TracewayOptions(beforeCapture = { seen.add(it); it.attributes["drop"] != "yes" }))
+        client.captureException(java.net.UnknownHostException("Unable to resolve host \"api.example.com\""))
+        client.captureException(RuntimeException("Request timeout after 30s"))
+        client.captureException(RuntimeException("Request failed: 404"))
+        client.captureException(IllegalStateException("kept"))
+        client.captureException(IllegalStateException("dropped by the callback"), mapOf("drop" to "yes"))
+        client.captureMessage("message dropped", mapOf("drop" to "yes"))
+        client.captureMessage("message kept")
+        client.flush(2000)
+        assertEquals(listOf("kept"), named("exception").map { it.attr("exception.message") })
+        assertEquals(listOf("message kept"), named("traceway.message").map { it.bodyValue?.asString() })
+        // The callback sees only what the patterns let through.
+        assertEquals(4, seen.size)
+        val first = seen[0]
+        assertEquals("java.lang.IllegalStateException", first.type)
+        assertEquals("kept", first.message)
+        assertFalse(first.isMessage)
+        assertTrue(first.error is IllegalStateException)
+        assertTrue(first.stackTrace!!.startsWith("java.lang.IllegalStateException: kept"))
+        val message = seen.last()
+        assertTrue(message.isMessage)
+        assertNull(message.type)
+        assertEquals("message kept", message.message)
+        assertTrue(TracewayOptions.DEFAULT_IGNORE_ERRORS.contains("UnknownHostException"))
+    }
+
+    @Test
+    fun customPatternsReplaceTheDefaultsAndAThrowingCallbackKeepsTheRecord() {
+        val client = start(
+            TracewayOptions(
+                ignoreErrors = listOf("Flaky", Regex("^java\\.io\\.")),
+                beforeCapture = { throw IllegalStateException("a bug in the callback") },
+            ),
+        )
+        client.captureException(java.net.UnknownHostException("no network"))
+        client.captureException(RuntimeException("Flaky backend"))
+        client.captureException(java.io.IOException("disk full"))
+        client.captureException(RuntimeException("line one\nFlaky only below"))
+        client.flush(2000)
+        assertEquals(
+            listOf("no network", "line one\nFlaky only below"),
+            named("exception").map { it.attr("exception.message") },
+        )
+    }
+
+    @Test
+    fun anInteractionTracesItsRequestsAndTheExceptionThatFailedIt() {
+        val client = start()
+        val checkout = Traceway.startInteraction("checkout", mapOf("cart.items" to 3))
+        assertNotNull(checkout.traceId)
+        val answer = checkout.run {
+            val request = client.startRequest("POST", "https://api.example.com/orders")!!
+            client.endRequest(request, 500, 10, 20, null)
+            client.log("placing the order")
+            42
+        }
+        assertEquals(42, answer)
+        checkout.setAttribute("payment.method", "card")
+        checkout.captureException(IllegalStateException("payment failed"))
+        checkout.end()
+        assertTrue(checkout.isEnded)
+        client.flush(2000)
+
+        val exception = named("exception").single()
+        assertEquals(checkout.traceId, exception.spanContext.traceId)
+        assertEquals(checkout.spanId, exception.spanContext.spanId)
+        assertEquals(checkout.traceId, named(null).single().spanContext.traceId)
+        val interaction = exportedSpans().single { it.name == "checkout" }
+        assertEquals(true, interaction.attributes.get(AttributeKey.booleanKey("traceway.interaction")))
+        assertEquals(3L, interaction.attributes.get(AttributeKey.longKey("cart.items")))
+        assertEquals("card", interaction.attributes.get(AttributeKey.stringKey("payment.method")))
+        assertEquals(StatusCode.ERROR, interaction.status.statusCode)
+        val request = exportedSpans().single { it.name == "POST" }
+        assertEquals(checkout.traceId, request.traceId)
+        assertEquals(checkout.spanId, request.parentSpanId)
+
+        // A request outside it starts a trace of its own; one that ends well stays with the breadcrumbs.
+        val outside = client.startRequest("GET", "https://api.example.com/health")!!
+        client.endRequest(outside, 200, 0, 2, null)
+        val search = Traceway.startInteraction("search")
+        search.end()
+        search.end(failed = true)
+        client.flush(2000)
+        assertTrue(exportedSpans().none { it.name == "search" || it.name == "GET" })
+    }
+
+    @Test
+    fun anInteractionBeforeTheSdkStartsRecordsNothingButRuns() {
+        TracewayClient.resetForTest()
+        val idle = Traceway.startInteraction("checkout")
+        assertNull(idle.traceId)
+        assertEquals("ran", idle.run { "ran" })
+        idle.captureException(IllegalStateException("nowhere to go"))
+        idle.end()
+        assertTrue(idle.isEnded)
+    }
+
+    @Test
+    fun theFacadeNamesTheSession() {
+        val client = start()
+        assertNotNull(Traceway.currentSessionId)
+        assertEquals(client.currentSessionId, Traceway.currentSessionId)
+    }
+
+    @Test
+    fun droppedDataIsReportedAsCollectionHealthLessAndLessOften() {
+        val client = start()
+        repeat(3) { client.captureException(IllegalStateException("same")) }
+        client.flush(2000)
+        assertTrue(named("traceway.collection.health").isEmpty())
+        scheduler.advance(1000)
+        client.flush(2000)
+        val health = named("traceway.collection.health").single()
+        assertEquals(2L, health.attr("traceway.error.suppressed_total"))
+        assertNotNull(health.attr("traceway.collection.bytes"))
+        assertNotNull(health.attr("traceway.replay.failed_segments"))
+        assertEquals(client.currentSessionId, health.attr("session.id"))
+        // The session's row learns it once.
+        assertEquals(1, named("traceway.session.update").size)
+
+        repeat(2) { client.captureException(IllegalStateException("again")) }
+        scheduler.advance(1000)
+        client.flush(2000)
+        assertEquals("the next one waits twice as long", 1, named("traceway.collection.health").size)
+        scheduler.advance(1000)
+        client.flush(2000)
+        assertEquals(2, named("traceway.collection.health").size)
+        assertEquals(3L, named("traceway.collection.health").last().attr("traceway.error.suppressed_total"))
+        assertEquals(1, named("traceway.session.update").size)
+    }
+
+    @Test
+    fun sessionEventsReportTheReplayImagePolicy() {
+        start(
+            TracewayOptions(
+                screenCapture = true,
+                replayImages = TracewayImagePolicy.WIFI,
+                collection = mapOf("replay" to mapOf("images" to "always")),
+            ),
+        ).flush(2000)
+        val session = named("session.start").single()
+        assertEquals("the app's ceiling", "wifi", session.attr("traceway.replay.images"))
+        assertEquals(0L, session.attr("traceway.replay.image_bytes"))
+
+        TracewayClient.resetForTest()
+        logs.reset()
+        start(TracewayOptions(screenCapture = true)).flush(2000)
+        assertEquals("the default setting", "wifi", named("session.start").single().attr("traceway.replay.images"))
+
+        TracewayClient.resetForTest()
+        logs.reset()
+        start(TracewayOptions(collection = mapOf("replay" to mapOf("images" to "always")))).flush(2000)
+        assertEquals("no screen capture, no pictures", "off", named("session.start").single().attr("traceway.replay.images"))
     }
 
     // ---------------------------------------------------------------- network
@@ -305,7 +531,7 @@ class TracewayClientTest {
         val source = FakeReplaySource()
         client.setReplaySource(source)
         assertTrue(source.running)
-        client.recordLog("no clip for this")
+        client.log("no clip for this")
         client.captureMessage("nor this")
         client.flush(2000)
         assertTrue(http.to(RECORDINGS_URL).isEmpty())
@@ -330,7 +556,7 @@ class TracewayClientTest {
         client.captureException(IllegalStateException("one"))
         client.flush(2000)
         scheduler.advance(2000)
-        client.recordLog("between the errors")
+        client.log("between the errors")
         client.captureException(IllegalStateException("two"))
         client.flush(2000)
         assertEquals(1, http.to(RECORDINGS_URL).size)
@@ -348,7 +574,7 @@ class TracewayClientTest {
         var client = start(stateDir = dir)
         assertTrue(http.to(OPAMP_URL).isNotEmpty())
         assertEquals("application/x-protobuf", http.to(OPAMP_URL).first().headers["Content-Type"])
-        client.recordLog("streams now")
+        client.log("streams now")
         client.flush(2000)
         assertEquals(1, named(null).size)
         assertEquals(1, named("traceway.config.applied").size)
@@ -359,7 +585,7 @@ class TracewayClientTest {
         opampStatus = 503
         logs.reset()
         client = start(stateDir = dir)
-        client.recordLog("still streams")
+        client.log("still streams")
         client.flush(2000)
         assertEquals(1, named(null).size)
     }
@@ -368,7 +594,7 @@ class TracewayClientTest {
     fun anInvalidDocumentIsRejectedAndTheDefaultsStay() {
         remoteDocument = """{"schemaVersion":2}"""
         val client = start()
-        client.recordLog("buffered")
+        client.log("buffered")
         client.flush(2000)
         assertTrue(named(null).isEmpty())
         assertTrue(named("traceway.config.applied").isEmpty())
@@ -401,13 +627,13 @@ class TracewayClientTest {
     fun aDashboardCaptureUploadsItsLookbackAndThenStreams() {
         val until = com.tracewayapp.traceway.internal.Rfc3339.format(scheduler.now() + 60 * 60_000L)
         val client = start()
-        client.recordLog("before the capture")
+        client.log("before the capture")
         remoteDocument = """{"captures":[{"id":"cap-1","until":"$until","lookbackSeconds":600,"signals":["*"]}]}"""
         client.refreshConfig()
         client.flush(2000)
         assertEquals(1, named(null).size)
         assertEquals("cap-1", named("traceway.capture.started").single().attr("traceway.capture.id"))
-        client.recordLog("during the capture")
+        client.log("during the capture")
         client.flush(2000)
         assertEquals(2, named(null).size)
         assertEquals("[\"cap-1\"]", named(null).last().attr("traceway.capture.ids"))
@@ -484,7 +710,7 @@ class TracewayClientTest {
         val dir = tmp.newFolder("state")
         var client = start(stateDir = dir, inMemory = false)
         val session = client.currentSessionId
-        client.recordLog("before the restart")
+        client.log("before the restart")
         client.simulateLifecycle(foreground = false)
         client.flush(2000)
         client.shutdown(2000)
@@ -523,7 +749,7 @@ class TracewayClientTest {
     fun aCrashIsWrittenToDiskWithItsBreadcrumbsAndSentAtTheNextStart() {
         val dir = tmp.newFolder("state")
         var client = start(stateDir = dir, inMemory = false)
-        client.recordLog("right before the crash")
+        client.log("right before the crash")
         client.flush(2000)
         // The network is gone: nothing can leave before the process dies.
         http.handler = { HttpResponse(0) }

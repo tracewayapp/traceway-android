@@ -265,7 +265,7 @@ internal class AppVitals(
 ) {
     private class PendingStart(val type: String, val originMs: Long)
 
-    private class Visit(val screen: String, val startMs: Long) {
+    private class Visit(var screen: String, val startMs: Long) {
         var displayed = false
         var fullyDisplayed = false
     }
@@ -471,6 +471,16 @@ internal class AppVitals(
             host
         }
         h?.requestDraw()
+    }
+
+    /**
+     * The app named the current screen by its route template
+     * (`Traceway.setRoute`): its display times and frames are counted under
+     * it from now on.
+     */
+    fun routeNamed(route: String) {
+        screen = route
+        synchronized(lock) { visit?.screen = route }
     }
 
     /** The current screen shows everything it loads. */

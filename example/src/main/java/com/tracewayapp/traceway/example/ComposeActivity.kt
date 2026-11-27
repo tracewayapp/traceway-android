@@ -28,7 +28,7 @@ import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import com.tracewayapp.traceway.Traceway
-import com.tracewayapp.traceway.compose.tracewayMask
+import com.tracewayapp.traceway.compose.tracewayPrivacyMask
 
 /** A Compose screen: recorded from its semantics, routes reported through recordNavigation. */
 class ComposeActivity : ComponentActivity() {
@@ -38,8 +38,14 @@ class ComposeActivity : ComponentActivity() {
             MaterialTheme {
                 val nav = rememberNavController()
                 androidx.compose.runtime.DisposableEffect(nav) {
-                    val listener = androidx.navigation.NavController.OnDestinationChangedListener { _, destination, _ ->
-                        destination.route?.let { Traceway.recordNavigation("/$it") }
+                    val listener = androidx.navigation.NavController.OnDestinationChangedListener { _, destination, arguments ->
+                        destination.route?.let { route ->
+                            // The path with its arguments (/orders/42), and the route it is an instance of (/orders/:id).
+                            @Suppress("DEPRECATION")
+                            val path = ARGUMENT.replace(route) { m -> arguments?.get(m.groupValues[1])?.toString() ?: m.value }
+                            Traceway.recordNavigation("/$path")
+                            Traceway.setRoute("/" + ARGUMENT.replace(route, ":$1"))
+                        }
                     }
                     nav.addOnDestinationChangedListener(listener)
                     onDispose { nav.removeOnDestinationChangedListener(listener) }
@@ -74,7 +80,7 @@ private fun OrderDetail(id: String) {
     var gift by remember { mutableStateOf(false) }
     Column(Modifier.fillMaxSize().padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         Text("Order #$id", style = MaterialTheme.typography.headlineMedium)
-        Text("Shipping to 221B Baker Street", Modifier.tracewayMask())
+        Text("Shipping to 221B Baker Street", Modifier.tracewayPrivacyMask())
         OutlinedTextField(value = note, onValueChange = { note = it }, label = { Text("Note") })
         Row { Checkbox(checked = gift, onCheckedChange = { gift = it }); Text("Gift wrap") }
         Button(onClick = { Traceway.reportFullyDisplayed(); throw IllegalStateException("Order $id failed to load") }) {
@@ -82,3 +88,6 @@ private fun OrderDetail(id: String) {
         }
     }
 }
+
+/** A `{name}` argument in a navigation route. */
+private val ARGUMENT = Regex("\\{(\\w+)\\}")

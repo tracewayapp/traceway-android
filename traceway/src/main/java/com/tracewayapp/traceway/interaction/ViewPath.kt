@@ -688,8 +688,11 @@ private class ComposeNode(private val node: SemanticsNode, private val owner: Vi
             return TypeFacts(type, setOf(type.lowercase()), listOf(type), generic = type == GENERIC)
         }
 
+    /** The test tag, unless it is a mask tag (`traceway-mask`, `traceway-blank`): that one masks, it names nothing. */
     override val ids: List<String>
-        get() = config.getOrNull(SemanticsProperties.TestTag)?.takeIf { it.isNotEmpty() }?.let { listOf(it) } ?: emptyList()
+        get() = config.getOrNull(SemanticsProperties.TestTag)
+            ?.takeIf { it.isNotEmpty() && !isMaskTag(it) }
+            ?.let { listOf(it) } ?: emptyList()
 
     override val stringKey: String? get() = null
 
@@ -732,11 +735,15 @@ private class ComposeNode(private val node: SemanticsNode, private val owner: Vi
             return false
         }
 
-    /** A Compose privacy mask is a semantics property whose value is a [TracewayMaskMode]. */
+    /**
+     * A Compose privacy mask is a semantics property whose value is a
+     * [TracewayMaskMode] (`Modifier.tracewayPrivacyMask`), or a mask test
+     * tag, as the wireframe reads them.
+     */
     override val masked: Boolean
         get() {
             for (entry in config) if (entry.value is TracewayMaskMode) return true
-            return false
+            return config.getOrNull(SemanticsProperties.TestTag)?.let(::isMaskTag) == true
         }
 
     override val handlesTaps: Boolean
@@ -750,5 +757,7 @@ private class ComposeNode(private val node: SemanticsNode, private val owner: Vi
 
     private companion object {
         const val GENERIC = "Composable"
+
+        fun isMaskTag(tag: String): Boolean = tag == PrivacyMasks.TAG_BLUR || tag == PrivacyMasks.TAG_BLANK
     }
 }

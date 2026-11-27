@@ -96,6 +96,17 @@ private const val bodyNodeId = 7
 /** The element that holds the screen; every captured node is inside it. */
 internal const val screenNodeId = 8
 
+/**
+ * Fixed ids of nodes the recorder draws itself (below the first captured
+ * id), the same on every platform: the screen shown while the app is in the
+ * background, and the keyboard box.
+ */
+internal const val awayScreenTextBoxId = 9
+internal const val awayScreenTextId = 10
+internal const val keyboardNodeId = 12
+internal const val keyboardLabelBoxId = 13
+internal const val keyboardLabelTextId = 14
+
 /** The first id handed to a captured node. */
 internal const val firstCapturedNodeId = 16
 

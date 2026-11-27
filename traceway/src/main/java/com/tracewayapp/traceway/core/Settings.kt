@@ -1,5 +1,6 @@
 package com.tracewayapp.traceway.core
 
+import com.tracewayapp.traceway.TracewayImagePolicy
 import com.tracewayapp.traceway.internal.Json
 
 /**
@@ -228,6 +229,11 @@ internal class Settings(
     var replaySessionSampleRate: Double,
     /** Wireframe recordings mask what is typed into text fields (`replay.maskAllInputs`). */
     var replayMaskAllInputs: Boolean = true,
+    /**
+     * When wireframe recordings carry the pictures image views show
+     * (`replay.images`): never, on an unmetered connection, or always.
+     */
+    var replayImages: TracewayImagePolicy = TracewayImagePolicy.WIFI,
     var bufferMaxBytes: Long,
     var bufferMaxAgeSeconds: Double,
     var persist: Boolean,
@@ -247,6 +253,7 @@ internal class Settings(
         replayMode = replayMode,
         replaySessionSampleRate = replaySessionSampleRate,
         replayMaskAllInputs = replayMaskAllInputs,
+        replayImages = replayImages,
         bufferMaxBytes = bufferMaxBytes,
         bufferMaxAgeSeconds = bufferMaxAgeSeconds,
         persist = persist,
@@ -267,6 +274,8 @@ internal class Ceilings(
     val sessions: Boolean,
     /** False when the app or the plan does not allow metrics. */
     val metrics: Boolean = true,
+    /** The most `replay.images` may allow ([com.tracewayapp.traceway.TracewayOptions.replayImages]). */
+    val replayImages: TracewayImagePolicy = TracewayImagePolicy.ALWAYS,
 )
 
 internal const val DEFAULT_EXCEPTION_TRIGGER_ID = "default-exception"
@@ -341,6 +350,7 @@ internal fun ceilingsFrom(
     captureUserActions: Boolean = true,
     sessions: Boolean = true,
     captureMetrics: Boolean = true,
+    replayImages: TracewayImagePolicy = TracewayImagePolicy.ALWAYS,
 ): Ceilings {
     fun allow(flag: Boolean) = if (flag) Mode.STREAM else Mode.OFF
     val signals = LinkedHashMap<String, Mode>()
@@ -355,5 +365,6 @@ internal fun ceilingsFrom(
         replay = allow(screenCapture),
         sessions = sessions,
         metrics = captureMetrics,
+        replayImages = replayImages,
     )
 }

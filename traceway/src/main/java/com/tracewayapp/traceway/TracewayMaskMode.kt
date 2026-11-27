@@ -1,3 +1,5 @@
+@file:JvmName("TracewayPrivacyMask")
+
 package com.tracewayapp.traceway
 
 import android.view.View
@@ -22,6 +24,18 @@ sealed class TracewayMaskMode {
         fun blur(): TracewayMaskMode = Blur
     }
 }
+
+/**
+ * How this view (and everything inside it) shows in wireframe recordings
+ * and tap records: [TracewayMaskMode.blur], [TracewayMaskMode.blank], or
+ * null for no mask of its own. `android:tag="traceway-mask"` (blur) or
+ * `"traceway-blank"` in a layout masks it too, and reads back here. Masks
+ * change the recording only; the app looks the same to its user. From Java:
+ * `Traceway.setPrivacyMask(view, mode)`.
+ */
+var View.tracewayPrivacyMask: TracewayMaskMode?
+    get() = PrivacyMasks.own(this)
+    set(value) = PrivacyMasks.set(this, value)
 
 /** Where masks are recorded and read; the wireframe capture and tap recording honor them. */
 internal object PrivacyMasks {

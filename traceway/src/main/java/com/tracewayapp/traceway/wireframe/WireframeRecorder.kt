@@ -96,7 +96,7 @@ internal class WireframeRecorder(
 
     private val lock = Any()
     private val frames = ArrayList<WireframeFrame>()
-    private val pointers = ArrayList<Pointer>()
+    private val pointers = ArrayList<WireframePointer>()
 
     @Volatile
     private var running = false
@@ -137,8 +137,12 @@ internal class WireframeRecorder(
     val bufferedFrameCount: Int
         get() = synchronized(lock) { frames.size }
 
+    /** The pictures the wireframe records; null with a test's frame source. */
+    val images: WireframeImages?
+        get() = (source as? ViewFrameSource)?.images
+
     /** The windows recorded on a device; null with a test's frame source. */
-    val roots: RootViews?
+    val roots: WireframeRoots?
         get() = (source as? ViewFrameSource)?.roots
 
     override val isRunning: Boolean
@@ -284,27 +288,27 @@ internal class WireframeRecorder(
     // ---- pointers -----------------------------------------------------------
 
     override fun pointerDown(pointerId: Int, xDp: Float, yDp: Float, touch: Boolean) =
-        addPointer(Pointer(PointerKind.DOWN, xDp, yDp, clock(), touch))
+        addPointer(WireframePointer(WireframePointer.Kind.DOWN, xDp, yDp, clock(), touch))
 
     override fun pointerMove(pointerId: Int, xDp: Float, yDp: Float, touch: Boolean) {
         val now = clock()
         val last = lastMoveMs[pointerId]
         if (last != null && now - last < MOVE_INTERVAL_MS) return
         lastMoveMs[pointerId] = now
-        addPointer(Pointer(PointerKind.MOVE, xDp, yDp, now, touch))
+        addPointer(WireframePointer(WireframePointer.Kind.MOVE, xDp, yDp, now, touch))
     }
 
     override fun pointerUp(pointerId: Int, xDp: Float, yDp: Float, touch: Boolean, tap: Boolean) {
         lastMoveMs.remove(pointerId)
-        addPointer(Pointer(if (tap) PointerKind.TAP else PointerKind.UP, xDp, yDp, clock(), touch))
+        addPointer(WireframePointer(if (tap) WireframePointer.Kind.TAP else WireframePointer.Kind.UP, xDp, yDp, clock(), touch))
     }
 
     override fun pointerCancel(pointerId: Int, xDp: Float, yDp: Float, touch: Boolean) {
         lastMoveMs.remove(pointerId)
-        addPointer(Pointer(PointerKind.CANCEL, xDp, yDp, clock(), touch))
+        addPointer(WireframePointer(WireframePointer.Kind.CANCEL, xDp, yDp, clock(), touch))
     }
 
-    private fun addPointer(pointer: Pointer) {
+    private fun addPointer(pointer: WireframePointer) {
         if (!running || paused) return
         synchronized(lock) {
             pointers.add(pointer)
@@ -331,7 +335,7 @@ internal class WireframeRecorder(
 
     override fun captureRecording(clipId: String, sinceMs: Long?, untilMs: Long?): SessionRecordingPayload? {
         val frames: List<WireframeFrame>
-        val pointers: List<Pointer>
+        val pointers: List<WireframePointer>
         synchronized(lock) {
             frames = ArrayList(this.frames)
             pointers = ArrayList(this.pointers)
@@ -429,10 +433,6 @@ internal class WireframeRecorder(
     val averageCaptureMs: Double
         get() = if (captures == 0) 0.0 else captureNanos / captures.toDouble() / 1e6
 
-    internal enum class PointerKind { DOWN, MOVE, UP, TAP, CANCEL }
-
-    internal class Pointer(val kind: PointerKind, val x: Float, val y: Float, val timestampMs: Long, val touch: Boolean)
-
     companion object {
         private const val MAX_POINTERS = 4000
         private const val MOVE_INTERVAL_MS = 50L
@@ -450,7 +450,7 @@ internal class WireframeRecorder(
             debug: Boolean = false,
             clock: () -> Long = System::currentTimeMillis,
         ): WireframeRecorder {
-            val source = ViewFrameSource(RootViews(), context.applicationContext ?: context, debug)
+            val source = ViewFrameSource(WireframeRoots(), context.applicationContext ?: context, debug)
             return WireframeRecorder(maxFrames, fps, source, AndroidMainThread, clock, debug)
         }
 
@@ -479,7 +479,7 @@ internal class WireframeRecorder(
             return out
         }
 
-        private fun pointerEvents(p: Pointer, out: MutableList<Map<String, Any?>>) {
+        private fun pointerEvents(p: WireframePointer, out: MutableList<Map<String, Any?>>) {
             val ms = p.timestampMs
             val x = Math.round(p.x)
             val y = Math.round(p.y)
@@ -496,8 +496,8 @@ internal class WireframeRecorder(
                 ms,
             )
             when (p.kind) {
-                PointerKind.DOWN -> out.add(interaction(if (p.touch) 7 else 1))
-                PointerKind.MOVE -> out.add(
+                WireframePointer.Kind.DOWN -> out.add(interaction(if (p.touch) 7 else 1))
+                WireframePointer.Kind.MOVE -> out.add(
                     event(
                         3,
                         linkedMapOf(
@@ -507,12 +507,12 @@ internal class WireframeRecorder(
                         ms,
                     ),
                 )
-                PointerKind.UP -> out.add(interaction(if (p.touch) 9 else 0))
-                PointerKind.TAP -> {
+                WireframePointer.Kind.UP -> out.add(interaction(if (p.touch) 9 else 0))
+                WireframePointer.Kind.TAP -> {
                     out.add(interaction(if (p.touch) 9 else 0))
                     out.add(interaction(2))
                 }
-                PointerKind.CANCEL -> out.add(interaction(if (p.touch) 10 else 0))
+                WireframePointer.Kind.CANCEL -> out.add(interaction(if (p.touch) 10 else 0))
             }
         }
 
@@ -522,18 +522,27 @@ internal class WireframeRecorder(
             "div",
             linkedMapOf(
                 "id" to "tw",
-                "style" to "width:${Math.round(width)}px;height:${Math.round(height)}px;background:#1e1e1e",
+                "style" to "width:${Math.round(width)}px;height:${Math.round(height)}px;font-family:$SCREEN_FONT;background:#1e1e1e",
             ),
             listOf(
                 VNode.element(
-                    9,
+                    awayScreenTextBoxId,
                     "div",
                     mapOf("style" to "left:0;top:45%;width:100%;text-align:center;color:#9e9e9e;font-size:14px"),
-                    listOf(VNode.text(10, "App in the background")),
+                    listOf(VNode.text(awayScreenTextId, "App in the background")),
                 ),
             ),
         )
     }
+}
+
+/**
+ * One pointer event kept for clips: where (dp from the screen's top-left)
+ * and when a finger or the mouse went down, moved, went up (a [Kind.TAP]
+ * when that ended a tap) or was cancelled.
+ */
+internal class WireframePointer(val kind: Kind, val x: Float, val y: Float, val timestampMs: Long, val touch: Boolean) {
+    enum class Kind { DOWN, MOVE, UP, TAP, CANCEL }
 }
 
 /**

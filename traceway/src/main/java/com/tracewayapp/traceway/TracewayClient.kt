@@ -50,6 +50,7 @@ import com.tracewayapp.traceway.internal.HttpTransport
 import com.tracewayapp.traceway.internal.Json
 import com.tracewayapp.traceway.internal.LogCapture
 import com.tracewayapp.traceway.internal.NavigationCapture
+import com.tracewayapp.traceway.internal.NetworkState
 import com.tracewayapp.traceway.internal.Rfc3339
 import com.tracewayapp.traceway.internal.SdkInfo
 import com.tracewayapp.traceway.internal.TaskScheduler
@@ -90,6 +91,7 @@ import com.tracewayapp.traceway.replay.ReplayController
 import com.tracewayapp.traceway.replay.ReplaySource
 import com.tracewayapp.traceway.session.SessionInfo
 import com.tracewayapp.traceway.session.SessionManager
+import com.tracewayapp.traceway.wireframe.ImageBudget
 import com.tracewayapp.traceway.wireframe.WireframeRecorder
 import com.tracewayapp.traceway.wireframe.attach
 import io.opentelemetry.api.common.AttributeKey
@@ -100,6 +102,7 @@ import io.opentelemetry.api.trace.Span
 import io.opentelemetry.api.trace.SpanKind
 import io.opentelemetry.api.trace.StatusCode
 import io.opentelemetry.api.trace.Tracer
+import io.opentelemetry.context.Context
 import io.opentelemetry.sdk.common.CompletableResultCode
 import io.opentelemetry.sdk.logs.LogRecordProcessor
 import io.opentelemetry.sdk.logs.ReadWriteLogRecord
@@ -126,6 +129,13 @@ private const val MAX_REQUEST_SPANS = 256
 
 /** How long the crash handler may hold the crashing thread before handing the crash to the platform. */
 private const val CRASH_BUDGET_MS = 2500L
+
+/** `traceway.collection.health` waits this long after the first drop, then twice as long each time, up to [MAX_HEALTH_DELAY_MS]. */
+private const val HEALTH_DELAY_MS = 1_000L
+private const val MAX_HEALTH_DELAY_MS = 300_000L
+
+/** The longest route template [TracewayClient.setRoute] keeps. */
+private const val MAX_ROUTE_LENGTH = 64
 
 /** Kept while the SDK starts even when breadcrumbs filled the queue. */
 private val KEPT_BEFORE_READY = setOf(
@@ -262,6 +272,33 @@ class TracewayClient private constructor(
     @Volatile
     private var currentScreen: String? = null
 
+    /** The route template of the current screen ([setRoute]); a navigation to another screen clears it. */
+    @Volatile
+    private var currentRoute: String? = null
+
+    /** The screen before [currentScreen], and since when (epoch ms) the current one is shown. */
+    @Volatile
+    private var previousScreen: String? = null
+
+    @Volatile
+    private var screenSinceMs = 0L
+
+    /** The session the replay image budget counts for, readable without the lock. */
+    @Volatile
+    private var liveSessionId: String? = null
+
+    /** The image policy when the session started, reported on its events (`traceway.replay.images`). */
+    private var sessionImagePolicy: TracewayImagePolicy? = null
+    private var networkState: NetworkState? = null
+
+    // `traceway.collection.health`: one record a while after data was dropped. Its own lock, taken
+    // inside the client's but never around it.
+    private val healthLock = Any()
+    private var healthTimer: Cancellable? = null
+    private var healthDelayMs = HEALTH_DELAY_MS
+    private var healthReported = false
+    private var suppressedTotal = 0L
+
     /** Event types (`click`, `hover`, `navigation`) the triggers name. */
     @Volatile
     private var sequenceKinds: Set<String> = emptySet()
@@ -276,7 +313,9 @@ class TracewayClient private constructor(
     private val requestSpans = LinkedHashMap<String, Span>()
 
     // Android instrumentation, installed by [Traceway.init].
-    private val logLineSink: (String, String) -> Unit = { line, severity -> recordLog(line, severity) }
+    private val logLineSink: (String, String) -> Unit = { line, severity ->
+        consoleLine(line, TracewayLogLevel.of(severity), mapOf("log.source" to if (severity == "error") "stderr" else "stdout"))
+    }
     private var recorderCallbacks: Application.ActivityLifecycleCallbacks? = null
     private var lifecycle: AppLifecycle? = null
     private var touchTracker: TouchTracker? = null
@@ -319,6 +358,7 @@ class TracewayClient private constructor(
                 // Standalone, nothing receives the session rows; the session id still correlates records.
                 sessions = options.sessions && !standalone,
                 captureMetrics = options.captureMetrics,
+                replayImages = options.replayImages,
             ),
             now = scheduler::now,
         )
@@ -359,6 +399,8 @@ class TracewayClient private constructor(
             scheduler = scheduler,
         )
         memoryPeaks = MemoryPeaks(metrics, { store }, storageScope = routes.metrics.key)
+        recordings.onFailed = { scheduleHealth() }
+        replay.budget.onRejected = { scheduleHealth() }
         control.onChange { onSettingsChanged(it) }
     }
 
@@ -402,6 +444,12 @@ class TracewayClient private constructor(
                 clock = scheduler::now,
             )
             recorder.screenName = { currentScreen }
+            recorder.images?.let { images ->
+                val network = NetworkState(app)
+                networkState = network
+                images.unmetered = { network.unmetered }
+                images.budget = imageBudget
+            }
             // The recorder follows the activities and the foreground itself.
             recorderCallbacks = recorder.attach(app)
             tracker.addPointerListener(recorder)
@@ -420,7 +468,7 @@ class TracewayClient private constructor(
         try {
             startUnguarded()
         } catch (e: Throwable) {
-            log("failed to start: $e")
+            debugLog("failed to start: $e")
         } finally {
             // Under the lock, so records emitted live from other threads cannot overtake the queued ones.
             synchronized(lock) {
@@ -453,7 +501,7 @@ class TracewayClient private constructor(
         if (legacyDirectory != null) {
             val target = LegacyReports.destinationOf(options.legacyConnectionString)
             if (options.legacyConnectionString != null && target == null) {
-                log("invalid 1.x connection string; legacy reports will expire on the device")
+                debugLog("invalid 1.x connection string; legacy reports will expire on the device")
             }
             legacyReports = LegacyReports(legacyDirectory, target, http, scheduler).also { it.drain() }
         }
@@ -535,7 +583,7 @@ class TracewayClient private constructor(
                         store.set("instanceUid", Ids.bytesToUuid(newUid))
                     }
                 },
-                onStopped = { code -> log("remote config stopped (HTTP $code)") },
+                onStopped = { code -> debugLog("remote config stopped (HTTP $code)") },
                 http = http,
                 scheduler = scheduler,
                 minPollIntervalMs = overrides?.opampMinPollIntervalMs ?: 30_000L,
@@ -556,7 +604,7 @@ class TracewayClient private constructor(
         }
         outbox?.schedule(2000)
         tracewayOutbox?.schedule(2000)
-        log("started, instance ${Ids.bytesToUuid(instanceUid)}")
+        debugLog("started, instance ${Ids.bytesToUuid(instanceUid)}")
     }
 
     private fun stateDirectory(): File? {
@@ -713,25 +761,106 @@ class TracewayClient private constructor(
     /** The current session, or null before the SDK started. */
     val currentSessionId: String? get() = synchronized(lock) { sessions?.currentId }
 
-    /** Reports a caught exception. */
+    /**
+     * Reports a caught exception, with the screen it happened on. Dropped
+     * when [TracewayOptions.ignoreErrors] matches it or
+     * [TracewayOptions.beforeCapture] returns false.
+     */
     @JvmOverloads
     fun captureException(error: Throwable, attributes: Map<String, String>? = null) {
+        val attrs = exceptionAttributes(error, attributes)
+        val captured = TracewayCapturedError(
+            error = error,
+            type = attrs["exception.type"] as String,
+            message = attrs["exception.message"] as String,
+            isMessage = false,
+            attributes = readOnly(attrs),
+            stackTrace = attrs["exception.stacktrace"] as String,
+        )
+        if (!reports(captured)) return
+        attrs[Events.ATTR_EXCEPTION_ID] = Ids.uuidv4()
         emit(
             eventName = Events.EXCEPTION,
             severity = Severity.ERROR,
             severityText = "ERROR",
-            attributes = exceptionAttributes(error, attributes),
+            attributes = attrs,
         )
     }
 
-    private fun exceptionAttributes(error: Throwable, attributes: Map<String, String>?): Map<String, Any> {
-        val attrs = LinkedHashMap<String, Any>()
+    private fun exceptionAttributes(error: Throwable, attributes: Map<String, String>?): LinkedHashMap<String, Any> {
+        val attrs = LinkedHashMap<String, Any>(screenContext())
         attributes?.let { attrs.putAll(it) }
         attrs["exception.type"] = error.javaClass.name
         attrs["exception.message"] = safeMessage(error) ?: ""
         attrs["exception.stacktrace"] = safeStackTrace(error)
-        attrs[Events.ATTR_EXCEPTION_ID] = Ids.uuidv4()
         return attrs
+    }
+
+    private fun readOnly(attrs: Map<String, Any>): Map<String, Any> =
+        java.util.Collections.unmodifiableMap(LinkedHashMap(attrs))
+
+    /**
+     * Whether [captured] is reported: [TracewayOptions.ignoreErrors] does
+     * not match its first line, and [TracewayOptions.beforeCapture] does not
+     * drop it. A callback that throws keeps it.
+     */
+    private fun reports(captured: TracewayCapturedError): Boolean {
+        if (ignored(captured.line)) return false
+        val before = options.beforeCapture ?: return true
+        return try {
+            before(captured)
+        } catch (e: Throwable) {
+            debugLog("beforeCapture threw, the record is kept: $e")
+            true
+        }
+    }
+
+    /**
+     * Patterns match the `Type: message` line only: matching stack frames
+     * would let a method named like a pattern (any `onTimeout` for the
+     * default `/timeout/i`) silence every error that passes through it.
+     */
+    private fun ignored(line: String): Boolean {
+        for (pattern in options.ignoreErrors ?: TracewayOptions.DEFAULT_IGNORE_ERRORS) {
+            val hit = when (pattern) {
+                is String -> pattern.isNotEmpty() && line.contains(pattern)
+                is Regex -> pattern.containsMatchIn(line)
+                is java.util.regex.Pattern -> pattern.matcher(line).find()
+                else -> false
+            }
+            if (hit) return true
+        }
+        return false
+    }
+
+    /**
+     * Where the app was when an issue happened: the screen on top, its route
+     * template, the screen before it, how long it had been shown, and the
+     * size of the screen in dp. Read when the issue is captured.
+     */
+    private fun screenContext(): Map<String, Any> {
+        val out = LinkedHashMap<String, Any>(8)
+        val screen = currentScreen
+        if (!screen.isNullOrEmpty()) out["app.screen.name"] = screen
+        currentRoute?.let { out["app.screen.route"] = it }
+        previousScreen?.takeIf { it.isNotEmpty() }?.let { out["app.screen.previous"] = it }
+        val since = screenSinceMs
+        if (!screen.isNullOrEmpty() && since > 0) out["app.screen.duration_ms"] = maxOf(0L, scheduler.now() - since)
+        viewport()?.let { out["viewport"] = it }
+        return out
+    }
+
+    /** The screen's size in dp, `<width>x<height>`. */
+    private fun viewport(): String? = try {
+        val metrics = application?.resources?.displayMetrics
+        val density = metrics?.density ?: 0f
+        if (metrics == null || density <= 0f || metrics.widthPixels <= 0 || metrics.heightPixels <= 0) {
+            null
+        } else {
+            "${Math.round(metrics.widthPixels / density)}x${Math.round(metrics.heightPixels / density)}"
+        }
+    } catch (_: Throwable) {
+        null
     }
 
     /** The app's exception classes run code here (getMessage, toString): it must not throw into the app. */
@@ -748,11 +877,13 @@ class TracewayClient private constructor(
         "${error.javaClass.name}\n$frames"
     }
 
-    /** Reports a free-form message as an issue. */
+    /** Reports a free-form message as an issue, with the screen it was sent from; filtered like [captureException]. */
     @JvmOverloads
     fun captureMessage(message: String, attributes: Map<String, String>? = null) {
-        val attrs = LinkedHashMap<String, Any>()
+        val attrs = LinkedHashMap<String, Any>(screenContext())
         attributes?.let { attrs.putAll(it) }
+        val captured = TracewayCapturedError(null, null, message, true, readOnly(attrs), null)
+        if (!reports(captured)) return
         attrs[Events.ATTR_EXCEPTION_ID] = Ids.uuidv4()
         emit(eventName = Events.MESSAGE, severity = Severity.INFO, severityText = "INFO", body = message, attributes = attrs)
     }
@@ -814,37 +945,59 @@ class TracewayClient private constructor(
         opamp?.refresh()
     }
 
-    /** Records a console line (`System.out`, or the app's own logger). */
+    /**
+     * Records [message] as a log line at [level] (`log.source = "api"`),
+     * shown on the session timeline and filtered by the console's minimum
+     * severity in the collection settings. To report an issue, use
+     * [captureException] or [captureMessage].
+     */
     @JvmOverloads
-    fun recordLog(message: String, severity: String = "info") {
+    fun log(message: String, level: TracewayLogLevel = TracewayLogLevel.INFO, attributes: Map<String, String>? = null) {
+        if (!options.captureLogs) return
+        val attrs = LinkedHashMap<String, Any>()
+        attributes?.let { attrs.putAll(it) }
+        attrs["log.source"] = "api"
+        consoleLine(message, level, attrs)
+    }
+
+    /** Records a log line; [severity] is trace, debug, info, warn, error or fatal. */
+    @Deprecated(
+        "Use log(message, level), with a TracewayLogLevel.",
+        ReplaceWith("log(message, TracewayLogLevel.INFO)", "com.tracewayapp.traceway.TracewayLogLevel"),
+    )
+    @JvmOverloads
+    fun recordLog(message: String, severity: String = "info") = log(message, TracewayLogLevel.of(severity))
+
+    private fun consoleLine(message: String, level: TracewayLogLevel, attributes: Map<String, Any>) {
         // The SDK's own output is not app telemetry, nor is a line printed while a record is emitted.
         if (message.startsWith("Traceway: ") || (emitDepth > 0 && Thread.holdsLock(lock))) return
-        val (number, text) = when (severity.lowercase()) {
-            "trace", "verbose" -> Severity.TRACE to "TRACE"
-            "debug" -> Severity.DEBUG to "DEBUG"
-            "warn", "warning" -> Severity.WARN to "WARN"
-            "error" -> Severity.ERROR to "ERROR"
-            "fatal", "assert" -> Severity.FATAL to "FATAL"
-            else -> Severity.INFO to "INFO"
-        }
-        emit(severity = number, severityText = text, body = message)
+        emit(severity = level.severity, severityText = level.severityText, body = message, attributes = attributes)
     }
 
     /**
      * Reports the screen the user arrived at: `/checkout` or `/orders/{id}`
-     * as the route reads. Activities and AndroidX fragments are reported
-     * automatically; call this from Compose Navigation or another router.
+     * as the route reads, with its route template [route] when the router
+     * knows it (the same as calling [setRoute] right after). Activities and
+     * AndroidX fragments are reported automatically; call this from Compose
+     * Navigation or another router.
      */
     @JvmOverloads
-    fun recordNavigation(path: String, action: String = "push", from: String? = null) {
+    fun recordNavigation(path: String, action: String = "push", from: String? = null, route: String? = null) {
         markActivity()
         val nowMs = scheduler.now()
         // A removal takes a screen away without the user arriving anywhere: on the timeline, not a navigation.
         val arrived = action != "remove"
         val to = if (arrived) path else null
-        if (!to.isNullOrEmpty()) currentScreen = to
+        if (!to.isNullOrEmpty() && to != currentScreen) {
+            previousScreen = currentScreen
+            currentScreen = to
+            screenSinceMs = nowMs
+            currentRoute = null
+        }
+        val template = routeTemplate(route)
+        if (arrived && template != null) currentRoute = template
         if (options.captureMetrics && arrived) {
-            vitals?.navigated(if (to.isNullOrEmpty()) null else normalizePath(to), action, nowMs)
+            vitals?.navigated(if (to.isNullOrEmpty()) null else template ?: normalizePath(to), action, nowMs)
         }
         val attrs = LinkedHashMap<String, Any>()
         attrs["url.full"] = to ?: ""
@@ -852,8 +1005,66 @@ class TracewayClient private constructor(
         attrs["browser.navigation.type"] = action
         if (from != null) attrs["navigation.from"] = from
         if (to != null) attrs["navigation.to"] = to
-        if (!to.isNullOrEmpty()) attrs["app.screen.name"] = to
+        currentScreen?.takeIf { it.isNotEmpty() }?.let { attrs["app.screen.name"] = it }
+        currentRoute?.let { attrs["app.screen.route"] = it }
         emit(eventName = Events.NAVIGATION, severity = Severity.INFO, timeMs = nowMs, attributes = attrs)
+    }
+
+    /**
+     * Names the current screen by its route template (`/orders/:id`): issues
+     * carry it (`app.screen.route`), and metrics group by it instead of by
+     * the path with its ids replaced. Lasts until the user navigates to
+     * another screen; null removes it. Trimmed, with a leading `/`, at most
+     * 64 characters.
+     */
+    fun setRoute(template: String?) {
+        val route = routeTemplate(template)
+        currentRoute = route
+        if (route != null && options.captureMetrics) vitals?.routeNamed(route)
+    }
+
+    private fun routeTemplate(template: String?): String? {
+        val trimmed = template?.trim()
+        if (trimmed.isNullOrEmpty()) return null
+        val withSlash = if (trimmed.startsWith("/")) trimmed else "/$trimmed"
+        return if (withSlash.length > MAX_ROUTE_LENGTH) withSlash.substring(0, MAX_ROUTE_LENGTH) else withSlash
+    }
+
+    /**
+     * Starts an interaction named [name] (`checkout`, `search`): a span the
+     * requests made in its [TracewayInteraction.run] are children of, and
+     * that the exceptions and logs recorded there point to. Call
+     * [TracewayInteraction.end] when the action is over. One started inside
+     * another's `run` is its child. Before the SDK has started it records
+     * nothing.
+     */
+    @JvmOverloads
+    fun startInteraction(name: String, attributes: Map<String, Any>? = null): TracewayInteraction {
+        val t = tracer
+        var span: Span? = null
+        if (t != null && ready && !isShutdown && name.isNotEmpty()) {
+            try {
+                val parent = TracewayInteraction.currentContext()
+                val builder = t.spanBuilder(name).setSpanKind(SpanKind.INTERNAL)
+                if (parent != null) builder.setParent(parent) else builder.setNoParent()
+                attributes?.forEach { (key, value) ->
+                    when (value) {
+                        is String -> builder.setAttribute(key, value)
+                        is Boolean -> builder.setAttribute(key, value)
+                        is Int -> builder.setAttribute(key, value.toLong())
+                        is Long -> builder.setAttribute(key, value)
+                        is Float -> builder.setAttribute(key, value.toDouble())
+                        is Double -> builder.setAttribute(key, value)
+                        else -> builder.setAttribute(key, value.toString())
+                    }
+                }
+                builder.setAttribute("traceway.interaction", true)
+                span = builder.startSpan()
+            } catch (e: Throwable) {
+                debugLog("interaction failed: $e")
+            }
+        }
+        return TracewayInteraction(span) { error, attrs -> captureException(error, attrs) }
     }
 
     /** The screen on top shows everything it loads: ends its time to full display (`app.screen.ttfd`). */
@@ -902,11 +1113,13 @@ class TracewayClient private constructor(
         val t = tracer ?: return RequestHandle(null, method.uppercase(), url, scheduler.now(), null)
         return try {
             val startMs = scheduler.now()
-            val span = t.spanBuilder(method.uppercase())
+            val builder = t.spanBuilder(method.uppercase())
                 .setSpanKind(SpanKind.CLIENT)
-                .setNoParent()
                 .setStartTimestamp(startMs, TimeUnit.MILLISECONDS)
-                .startSpan()
+            // A request made inside an interaction's `run` is part of it; any other starts a trace of its own.
+            val parent = TracewayInteraction.currentContext()
+            if (parent != null) builder.setParent(parent) else builder.setNoParent()
+            val span = builder.startSpan()
             val header = if (!hasTraceparent && propagates(url)) {
                 val c = span.spanContext
                 "00-${c.traceId}-${c.spanId}-${if (c.isSampled) "01" else "00"}"
@@ -915,7 +1128,7 @@ class TracewayClient private constructor(
             }
             RequestHandle(span, method.uppercase(), url, startMs, header)
         } catch (e: Throwable) {
-            log("request span failed: $e")
+            debugLog("request span failed: $e")
             null
         }
     }
@@ -984,7 +1197,7 @@ class TracewayClient private constructor(
             if (failed) span.setStatus(StatusCode.ERROR)
             span.end(endMs, TimeUnit.MILLISECONDS)
         } catch (e: Throwable) {
-            log("network span failed: $e")
+            debugLog("network span failed: $e")
         }
     }
 
@@ -1005,7 +1218,7 @@ class TracewayClient private constructor(
         val path = try {
             ViewPath.pathAt(root, xPx, yPx)
         } catch (e: Throwable) {
-            log("tap lookup failed: $e")
+            debugLog("tap lookup failed: $e")
             return
         } ?: return
         val target = describeTap(path)
@@ -1096,7 +1309,7 @@ class TracewayClient private constructor(
             synchronized(lock) { saveTriggerProgress(now = true) }
             store.flush()
         } catch (e: Throwable) {
-            log("flush failed: $e")
+            debugLog("flush failed: $e")
         }
     }
 
@@ -1126,6 +1339,11 @@ class TracewayClient private constructor(
         lifecycle?.uninstall()
         recorderCallbacks?.let { application?.unregisterActivityLifecycleCallbacks(it) }
         recorderCallbacks = null
+        networkState?.close()
+        synchronized(healthLock) {
+            healthTimer?.cancel()
+            healthTimer = null
+        }
         LogCapture.uninstall(logSink = logLineSink)
         store.flush()
         // What the processors still export from here is written to disk, for the next start, not sent.
@@ -1170,7 +1388,8 @@ class TracewayClient private constructor(
             (spanExporter as? PersistingExporter)?.persistOnly = true
             synchronized(lock) {
                 if (options.captureMetrics) metrics.crash()
-                val attrs = LinkedHashMap(exceptionAttributes(error, mapOf("thread.name" to thread.name)))
+                val attrs = exceptionAttributes(error, mapOf("thread.name" to thread.name))
+                attrs[Events.ATTR_EXCEPTION_ID] = Ids.uuidv4()
                 attrs["exception.unhandled"] = true
                 // The record is written to disk before its triggers run (it is the one thing that must
                 // survive), so it carries the replay status the default trigger is about to give it.
@@ -1275,6 +1494,10 @@ class TracewayClient private constructor(
         if (pending.size < limit) pending.add(emit)
     }
 
+    /**
+     * Emits a log record. [context] is the caller's (an interaction's trace,
+     * inside its `run`), kept for a record that waits for the SDK to start.
+     */
     private fun emit(
         eventName: String? = null,
         severity: Severity? = null,
@@ -1282,13 +1505,14 @@ class TracewayClient private constructor(
         body: String? = null,
         attributes: Map<String, Any> = emptyMap(),
         timeMs: Long? = null,
+        context: Context = Context.current(),
     ) {
         if (isShutdown) return
         val timestamp = timeMs ?: scheduler.now()
         synchronized(lock) {
             if (!ready) {
                 queue(eventName in KEPT_BEFORE_READY) {
-                    emit(eventName, severity, severityText, body, attributes, timestamp)
+                    emit(eventName, severity, severityText, body, attributes, timestamp, context)
                 }
                 return
             }
@@ -1296,6 +1520,7 @@ class TracewayClient private constructor(
             emitDepth++
             try {
                 val b = l.logRecordBuilder()
+                b.setContext(context)
                 b.setTimestamp(timestamp, TimeUnit.MILLISECONDS)
                 if (eventName != null) b.setEventName(eventName)
                 if (severity != null) b.setSeverity(severity)
@@ -1315,7 +1540,7 @@ class TracewayClient private constructor(
                 }
                 b.emit()
             } catch (e: Throwable) {
-                log("emit failed: $e")
+                debugLog("emit failed: $e")
             } finally {
                 emitDepth--
             }
@@ -1333,12 +1558,19 @@ class TracewayClient private constructor(
         out[Events.ATTR_SESSION_ID] = session.id
         out[Events.ATTR_SESSION_STARTED_AT] = session.startedAtMs
         for ((k, v) in replay.budget.snapshot(session.id)) out[k] = v
+        out["traceway.replay.images"] = (sessionImagePolicy ?: control.settings.replayImages).wire
         out["traceway.replay.failed_segments"] = recordings.failedSegments.toLong()
         out["traceway.context.evicted"] = buffer.evictedCount.toLong()
         return out
     }
 
     private fun onSessionStart(session: SessionInfo, resumed: Boolean) {
+        liveSessionId = session.id
+        sessionImagePolicy = control.settings.replayImages
+        synchronized(healthLock) {
+            healthDelayMs = HEALTH_DELAY_MS
+            healthReported = false
+        }
         // What an earlier session left behind is not this one's context.
         if (!resumed) {
             buffer.clear()
@@ -1383,6 +1615,12 @@ class TracewayClient private constructor(
         override fun observe(record: ObservedRecord) = this@TracewayClient.observe(record)
     }
 
+    /** The session's replay image budget, asked by the wireframe capture on the main thread and its encoder. */
+    private val imageBudget = object : ImageBudget {
+        override fun hasRoom(): Boolean = replay.budget.hasImageRoom(liveSessionId)
+        override fun admit(bytes: Int): Boolean = replay.budget.admitImage(liveSessionId, bytes.toLong())
+    }
+
     private fun enrichLog(record: ReadWriteLogRecord, signal: String): Boolean {
         val session = sessions?.current
         if (session != null && record.getAttribute(ATTR_STARTED_AT) == null) {
@@ -1408,18 +1646,64 @@ class TracewayClient private constructor(
     private fun admitError(key: String): Boolean {
         val nowMs = scheduler.now()
         if (key == lastErrorKey && nowMs - lastErrorMs < DUPLICATE_ERROR_WINDOW_MS) {
-            suppressedErrors++
+            suppressed()
             return false
         }
         errorTimes.removeAll { nowMs - it > 60_000 }
         if (errorTimes.size >= MAX_ERRORS_PER_MINUTE) {
-            suppressedErrors++
+            suppressed()
             return false
         }
         errorTimes.add(nowMs)
         lastErrorKey = key
         lastErrorMs = nowMs
         return true
+    }
+
+    private fun suppressed() {
+        suppressedErrors++
+        synchronized(healthLock) { suppressedTotal++ }
+        scheduleHealth()
+    }
+
+    /**
+     * Reports, a while after the first drop, that data was dropped: replay
+     * segments over the session's budget, errors the flood guard suppressed,
+     * replay uploads given up. One `traceway.collection.health` record per
+     * delay, which starts at 1 s and doubles to 5 minutes; the session's row
+     * learns it once from a `traceway.session.update`. Any thread.
+     */
+    private fun scheduleHealth() {
+        if (isShutdown) return
+        synchronized(healthLock) {
+            if (healthTimer != null) return
+            healthTimer = scheduler.schedule(healthDelayMs) { emitHealth() }
+        }
+    }
+
+    private fun emitHealth() {
+        val updateSession: Boolean
+        val suppressedNow: Long
+        synchronized(healthLock) {
+            healthTimer = null
+            updateSession = !healthReported
+            healthReported = true
+            healthDelayMs = minOf(healthDelayMs * 2, MAX_HEALTH_DELAY_MS)
+            suppressedNow = suppressedTotal
+        }
+        if (isShutdown) return
+        synchronized(lock) {
+            val session = sessions?.current
+            val attrs = LinkedHashMap<String, Any>()
+            for ((k, v) in replay.budget.snapshot(session?.id)) attrs[k] = v
+            attrs["traceway.error.suppressed_total"] = suppressedNow
+            attrs["traceway.context.evicted"] = buffer.evictedCount.toLong()
+            attrs["traceway.replay.failed_segments"] = recordings.failedSegments.toLong()
+            emit(eventName = Events.COLLECTION_HEALTH, severity = Severity.INFO, attributes = attrs)
+            if (session != null && updateSession && session.id in reportedSessions) {
+                emit(eventName = Events.SESSION_UPDATE, severity = Severity.INFO, attributes = sessionAttributes(session))
+            }
+        }
     }
 
     private fun observe(record: ObservedRecord) {
@@ -1625,7 +1909,10 @@ class TracewayClient private constructor(
     private fun applyReplay() {
         val session = sessions?.currentId
         val settings = control.settings
-        (screenRecorder as? WireframeRecorder)?.maskAllInputs = settings.replayMaskAllInputs
+        (screenRecorder as? WireframeRecorder)?.let { recorder ->
+            recorder.maskAllInputs = settings.replayMaskAllInputs
+            recorder.images?.policy = settings.replayImages
+        }
         replay.apply(
             control.replayMode,
             maxAgeMs = settings.bufferMaxAgeMs,
@@ -1850,7 +2137,7 @@ class TracewayClient private constructor(
         val hash = Ids.bytesToHex(config.configHash)
         store.set("config", mapOf("hash" to hash, "body" to body))
         emit(eventName = Events.CONFIG_APPLIED, severity = Severity.INFO, attributes = mapOf("traceway.config.hash" to hash))
-        log("remote config applied ($hash)")
+        debugLog("remote config applied ($hash)")
         return ApplyResult.applied()
     }
 
@@ -1865,8 +2152,9 @@ class TracewayClient private constructor(
 
     // ------------------------------------------------------------ metrics
 
+    /** The current screen as a metrics dimension: its route template, or its path with ids replaced. */
     private val metricsScreen: String?
-        get() = currentScreen?.takeIf { it.isNotEmpty() }?.let { normalizePath(it) }
+        get() = currentRoute ?: currentScreen?.takeIf { it.isNotEmpty() }?.let { normalizePath(it) }
 
     private fun postMetrics(body: ByteArray): Int =
         com.tracewayapp.traceway.otel.postOtlp(http, routes.metrics, body)
@@ -1915,12 +2203,14 @@ class TracewayClient private constructor(
 
     private fun setScreenRecorder(recorder: ReplaySource?) = synchronized(lock) {
         screenRecorder = recorder
-        (recorder as? WireframeRecorder)?.maskAllInputs =
-            control.settings.replayMaskAllInputs
+        (recorder as? WireframeRecorder)?.let {
+            it.maskAllInputs = control.settings.replayMaskAllInputs
+            it.images?.policy = control.settings.replayImages
+        }
         replay.attach(recorder)
     }
 
-    private fun log(message: String) {
+    private fun debugLog(message: String) {
         if (options.debug) Log.d(TAG, message)
     }
 

@@ -6,11 +6,14 @@ import kotlin.math.max
 import kotlin.math.min
 
 /**
- * Shared rules of every wireframe, the same as the Flutter SDK's, so the
- * dashboard draws Android and Flutter recordings alike. Each node carries
- * its geometry and colors inline; these set the defaults and the
- * placeholder looks: `t` text (`n` one line, `e` ellipsized, `k` clipped),
- * `im` image, `ic` icon, `cp` custom drawing, `mk` masked, `pv` native view.
+ * The stylesheet every wireframe shares, byte for byte the same in the
+ * Android, iOS and Flutter SDKs (`sdk-parity/wireframe.css`), so the
+ * dashboard draws their recordings alike. Each node carries its geometry and
+ * colors inline; these rules set the defaults and the placeholder looks:
+ * `t` text (`n` one line, `e` ellipsized, `k` clipped), `im` image, `ic`
+ * icon, `cp` custom drawing, `mk` masked, `sk` skeleton text, `pv` native
+ * view. The platform's font stack is inline on the screen node
+ * ([SCREEN_FONT]), not here.
  */
 internal const val wireframeCss = """html,body{margin:0;padding:0;overflow:hidden;background:#000}
 body{font-family:Roboto,"Segoe UI","Helvetica Neue",Arial,sans-serif;-webkit-font-smoothing:antialiased;-webkit-text-size-adjust:none;text-size-adjust:none}
@@ -24,8 +27,17 @@ body{font-family:Roboto,"Segoe UI","Helvetica Neue",Arial,sans-serif;-webkit-fon
 .ic::before{content:"";position:absolute;inset:14%;border-radius:30%;background:currentColor;opacity:.62}
 .cp{border:1px dashed rgba(128,128,128,.5)}
 .mk{background-image:repeating-linear-gradient(45deg,rgba(255,255,255,.08) 0 6px,transparent 6px 12px)}
+.sk{color:#8e8e93}
+.sk::before{content:"";position:absolute;left:0;right:0;top:22%;bottom:22%;border-radius:4px;background:currentColor;opacity:.35}
+.sk.sm::before{top:6%;bottom:6%;border-radius:0;background:repeating-linear-gradient(to bottom,currentColor 0 13px,transparent 13px 20px)}
 .pv{display:flex;align-items:center;justify-content:center;overflow:hidden;background-color:#eceff1;background-image:repeating-linear-gradient(135deg,rgba(96,125,139,.16) 0 10px,transparent 10px 20px);box-shadow:inset 0 0 0 1px rgba(96,125,139,.45);color:#455a64;font-size:13px;font-weight:500;text-align:center}
 """
+
+/**
+ * Android's font stack, inline on the screen node (`div#tw`): the shared
+ * stylesheet is the same on every platform, the font each one names is not.
+ */
+internal const val SCREEN_FONT = "Roboto,\"Segoe UI\",\"Helvetica Neue\",Arial,sans-serif"
 
 // ---- numbers ----------------------------------------------------------------
 //
@@ -343,17 +355,25 @@ internal object WidgetCss {
 
     /**
      * A switch's track of [w] x [h] centered on ([cx], [cy]). Material 3
-     * tracks are filled when on and outlined when off; compact (Material 2)
-     * tracks are filled either way.
+     * tracks are filled when on and outlined when off (over [fill] when the
+     * track paints one); compact (Material 2) tracks are filled either way,
+     * with [fill] when known.
      */
-    fun switchTrack(sb: StringBuilder, cx: Float, cy: Float, w: Float, h: Float, on: Boolean, active: Int, inactive: Int, compact: Boolean) {
+    fun switchTrack(
+        sb: StringBuilder, cx: Float, cy: Float, w: Float, h: Float, on: Boolean, active: Int, inactive: Int, compact: Boolean,
+        fill: Int = 0,
+    ) {
         sb.append("left:").appendPx(cx - w / 2).append(";top:").appendPx(cy - h / 2)
             .append(";width:").appendPx(w).append(";height:").appendPx(h)
             .append(";border-radius:").appendPx(h / 2).append(';')
         when {
-            compact -> sb.append("background-color:").appendColor(if (on) withAlpha(active, 0.5f) else withAlpha(inactive, 0.5f)).append(';')
+            compact -> sb.append("background-color:")
+                .appendColor(if (fill != 0) fill else if (on) withAlpha(active, 0.5f) else withAlpha(inactive, 0.5f)).append(';')
             on -> sb.append("background-color:").appendColor(active).append(';')
-            else -> sb.append("box-shadow:inset 0 0 0 2px ").appendColor(inactive).append(';')
+            else -> {
+                if (fill != 0) sb.append("background-color:").appendColor(fill).append(';')
+                sb.append("box-shadow:inset 0 0 0 2px ").appendColor(inactive).append(';')
+            }
         }
     }
 
@@ -372,10 +392,10 @@ internal object WidgetCss {
             .appendPx(h / 2).append(';')
     }
 
-    /** The bar of a linear indicator: [value] 0-1, or null while indeterminate. */
-    fun linearBar(sb: StringBuilder, value: Float?, color: Int) {
+    /** The bar of a linear indicator: [value] 0-1, or null while indeterminate; from the right when [rtl]. */
+    fun linearBar(sb: StringBuilder, value: Float?, color: Int, rtl: Boolean = false) {
         sb.append("width:").appendNum1((value ?: 0.4f) * 100f).append("%;height:100%;")
-        if (value == null) sb.append("left:30%;")
+        if (value == null) sb.append("left:30%;") else if (rtl) sb.append("left:").appendNum1((1 - value) * 100f).append("%;")
         sb.append("background-color:").appendColor(color).append(';')
     }
 

@@ -42,7 +42,7 @@ import java.io.File
  * every position is known. Lengths in the wireframe are dp.
  */
 @RunWith(AndroidJUnit4::class)
-class ViewCaptureInstrumentedTest {
+class ViewWireframeInstrumentedTest {
     private val instrumentation = InstrumentationRegistry.getInstrumentation()
     private val context: Context = instrumentation.targetContext
     private val density = context.resources.displayMetrics.density
@@ -60,8 +60,8 @@ class ViewCaptureInstrumentedTest {
         root.layout(0, 0, px(400f), px(800f))
     }
 
-    private fun capture(capture: ViewCapture, root: View, at: Long = System.currentTimeMillis()): VNode {
-        val frame = capture.capture(listOf(RootViews.Root(root, WindowManager.LayoutParams.TYPE_APPLICATION, 0f, 0, 0)), at, "/test")
+    private fun capture(capture: WireframeCapture, root: View, at: Long = System.currentTimeMillis()): VNode {
+        val frame = capture.capture(listOf(WireframeRoots.Root(root, WindowManager.LayoutParams.TYPE_APPLICATION, 0f, 0, 0)), at, "/test")
         assertNotNull(frame)
         assertEquals(400f, frame!!.width, 0.6f)
         return frame.screen!!
@@ -114,7 +114,7 @@ class ViewCaptureInstrumentedTest {
             })
             root.addView(column, FrameLayout.LayoutParams(px(400f), px(800f)).apply { topMargin = px(10f) })
             layout(root)
-            screen = capture(ViewCapture(context), root)
+            screen = capture(WireframeCapture(context), root)
         }
         val styles = all(screen).map(::style)
         assertTrue(styles.any { it.contains("background-color:#ff0000") && it.contains("width:50px") })
@@ -136,7 +136,7 @@ class ViewCaptureInstrumentedTest {
     fun anUnchangedScreenIsTheSameObjectAndAScrollMovesOneNode() {
         lateinit var scroll: ScrollView
         lateinit var root: FrameLayout
-        val capture = ViewCapture(context)
+        val capture = WireframeCapture(context)
         lateinit var before: VNode
         lateinit var again: VNode
         lateinit var after: VNode
@@ -179,7 +179,7 @@ class ViewCaptureInstrumentedTest {
             root.addView(TextView(context).apply { text = "transparent"; alpha = 0f })
             root.addView(TextView(context).apply { text = "faded"; alpha = 0.5f })
             layout(root)
-            screen = capture(ViewCapture(context), root)
+            screen = capture(WireframeCapture(context), root)
         }
         assertEquals(listOf("shown", "faded"), texts(screen))
         assertTrue(all(screen).any { style(it).contains("opacity:0.5") })
@@ -187,7 +187,7 @@ class ViewCaptureInstrumentedTest {
 
     @Test
     fun masksWhatPrivacyMasksAndTextFieldsHold() {
-        val capture = ViewCapture(context)
+        val capture = WireframeCapture(context)
         lateinit var root: LinearLayout
         lateinit var screen: VNode
         onMain {
@@ -241,7 +241,7 @@ class ViewCaptureInstrumentedTest {
             root.addView(SurfaceView(context), LinearLayout.LayoutParams(px(200f), px(90f)))
             root.addView(View(context).apply { rotation = 90f; background = ColorDrawable(Color.CYAN) }, LinearLayout.LayoutParams(px(40f), px(20f)))
             layout(root)
-            screen = capture(ViewCapture(context), root)
+            screen = capture(WireframeCapture(context), root)
         }
         val styles = all(screen).map(::style)
         assertTrue("a checked checkbox", styles.any { it.contains("width:18px;height:18px") && it.contains("background-color") })
@@ -272,10 +272,10 @@ class ViewCaptureInstrumentedTest {
             )
             dialog.layout(0, 0, px(300f), px(200f))
             val roots = listOf(
-                RootViews.Root(page, WindowManager.LayoutParams.TYPE_APPLICATION, 0f, 0, 0),
-                RootViews.Root(dialog, WindowManager.LayoutParams.TYPE_APPLICATION, 0.6f, px(50f), px(300f)),
+                WireframeRoots.Root(page, WindowManager.LayoutParams.TYPE_APPLICATION, 0f, 0, 0),
+                WireframeRoots.Root(dialog, WindowManager.LayoutParams.TYPE_APPLICATION, 0.6f, px(50f), px(300f)),
             )
-            val capture = ViewCapture(context)
+            val capture = WireframeCapture(context)
             // A window that just opened joins from the next capture, once it is in its place.
             assertEquals(listOf("page"), texts(capture.capture(roots, System.currentTimeMillis(), null)!!.screen!!))
             assertTrue(capture.deferredWindow)
@@ -295,7 +295,7 @@ class ViewCaptureInstrumentedTest {
      */
     @Test
     fun recordsAClipOfRealViews() {
-        val capture = ViewCapture(context)
+        val capture = WireframeCapture(context)
         lateinit var root: FrameLayout
         lateinit var scroll: ScrollView
         lateinit var check: CheckBox
@@ -328,7 +328,7 @@ class ViewCaptureInstrumentedTest {
             override fun capture(timestampMs: Long, href: String?): WireframeFrame? {
                 var frame: WireframeFrame? = null
                 onMain {
-                    frame = capture.capture(listOf(RootViews.Root(root, WindowManager.LayoutParams.TYPE_APPLICATION, 0f, 0, 0)), timestampMs, href)
+                    frame = capture.capture(listOf(WireframeRoots.Root(root, WindowManager.LayoutParams.TYPE_APPLICATION, 0f, 0, 0)), timestampMs, href)
                 }
                 return frame
             }

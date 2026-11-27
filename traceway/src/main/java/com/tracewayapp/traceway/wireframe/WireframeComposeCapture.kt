@@ -53,13 +53,16 @@ internal object ComposeSupport {
  * only when the text changes), text fields (masked), toggles, sliders and
  * progress drawn from their state, images and icons as placeholders,
  * buttons and selected tabs. Surface colors are not in the semantics, so
- * boxes get a neutral look over the view's own background.
+ * boxes get a neutral look over the view's own background. Images stay
+ * placeholders even when replay images are on: the semantics tree holds no
+ * pixels. The node kinds use the converter words of [WireframeCapture]:
+ * `text`, `field`, `toggle`, `slider`, `progress`, `image`, `scroll`.
  *
  * Only this class touches Compose: it is created after [ComposeSupport]
  * found Compose in the app. Should a Compose version lack something it
  * reads, its screens become placeholders instead of failing the capture.
  */
-internal class ComposeCapture(private val c: ViewCapture) {
+internal class WireframeComposeCapture(private val c: WireframeCapture) {
     private class State {
         val recs = SparseArray<Rec>()
         var generation = 0
@@ -70,6 +73,9 @@ internal class ComposeCapture(private val c: ViewCapture) {
     /** The Compose view being captured, for its theme. */
     private var view: View? = null
     private val layouts = ArrayList<TextLayoutResult>(1)
+
+    /** The color of the last text walked, for the button around it. */
+    private var textColor = 0
     private var fontScale = 1f
 
     @Volatile
@@ -104,7 +110,7 @@ internal class ComposeCapture(private val c: ViewCapture) {
         val sb = c.sb
         sb.setLength(0)
         sb.append("left:0;top:0;width:100%;height:100%;")
-        out.add(c.element(viewRec, 8, "cp", ViewCapture.EMPTY))
+        out.add(c.element(viewRec, 8, "cp", WireframeCapture.EMPTY))
     }
 
     private fun rec(state: State, id: Int): Rec {
@@ -155,10 +161,10 @@ internal class ComposeCapture(private val c: ViewCapture) {
             sb.setLength(0)
             box(sb, rl, rt, wd, hd)
             sb.append("background:").appendColor(own.color).append(';')
-            out.add(c.element(rec, 0, "mk", ViewCapture.EMPTY))
+            out.add(c.element(rec, 0, "mk", WireframeCapture.EMPTY))
             return -1f
         }
-        if (own != null) m = ViewCapture.MASK_BLUR
+        if (own != null) m = WireframeCapture.MASK_BLUR
 
         val editable = config.getOrNull(SemanticsProperties.EditableText)
         val range = config.getOrNull(SemanticsProperties.ProgressBarRangeInfo)
@@ -190,14 +196,18 @@ internal class ComposeCapture(private val c: ViewCapture) {
         val kids = c.lists.acquire()
         try {
             var cls: String? = null
+            val look = if (kind == FIELD) fieldLook(n, children) else FIELD_OUTLINED
             when (kind) {
-                FIELD -> field(config, rec, kids, editable!!.text, wd, hd, m)
+                FIELD -> field(config, rec, kids, editable!!.text, wd, hd, m, look)
                 TOGGLE -> toggle(rec, kids, role, toggle, selected, wd, hd, disabled)
-                SLIDER, PROGRESS -> range(rec, kids, range!!, kind == SLIDER, wd, hd)
+                SLIDER -> slider(rec, kids, range!!, wd, hd)
+                PROGRESS -> progress(rec, kids, range!!, wd, hd)
                 else -> {}
             }
             var light = -1f
+            textColor = 0
             for (child in children) light = max(light, walk(child, state, kids, x, y, m, depth + 1))
+            val childTextColor = textColor
             sb.setLength(0)
             box(sb, rl, rt, wd, hd)
             when (kind) {
@@ -207,21 +217,40 @@ internal class ComposeCapture(private val c: ViewCapture) {
                     sb.append(rec.lookCss)
                     cls = rec.lookCls
                     light = max(light, lightness(rec.lookColor))
-                    val shown: CharSequence = if (m == ViewCapture.MASK_BLUR) {
+                    textColor = rec.lookColor
+                    val shown: CharSequence = if (m == WireframeCapture.MASK_BLUR) {
                         c.tb.setLength(0)
                         maskText(joined, c.tb)
                     } else {
                         joined
                     }
-                    kids.add(0, c.text(rec, 1, shown))
+                    kids.add(0, c.textNode(rec, 1, shown))
                 }
                 FIELD -> {
                     val focused = config.getOrNull(SemanticsProperties.Focused) == true
-                    sb.append("box-shadow:inset 0 0 0 ").append(if (focused) "2px " else "1px ")
-                        .appendColor(if (focused) DEFAULT_PRIMARY else 0x99808080.toInt()).append(";border-radius:4px;")
+                    when (look) {
+                        FIELD_FILLED -> {
+                            // Material 3's TextField: a tinted container, rounded at the top, over an indicator line.
+                            sb.append("background-color:").appendColor(FILLED_CONTAINER).append(";border-radius:4px 4px 0 0;")
+                                .append("box-shadow:inset 0 ").append(if (focused) "-2px" else "-1px").append(" 0 0 ")
+                                .appendColor(if (focused) DEFAULT_PRIMARY else FILLED_INDICATOR).append(';')
+                        }
+                        FIELD_OUTLINED_LABELED -> {
+                            // The outline starts below the room the field keeps for its label to sit on it.
+                            val box = sb.toString()
+                            sb.setLength(0)
+                            sb.append("left:0;top:").appendPx(OUTLINED_LABEL_ROOM_DP).append(";width:").appendPx(wd)
+                                .append(";height:").appendPx(max(0f, hd - OUTLINED_LABEL_ROOM_DP)).append(';')
+                            outline(sb, focused)
+                            kids.add(0, c.element(rec, 4, null, WireframeCapture.EMPTY))
+                            sb.setLength(0)
+                            sb.append(box)
+                        }
+                        else -> outline(sb, focused)
+                    }
                 }
                 IMAGE -> {
-                    if (m != ViewCapture.MASK_BLUR && wd <= 64f && hd <= 64f) {
+                    if (m != WireframeCapture.MASK_BLUR && wd <= 64f && hd <= 64f) {
                         sb.append("color:#757575;")
                         cls = "ic"
                     } else {
@@ -232,10 +261,12 @@ internal class ComposeCapture(private val c: ViewCapture) {
                     if (wd > hd * 1.4f || wd > 64f) {
                         // Compose keeps a button's color to itself; light text means a filled button
                         // (onPrimary on primary), dark text an outlined or tonal one.
-                        if (light > LIGHT_TEXT) {
-                            sb.append("background-color:").appendColor(view?.let { c.primary(it) } ?: DEFAULT_PRIMARY).append(';')
-                        } else {
-                            sb.append("background-color:rgba(127,127,127,.12);box-shadow:inset 0 0 0 1px rgba(127,127,127,.28);")
+                        when {
+                            light > LIGHT_TEXT ->
+                                sb.append("background-color:").appendColor(view?.let { c.primary(it) } ?: DEFAULT_PRIMARY).append(';')
+                            // Text in the primary color: an outlined (or text) button, which has no fill.
+                            colorful(childTextColor) -> sb.append("box-shadow:inset 0 0 0 1px ").appendColor(DEFAULT_OUTLINE).append(';')
+                            else -> sb.append("background-color:rgba(127,127,127,.12);box-shadow:inset 0 0 0 1px rgba(127,127,127,.28);")
                         }
                         sb.appendRadius(if (hd <= 56f) hd / 2 else 12f)
                     }
@@ -251,8 +282,53 @@ internal class ComposeCapture(private val c: ViewCapture) {
         }
     }
 
-    /** A text field's own text, in the middle of its box: masked, and dots for a password. */
-    private fun field(config: SemanticsConfiguration, rec: Rec, out: ArrayList<VNode>, value: String, wd: Float, hd: Float, m: Int) {
+    /**
+     * How a text field looks: filled (Material 3's `TextField`), outlined
+     * with room for its label above the outline, or outlined. Semantics hold
+     * no colors; the two place their label differently: a floating label
+     * sits on an outlined field's top edge but inside a filled one, and a
+     * resting label is centered under an outlined field's label room but in
+     * the middle of a filled one. A field without a text inside it (no label,
+     * no placeholder) cannot be told apart and keeps the outline.
+     */
+    private fun fieldLook(n: SemanticsNode, children: List<SemanticsNode>): Int {
+        var label: SemanticsNode? = null
+        for (c in children) {
+            label = firstText(c, 0)
+            if (label != null) break
+        }
+        if (label == null) return FIELD_OUTLINED
+        val d = c.density
+        val top = n.positionInRoot.y
+        val labelTop = label.positionInRoot.y
+        val labelH = label.size.height.toFloat()
+        val floating = labelH <= FLOATING_LABEL_MAX_DP * d
+        val outlined = if (floating) {
+            labelTop - top < OUTLINED_LABEL_ROOM_DP / 2 * d
+        } else {
+            (labelTop + labelH / 2) - (top + n.size.height / 2f) > OUTLINED_LABEL_ROOM_DP / 4 * d
+        }
+        return if (outlined) FIELD_OUTLINED_LABELED else FIELD_FILLED
+    }
+
+    private fun firstText(n: SemanticsNode, depth: Int): SemanticsNode? {
+        if (!n.config.getOrNull(SemanticsProperties.Text).isNullOrEmpty()) return n
+        if (depth >= 4) return null
+        for (c in n.children) firstText(c, depth + 1)?.let { return it }
+        return null
+    }
+
+    private fun outline(sb: StringBuilder, focused: Boolean) {
+        sb.append("box-shadow:inset 0 0 0 ").append(if (focused) "2px " else "1px ")
+            .appendColor(if (focused) DEFAULT_PRIMARY else 0x99808080.toInt()).append(";border-radius:4px;")
+    }
+
+    /**
+     * A text field's own text, masked, and dots for a password: in the
+     * middle of its box, below the label of a filled field, or of the
+     * outline under an outlined field's label room.
+     */
+    private fun field(config: SemanticsConfiguration, rec: Rec, out: ArrayList<VNode>, value: String, wd: Float, hd: Float, m: Int, look: Int) {
         if (value.isEmpty()) return
         val tb = c.tb
         tb.setLength(0)
@@ -261,19 +337,25 @@ internal class ComposeCapture(private val c: ViewCapture) {
                 for (i in value.indices) tb.append('•')
                 tb
             }
-            c.maskAllInputs || m == ViewCapture.MASK_BLUR -> maskText(value, tb)
+            c.maskAllInputs || m == WireframeCapture.MASK_BLUR -> maskText(value, tb)
             else -> value
         }
-        val t = c.text(rec, 3, shown)
+        val t = c.textNode(rec, 3, shown)
         textLook(config, rec, value, 0, 0)
         val line = c.look.lineHeight.takeIf { it > 0f } ?: (c.look.fontSize * 1.17f)
         val lines = max(1, c.look.lines)
         val textH = min(hd, line * lines)
         // A decorated field (a Material TextField) has room around its text.
         val pad = if (hd > textH + 20f) 16f else 0f
+        val room = if (look == FIELD_OUTLINED_LABELED) OUTLINED_LABEL_ROOM_DP else 0f
+        val top = when {
+            look == FIELD_FILLED && lines == 1 && pad > 0f -> hd - FILLED_BOTTOM_PADDING_DP - textH
+            lines == 1 -> room + (hd - room - textH) / 2
+            else -> room + pad / 2
+        }
         val sb = c.sb
         sb.setLength(0)
-        sb.append("left:").appendPx(pad).append(";top:").appendPx(if (lines == 1) (hd - textH) / 2 else pad / 2)
+        sb.append("left:").appendPx(pad).append(";top:").appendPx(top)
             .append(";width:").appendPx(max(0f, wd - 2 * pad)).append(";height:").appendPx(textH).append(';')
         sb.append(rec.lookCss)
         out.add(c.element(rec, 2, rec.lookCls, c.one(t)))
@@ -295,7 +377,7 @@ internal class ComposeCapture(private val c: ViewCapture) {
             val cx = if (wide) wd - 16f - tw / 2 else wd / 2
             sb.setLength(0)
             WidgetCss.switchThumb(sb, tw, th, if (on) 24f else 16f, on, if (on) 0xFFFFFFFF.toInt() else inactive, compact = false)
-            val thumb = c.element(rec, 6, null, ViewCapture.EMPTY)
+            val thumb = c.element(rec, 6, null, WireframeCapture.EMPTY)
             sb.setLength(0)
             WidgetCss.switchTrack(sb, cx, hd / 2, tw, th, on, active, inactive, compact = false)
             out.add(c.element(rec, 5, null, c.one(thumb)))
@@ -310,14 +392,14 @@ internal class ComposeCapture(private val c: ViewCapture) {
                 val color = if (on) active else inactive
                 if (on) {
                     WidgetCss.radioDot(sb, color)
-                    kids.add(c.element(rec, 6, null, ViewCapture.EMPTY))
+                    kids.add(c.element(rec, 6, null, WireframeCapture.EMPTY))
                     sb.setLength(0)
                 }
                 WidgetCss.radio(sb, cx, cy, color)
             } else {
                 if (on) {
                     WidgetCss.checkMark(sb)
-                    kids.add(c.element(rec, 6, null, ViewCapture.EMPTY))
+                    kids.add(c.element(rec, 6, null, WireframeCapture.EMPTY))
                     sb.setLength(0)
                 }
                 WidgetCss.checkbox(sb, cx, cy, on, active, inactive)
@@ -328,42 +410,48 @@ internal class ComposeCapture(private val c: ViewCapture) {
         }
     }
 
-    private fun range(rec: Rec, out: ArrayList<VNode>, info: ProgressBarRangeInfo, slider: Boolean, wd: Float, hd: Float) {
+    private fun fraction(info: ProgressBarRangeInfo): Float {
         val r = info.range
         val span = r.endInclusive - r.start
-        val fraction = if (span > 0f) ((info.current - r.start) / span).coerceIn(0f, 1f) else 0f
-        val indeterminate = info == ProgressBarRangeInfo.Indeterminate
+        return if (span > 0f) ((info.current - r.start) / span).coerceIn(0f, 1f) else 0f
+    }
+
+    /** A slider: its track, the part up to the value, and the thumb. */
+    private fun slider(rec: Rec, out: ArrayList<VNode>, info: ProgressBarRangeInfo, wd: Float, hd: Float) {
+        val fraction = fraction(info)
         val color = DEFAULT_PRIMARY
         val sb = c.sb
-        when {
-            slider -> {
-                val pad = min(10f, hd / 2)
-                val width = max(0f, wd - 2 * pad)
-                val cy = hd / 2
-                sb.setLength(0)
-                WidgetCss.sliderTrack(sb, pad, width, cy, withAlpha(color, 0.3f))
-                out.add(c.element(rec, 5, null, ViewCapture.EMPTY))
-                sb.setLength(0)
-                WidgetCss.sliderTrack(sb, pad, width * fraction, cy, color)
-                out.add(c.element(rec, 6, null, ViewCapture.EMPTY))
-                sb.setLength(0)
-                WidgetCss.sliderThumb(sb, pad + width * fraction, cy, color)
-                out.add(c.element(rec, 7, null, ViewCapture.EMPTY))
-            }
-            wd > hd * 2.5f -> {
-                sb.setLength(0)
-                WidgetCss.linearBar(sb, if (indeterminate) null else fraction, color)
-                val bar = c.element(rec, 6, null, ViewCapture.EMPTY)
-                sb.setLength(0)
-                sb.append("left:0;top:0;width:100%;height:100%;")
-                WidgetCss.linearTrack(sb, hd, withAlpha(color, 0.24f))
-                out.add(c.element(rec, 5, null, c.one(bar)))
-            }
-            else -> {
-                sb.setLength(0)
-                WidgetCss.circular(sb, wd, hd, if (indeterminate) null else fraction, color, null)
-                out.add(c.element(rec, 5, null, ViewCapture.EMPTY))
-            }
+        val pad = min(10f, hd / 2)
+        val width = max(0f, wd - 2 * pad)
+        val cy = hd / 2
+        sb.setLength(0)
+        WidgetCss.sliderTrack(sb, pad, width, cy, withAlpha(color, 0.3f))
+        out.add(c.element(rec, 5, null, WireframeCapture.EMPTY))
+        sb.setLength(0)
+        WidgetCss.sliderTrack(sb, pad, width * fraction, cy, color)
+        out.add(c.element(rec, 6, null, WireframeCapture.EMPTY))
+        sb.setLength(0)
+        WidgetCss.sliderThumb(sb, pad + width * fraction, cy, color)
+        out.add(c.element(rec, 7, null, WireframeCapture.EMPTY))
+    }
+
+    /** A progress indicator: a bar when it is wide, a ring otherwise. */
+    private fun progress(rec: Rec, out: ArrayList<VNode>, info: ProgressBarRangeInfo, wd: Float, hd: Float) {
+        val value = if (info == ProgressBarRangeInfo.Indeterminate) null else fraction(info)
+        val color = DEFAULT_PRIMARY
+        val sb = c.sb
+        if (wd > hd * 2.5f) {
+            sb.setLength(0)
+            WidgetCss.linearBar(sb, value, color)
+            val bar = c.element(rec, 6, null, WireframeCapture.EMPTY)
+            sb.setLength(0)
+            sb.append("left:0;top:0;width:100%;height:100%;")
+            WidgetCss.linearTrack(sb, hd, withAlpha(color, 0.24f))
+            out.add(c.element(rec, 5, null, c.one(bar)))
+        } else {
+            sb.setLength(0)
+            WidgetCss.circular(sb, wd, hd, value, color, null)
+            out.add(c.element(rec, 5, null, WireframeCapture.EMPTY))
         }
     }
 
@@ -416,7 +504,9 @@ internal class ComposeCapture(private val c: ViewCapture) {
         }
         val lines = max(1, r.lineCount)
         l.lines = lines
-        l.lineHeight = r.size.height * c.inv / lines
+        // The paragraph's own height, not the layout's: a Text given a taller box (a list row's
+        // fixed height) draws its lines at the top of it.
+        l.lineHeight = r.multiParagraph.height * c.inv / lines
         val color = style.color
         if (color.isSpecified) l.color = color.toArgb()
         l.weight = style.fontWeight?.weight ?: 400
@@ -458,6 +548,32 @@ internal class ComposeCapture(private val c: ViewCapture) {
 
     private companion object {
         const val MAX_DEPTH = 200
+
+        /** The room (dp) an `OutlinedTextField` with a label keeps above its outline (`OutlinedTextFieldTopPadding`). */
+        const val OUTLINED_LABEL_ROOM_DP = 8f
+
+        /** A label this tall (dp) or less is a floating one (12 sp), not one resting in the field (16 sp). */
+        const val FLOATING_LABEL_MAX_DP = 19f
+
+        /** Below a filled field's text, as `TextFieldWithLabelVerticalPadding`. */
+        const val FILLED_BOTTOM_PADDING_DP = 8f
+
+        const val FIELD_OUTLINED = 0
+        const val FIELD_OUTLINED_LABELED = 1
+        const val FIELD_FILLED = 2
+
+        /** A text color far from gray: a theme's primary rather than its on-surface text. */
+        fun colorful(argb: Int): Boolean {
+            if ((argb ushr 24) < 128) return false
+            val r = (argb shr 16) and 0xff
+            val g = (argb shr 8) and 0xff
+            val b = argb and 0xff
+            return max(r, max(g, b)) - min(r, min(g, b)) > 60
+        }
+
+        /** Material 3's filled text field (light scheme): surfaceContainerHighest and onSurfaceVariant. */
+        const val FILLED_CONTAINER = 0xFFE6E0E9.toInt()
+        const val FILLED_INDICATOR = 0xFF49454F.toInt()
 
         /** Text lighter than this (0-1) is light-on-dark. */
         const val LIGHT_TEXT = 0.75f

@@ -304,4 +304,29 @@ class ReplayControllerTest {
         assertTrue(b.admit("s2", 600))
         assertFalse(b.hasUploaded("s3"))
     }
+
+    @Test
+    fun picturesHaveABudgetOfTheirOwnThatOutlivesARestart() {
+        val store = StateStore(null)
+        val rejected = ArrayList<String>()
+        val a = CollectionBudget(maxBytes = 1000, store = store, maxImageBytes = 100)
+        a.onRejected = { rejected.add("segment") }
+        assertEquals(4L * 1024 * 1024, CollectionBudget().maxImageBytes)
+        assertTrue(a.hasImageRoom("s1"))
+        assertTrue(a.admitImage("s1", 60))
+        assertFalse("past the image budget", a.admitImage("s1", 60))
+        assertTrue(a.admitImage("s1", 40))
+        assertFalse(a.hasImageRoom("s1"))
+        assertEquals(100L, a.snapshot("s1")["traceway.replay.image_bytes"])
+        // Segment bytes are counted apart.
+        assertTrue(a.admit("s1", 900))
+        assertTrue(rejected.isEmpty())
+        assertFalse(a.admit("s1", 200))
+        assertEquals(listOf("segment"), rejected)
+
+        val b = CollectionBudget(maxBytes = 1000, store = store, maxImageBytes = 100)
+        assertFalse("a restart inside the session goes on counting", b.hasImageRoom("s1"))
+        assertTrue(b.hasImageRoom("s2"))
+        assertEquals(0L, b.snapshot("s2")["traceway.replay.image_bytes"])
+    }
 }

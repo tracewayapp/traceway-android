@@ -109,6 +109,17 @@ internal class RecordingsTransport(
     private val drainer = SingleFlight(scheduler) { drainNow() }
 
     val failedSegments: Int get() = synchronized(lock) { failed }
+
+    /** Called (without the transport's lock) after segments were given up: evicted, refused or out of retries. */
+    @Volatile
+    var onFailed: (() -> Unit)? = null
+
+    private fun failedNow() {
+        try {
+            onFailed?.invoke()
+        } catch (_: Throwable) {
+        }
+    }
     val sentSegments: Int get() = synchronized(lock) { sent }
 
     /** Segments waiting to be sent. */
@@ -135,6 +146,7 @@ internal class RecordingsTransport(
             }
         }
         for (b in evicted) b.spoolFile?.delete()
+        if (evicted.isNotEmpty()) failedNow()
     }
 
     /** Starts a drain unless one waits for a retry delay. */
@@ -216,6 +228,7 @@ internal class RecordingsTransport(
         } catch (_: Throwable) {
             // Cannot be encoded: it never will be.
             synchronized(lock) { failed += batch.count }
+            failedNow()
             return null
         }
         val response = try {
@@ -239,6 +252,7 @@ internal class RecordingsTransport(
         }
         if (status in PERMANENT_FAILURES) {
             synchronized(lock) { failed += batch.count }
+            failedNow()
             return null
         }
         return retryDelay(batch, response?.retryAfterMs)
@@ -258,6 +272,7 @@ internal class RecordingsTransport(
     private fun retryDelay(batch: Batch, requestedMs: Long?): Long? {
         if (batch.attempts > retryDelaysMs.size) {
             synchronized(lock) { failed += batch.count }
+            failedNow()
             return null
         }
         return requestedMs ?: retryDelaysMs[batch.attempts - 1]

@@ -83,7 +83,7 @@ class WireframeSessionTest {
             deleteRecursively()
             mkdirs()
         }
-        private val views = ViewFrameSource(RootViews(), screen.activity, mainThread = ManualMainThread(scheduler))
+        private val views = ViewFrameSource(WireframeRoots(), screen.activity, mainThread = ManualMainThread(scheduler))
         private val source = object : WireframeFrameSource by views {
             override fun capture(timestampMs: Long, href: String?): WireframeFrame? {
                 screen.windows() // drawn, as on a device before the capture runs

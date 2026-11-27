@@ -1,3 +1,20 @@
+## Unreleased
+
+Parity with the browser, Flutter and iOS SDKs: the same API names, wire format and replay architecture.
+
+- **Replay images**: wireframe recordings can carry the pictures image views show (`ImageView` bitmaps, bitmap backgrounds), never a screenshot and never under a mask. The collection setting `replay.images` (`off`, `wifi`, `always`; `wifi` by default) chooses when, `TracewayOptions.replayImages` (`TracewayImagePolicy`, `ALWAYS` by default) caps it, and the lower applies; `wifi` means an unmetered connection, checked when a frame is captured. Pictures are encoded off the main thread as JPEG 0.6 (PNG for small ones with alpha) at 1.5 px per dp, at most 512 px and 96 KiB each, at most 64 per recorder and 4 MiB per session, and styled as `.im.p<N>` rules. Session events carry `traceway.replay.images` and `traceway.replay.image_bytes`. Compose images stay placeholders.
+- **Keyboard**: while the soft keyboard shows, the replay draws a neutral "Keyboard" box where its IME inset says it is (ids 12–14, light `#d1d3d9` or dark `#2c2c2e`), as the iOS SDK does.
+- **Shared stylesheet**: `wireframeCss` is byte for byte the stylesheet the three mobile SDKs share (adds the `.sk` skeleton rules); the screen node names Android's font stack inline.
+- **Logs**: `Traceway.log(message, level, attributes)` with `TracewayLogLevel` (`TRACE` to `FATAL`); records carry `log.source = "api"` (`stdout`/`stderr` for printed lines). `recordLog` is deprecated.
+- **Interactions**: `Traceway.startInteraction(name, attributes)` returns a `TracewayInteraction` (`traceId`, `spanId`, `run`, `setAttribute`, `captureException`, `end`): a span (`traceway.interaction: true`) that requests made in `run` are children of and that exceptions and logs recorded there point to; a failed one is sent at once.
+- **Screens**: `Traceway.setRoute(template)` names the current screen's route template; navigations and issues carry `app.screen.route`, and metrics group by it. Exceptions and messages carry the screen they happened on (`app.screen.name`, `app.screen.route`, `app.screen.previous`, `app.screen.duration_ms`, `viewport`). `Traceway.recordNavigation` takes `from`.
+- **Filtering**: options `ignoreErrors` (strings and regexes matched against `Type: message`; null uses `TracewayOptions.DEFAULT_IGNORE_ERRORS`, network noise and 4xx) and `beforeCapture` (`TracewayCapturedError`, return false to drop). **Behaviour change**: `UnknownHostException`, timeouts and similar network errors are no longer reported by default. Crashes are always reported.
+- **Privacy masks**: `View.tracewayPrivacyMask` and `Traceway.setPrivacyMask(view, mode)`; `Modifier.tracewayPrivacyMask(mode)` in Compose. `Traceway.mask` / `unmask` and `Modifier.tracewayMask` are deprecated. A `traceway-mask` / `traceway-blank` test tag now masks Compose taps too, and is no longer reported as the tapped node's id.
+- **`Traceway.currentSessionId`** on the facade.
+- **`traceway.collection.health`**: emitted a second after replay segments are refused by the session budget, errors are suppressed by the flood guard or replay uploads are given up, then with a delay doubling up to 5 minutes; the session is updated once.
+- **Options order**: `TracewayOptions` parameters follow the order shared with the other SDKs (`sampleRate, debug, version, …`); pass them by name.
+- **Internals**: wireframe files renamed to the shared vocabulary (`WireframeRoots`, `WireframeCapture`, `WireframeComposeCapture`, `WireframeCss`, `WireframeDiff`, `WireframeGlyphs`, `WireframeImages`, `WireframePointer`); `docs/wireframe.md` describes the pipeline.
+
 ## 2.0.0-beta.1
 
 Rebuilt on the official OpenTelemetry Java SDK, at parity with the browser SDK 2.x and the Flutter SDK 2.0: OTLP logs, spans and metrics, a ring buffer on the device, remote config over OpAMP, captures, recording triggers, taps, app performance metrics, and wireframe session replay.

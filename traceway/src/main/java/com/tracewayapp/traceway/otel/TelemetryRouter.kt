@@ -54,6 +54,7 @@ private val BASELINE_SIGNALS = setOf("network", "console", "navigation", "userAc
 
 private val ATTR_SESSION_ID = AttributeKey.stringKey(Events.ATTR_SESSION_ID)
 private val ATTR_CAPTURE_IDS = AttributeKey.stringKey(Events.ATTR_CAPTURE_IDS)
+private val ATTR_INTERACTION = AttributeKey.booleanKey("traceway.interaction")
 
 /** The value of the attribute named [key], whatever its type. */
 internal fun Attributes?.valueOf(key: String): Any? {
@@ -108,6 +109,10 @@ internal class TelemetryRouter(
     private val flushedSpans = ArrayList<SpanData>()
     private val inFlight = ArrayList<CompletableResultCode>()
 
+    /**
+     * The dashboard's captures running now. Captures a trigger started on
+     * the device are not listed: the server tracks the dashboard's ids only.
+     */
     private fun activeCaptureIds(): List<String> {
         val t = now()
         return control.settings.captures.filter { it.untilMs > t }.map { it.id }
@@ -169,7 +174,10 @@ internal class TelemetryRouter(
     fun routeSpan(span: SpanData) {
         val item = TelemetryItem.Span(span)
         val timeMs = if (span.endEpochNanos > 0) span.endEpochNanos / 1_000_000 else now()
-        val routed = decide("network", item, timeMs) { true }
+        // A failed interaction goes with the exception that failed it, as the browser SDK sends it,
+        // so the issue links to its trace.
+        val failedInteraction = span.attributes.get(ATTR_INTERACTION) == true && span.status.statusCode == StatusCode.ERROR
+        val routed = decide("network", item, timeMs, forceStream = failedInteraction) { true }
         observeAndSend(ObservedRecord("network", timeMs, spanLookup(span), item, routed))
     }
 
@@ -236,7 +244,13 @@ internal class TelemetryRouter(
     }
 
     /** Decides what happens to a record; a buffered one is stored here, a streamed one is sent once triggers saw it. */
-    private inline fun decide(signal: String, item: TelemetryItem, timeMs: Long, accept: () -> Boolean): Routed {
+    private inline fun decide(
+        signal: String,
+        item: TelemetryItem,
+        timeMs: Long,
+        forceStream: Boolean = false,
+        accept: () -> Boolean,
+    ): Routed {
         if (signal == Events.SIGNAL_CONTROL) return if (control.enabled) Routed.STREAM else Routed.OFF
         val mode = control.modeFor(signal)
         val sampleRate = control.sampleRate(signal)
@@ -246,7 +260,8 @@ internal class TelemetryRouter(
         val baselineSampled = signal in BASELINE_SIGNALS &&
             sessionId != null &&
             Ids.unitHash(sessionId) < control.settings.baselineSampleRate
-        if (mode == Mode.STREAM || baselineSampled) return Routed.STREAM
+        val forced = forceStream && control.canExport(signal)
+        if (mode == Mode.STREAM || baselineSampled || forced) return Routed.STREAM
         val bytes = when (item) {
             is TelemetryItem.Log -> item.mutable?.let { estimateBytes(it.attributes, bodyText(it.bodyValue)) }
                 ?: item.record.let { estimateBytes(it.attributes, bodyText(it.bodyValue)) }
