@@ -54,8 +54,20 @@ internal class WireframeGlyphs(
     /** Glyphs on the screen being captured. */
     val shown = ArrayList<Glyph>()
 
+    @Volatile
+    private var executorStarted = false
+
     private val executor: Executor by lazy {
+        executorStarted = true
         Executors.newSingleThreadExecutor { r -> Thread(r, "TracewayGlyphs").apply { isDaemon = true; priority = Thread.MIN_PRIORITY } }
+    }
+
+    /** Stops the encoder thread; glyphs drawn later stay squares. */
+    fun dispose() {
+        try {
+            if (executorStarted) (executor as? java.util.concurrent.ExecutorService)?.shutdown()
+        } catch (_: Throwable) {
+        }
     }
 
     /** The glyph of [d] drawn at [wPx] x [hPx], drawn now if it is new; null when too many were drawn. */
@@ -119,19 +131,24 @@ internal class WireframeGlyphs(
 
     /** Encodes [bitmap] as [g]'s picture, off the main thread. */
     private fun encode(g: Glyph, bitmap: Bitmap) {
-        executor.execute {
-            try {
-                val png = ByteArrayOutputStream(1024)
-                bitmap.compress(Bitmap.CompressFormat.PNG, 100, png)
-                val data = Base64.encodeToString(png.toByteArray(), Base64.NO_WRAP)
-                g.css = ".ic.${g.cls}::before{inset:0;border-radius:0;opacity:1;" +
-                    "mask:url(data:image/png;base64,$data) 0 0/100% 100% no-repeat}"
-                onReady()
-            } catch (_: Throwable) {
-                // Without its picture the icon stays a square.
-            } finally {
-                bitmap.recycle()
+        try {
+            executor.execute {
+                try {
+                    val png = ByteArrayOutputStream(1024)
+                    bitmap.compress(Bitmap.CompressFormat.PNG, 100, png)
+                    val data = Base64.encodeToString(png.toByteArray(), Base64.NO_WRAP)
+                    g.css = ".ic.${g.cls}::before{inset:0;border-radius:0;opacity:1;" +
+                        "mask:url(data:image/png;base64,$data) 0 0/100% 100% no-repeat}"
+                    onReady()
+                } catch (_: Throwable) {
+                    // Without its picture the icon stays a square.
+                } finally {
+                    bitmap.recycle()
+                }
             }
+        } catch (_: Throwable) {
+            // No encoder thread (out of memory, or disposed): the icon stays a square.
+            bitmap.recycle()
         }
     }
 }

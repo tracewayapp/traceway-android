@@ -1,5 +1,6 @@
 package com.tracewayapp.traceway.metrics
 
+import com.tracewayapp.traceway.guarded
 import com.tracewayapp.traceway.internal.asJsonObject
 import com.tracewayapp.traceway.internal.asLongExact
 import com.tracewayapp.traceway.persistence.StateStore
@@ -21,7 +22,7 @@ internal class MemoryPeaks(
     /** Going to the background or shutting down: [session] may go on in a later run. */
     fun remember(session: String?) {
         session ?: return
-        guarded {
+        guarded("memory peak") {
             val storage = store()
             val bytes = peak(storage, session)
             if (bytes > 0) storage.set(key, linkedMapOf("s" to session, "b" to bytes))
@@ -30,7 +31,7 @@ internal class MemoryPeaks(
 
     /** [session] ended in this run. */
     fun ended(session: String) {
-        guarded {
+        guarded("memory peak") {
             val storage = store()
             val bytes = peak(storage, session)
             storage.set(key, null)
@@ -40,7 +41,7 @@ internal class MemoryPeaks(
 
     /** A session started: one that ended while the app was not running is reported now. */
     fun settle(current: String) {
-        guarded {
+        guarded("memory peak") {
             val storage = store()
             val record = storage.get(key).asJsonObject() ?: return@guarded
             val session = record["s"] as? String
@@ -62,12 +63,5 @@ internal class MemoryPeaks(
             0L
         }
         return maxOf(now, remembered)
-    }
-
-    private inline fun guarded(task: () -> Unit) {
-        try {
-            task()
-        } catch (_: Throwable) {
-        }
     }
 }

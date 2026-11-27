@@ -13,6 +13,7 @@ import android.view.ViewTreeObserver
 import android.view.WindowInsets
 import android.view.WindowManager
 import com.tracewayapp.traceway.internal.Cancellable
+import com.tracewayapp.traceway.guarded
 import java.lang.ref.WeakReference
 import java.util.WeakHashMap
 
@@ -149,7 +150,7 @@ internal class WireframeRoots {
 
 /** `WindowManagerGlobal.getInstance().mViews`: every window's root view in this process. */
 @SuppressLint("PrivateApi", "DiscouragedPrivateApi")
-private object WindowList {
+internal object WindowList {
     private class Access(val getInstance: java.lang.reflect.Method, val views: java.lang.reflect.Field)
 
     @Volatile
@@ -181,6 +182,13 @@ private object WindowList {
             failed = true
             null
         }
+    }
+
+    /** Whether a window of this process is attached and visible; null when the list cannot be read. */
+    fun anyShowing(): Boolean? {
+        val views = ArrayList<View>()
+        if (!copyInto(views)) return null
+        return views.any { it.isAttachedToWindow && it.visibility == View.VISIBLE }
     }
 
     /** False when the list cannot be read. */
@@ -227,7 +235,8 @@ internal class ViewFrameSource(
             capture.maskAllInputs = value
         }
 
-    private val listener = ViewTreeObserver.OnDrawListener { onDraw?.invoke() }
+    // Runs in the app's draw pass: nothing may escape into it.
+    private val listener = ViewTreeObserver.OnDrawListener { guarded("draw listener") { onDraw?.invoke() } }
     private val observed = WeakHashMap<View, ViewTreeObserver>()
     private val windows = ArrayList<WireframeRoots.Root>()
     private val polled = ArrayList<WireframeRoots.Root>()
@@ -247,6 +256,8 @@ internal class ViewFrameSource(
         onDraw = null
         poll?.cancel()
         poll = null
+        // While nothing is captured these would keep the windows (and their activities) of the last capture alive.
+        lastRoots = arrayOfNulls(0)
         for ((_, observer) in observed) {
             try {
                 if (observer.isAlive) observer.removeOnDrawListener(listener)
@@ -280,6 +291,12 @@ internal class ViewFrameSource(
     }
 
     override fun reset() = capture.reset()
+
+    /** Stops the threads of the capture's encoders, for good. */
+    fun dispose() {
+        capture.images.dispose()
+        capture.glyphs.dispose()
+    }
 
     /** Puts the draw listener on windows that do not have it yet; true when one was new. */
     private fun listen(list: List<WireframeRoots.Root>): Boolean {
@@ -344,8 +361,15 @@ internal class ForegroundTracker(
 ) : Application.ActivityLifecycleCallbacks {
     private val started = WeakHashMap<Activity, Boolean>()
 
-    /** Activities started before the callbacks were registered, which they cannot see. */
-    private var startedBefore = isVisible(context)
+    /**
+     * Activities started before the callbacks were registered, which they
+     * cannot see: assumed while a window of this process shows (Traceway
+     * started after a consent screen, or again after a shutdown). The
+     * process importance alone cannot tell: it is already foreground in
+     * `Application.onCreate` of an activity launch, before any activity
+     * started, and the recorder would then never see the app leave.
+     */
+    private var startedBefore = WindowList.anyShowing() ?: isVisible(context)
 
     init {
         recorder.setForeground(startedBefore)
@@ -353,9 +377,11 @@ internal class ForegroundTracker(
 
     private fun update() = recorder.setForeground(started.isNotEmpty() || startedBefore)
 
-    override fun onActivityCreated(activity: Activity, savedInstanceState: Bundle?) = recorder.addActivity(activity)
+    // The app's activity lifecycle dispatch runs these: nothing may escape into it.
+    override fun onActivityCreated(activity: Activity, savedInstanceState: Bundle?) =
+        guarded("foreground created") { recorder.addActivity(activity) }
 
-    override fun onActivityStarted(activity: Activity) {
+    override fun onActivityStarted(activity: Activity) = guarded("foreground started") {
         started[activity] = true
         recorder.addActivity(activity)
         update()
@@ -365,15 +391,15 @@ internal class ForegroundTracker(
 
     override fun onActivityPaused(activity: Activity) {}
 
-    override fun onActivityStopped(activity: Activity) {
+    override fun onActivityStopped(activity: Activity) = guarded("foreground stopped") {
         if (started.remove(activity) == null) startedBefore = false
-        if (activity.isChangingConfigurations) return
+        if (activity.isChangingConfigurations) return@guarded
         update()
     }
 
     override fun onActivitySaveInstanceState(activity: Activity, outState: Bundle) {}
 
-    override fun onActivityDestroyed(activity: Activity) = recorder.removeActivity(activity)
+    override fun onActivityDestroyed(activity: Activity) = guarded("foreground destroyed") { recorder.removeActivity(activity) }
 
     private companion object {
         fun isVisible(context: Context): Boolean = try {

@@ -33,7 +33,7 @@ class TracewayInteraction internal constructor(
     private val span: Span?,
     private val capture: (Throwable, Map<String, String>?) -> Unit,
 ) {
-    private val context: Context? = span?.let { Context.current().with(it).with(KEY, this) }
+    private val context: Context? = span?.let { guarded("interaction", null) { Context.current().with(it).with(KEY, this) } }
 
     @Volatile
     private var failed = false
@@ -42,10 +42,10 @@ class TracewayInteraction internal constructor(
     private var ended = false
 
     /** The trace this interaction starts (32 hex digits), or null when it records nothing. */
-    val traceId: String? get() = span?.spanContext?.traceId
+    val traceId: String? get() = guarded("interaction.traceId", null) { span?.spanContext?.traceId }
 
     /** The interaction's own span id (16 hex digits), or null. */
-    val spanId: String? get() = span?.spanContext?.spanId
+    val spanId: String? get() = guarded("interaction.spanId", null) { span?.spanContext?.spanId }
 
     /** Whether [end] was called. */
     val isEnded: Boolean get() = ended
@@ -54,16 +54,23 @@ class TracewayInteraction internal constructor(
      * Runs [block] as part of this interaction: requests it makes on this
      * thread are child spans of it, and exceptions, messages and logs it
      * records carry its trace. An interaction started inside is its child.
+     * What [block] throws reaches the caller unchanged; a failure of the SDK
+     * only runs it outside the interaction.
      */
     fun <T> run(block: () -> T): T {
         val c = context ?: return block()
-        return c.makeCurrent().use { block() }
+        val scope = guarded("interaction.run", null) { c.makeCurrent() } ?: return block()
+        try {
+            return block()
+        } finally {
+            guarded("interaction.run") { scope.close() }
+        }
     }
 
     /** Sets an attribute on the interaction's span: a String, Boolean, whole number or decimal; anything else as text. */
-    fun setAttribute(key: String, value: Any) {
+    fun setAttribute(key: String?, value: Any?) {
         val s = span ?: return
-        if (ended || key.isEmpty()) return
+        if (ended || key.isNullOrEmpty() || value == null) return
         try {
             when (value) {
                 is String -> s.setAttribute(key, value)
@@ -84,9 +91,10 @@ class TracewayInteraction internal constructor(
      * sent with it.
      */
     @JvmOverloads
-    fun captureException(error: Throwable, attributes: Map<String, String>? = null) {
+    fun captureException(error: Throwable?, attributes: Map<String, String>? = null) {
+        if (error == null) return
         failed = true
-        run { capture(error, attributes) }
+        guarded("interaction.captureException") { run { capture(error, attributes) } }
     }
 
     /** Ends the interaction; only the first call counts. [failed] marks it failed even without a [captureException]. */
@@ -108,7 +116,7 @@ class TracewayInteraction internal constructor(
         val KEY: ContextKey<TracewayInteraction> = ContextKey.named("traceway.interaction")
 
         /** The interaction the code running now belongs to, if any. */
-        val current: TracewayInteraction? get() = Context.current().get(KEY)
+        val current: TracewayInteraction? get() = guarded("interaction.current", null) { Context.current().get(KEY) }
 
         /** The OpenTelemetry context of [current], for spans and records made inside it. */
         fun currentContext(): Context? = current?.context

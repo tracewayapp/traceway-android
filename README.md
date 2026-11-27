@@ -13,7 +13,7 @@
 
 # Traceway Android SDK
 
-Error tracking, sessions, wireframe session replay and app performance metrics for native Android apps, built on the official [OpenTelemetry Java SDK](https://github.com/open-telemetry/opentelemetry-java). Exceptions arrive with full stack traces, the breadcrumbs that led up to them and a replay of the last seconds on screen — automatically.
+Error tracking, sessions, wireframe session replay and app performance metrics for native Android apps, built on the official [OpenTelemetry Java SDK](https://github.com/open-telemetry/opentelemetry-java). Exceptions arrive with full stack traces, the breadcrumbs that led up to them and, with `screenCapture = true`, a replay of the last seconds on screen.
 
 [Traceway](https://tracewayapp.com) is a completely open-source error tracking platform. You can [self-host](https://docs.tracewayapp.com/server) it or use [Traceway Cloud](https://tracewayapp.com).
 
@@ -27,9 +27,9 @@ Error tracking, sessions, wireframe session replay and app performance metrics f
 - **Ring buffer** — logs, HTTP requests, screens, taps and custom events stay on the device and are uploaded only when something goes wrong
 - **Remote config over OpAMP** — change what is collected from the dashboard, per app version, user or device, without a release; or ship the same settings in the app with `collection`
 - **Captures on demand** — from the dashboard, or from a recording trigger on the device (a journey of taps, screens and log lines): the buffered lookback goes up, then breadcrumbs and the replay stream until the capture ends
-- **Wireframe session replay** — the view tree (and Jetpack Compose screens) recorded as HTML of positioned boxes and text, replayed by the dashboard's rrweb player: a few kilobytes per clip, no screenshots, no video encoded. The pictures image views show can be recorded too, on Wi-Fi by default
+- **Wireframe session replay** — the view tree (and Jetpack Compose screens) recorded as HTML of positioned boxes and text, replayed by the dashboard's rrweb player: tens of kilobytes per clip, no screenshots, no video encoded. The pictures image views show can be recorded too, on Wi-Fi by default
 - **Interactions** — `Traceway.startInteraction("checkout")` traces one user action: the requests it makes are its child spans, and an exception that fails it links to its trace
-- **App performance metrics** — cold, warm and hot start, time to initial and full display per screen, slow and frozen frames, hangs, crashes, sessions, users and HTTP requests, aggregated on the device and sent as OTLP metrics
+- **App performance metrics** — cold, warm and hot start, time to initial and full display per screen, slow and frozen frames, hangs, crashes, sessions, users, peak memory and HTTP requests, aggregated on the device and sent as OTLP metrics
 - **Taps that name the view** — every tap is recorded with a CSS-like selector (`MaterialButton#pay`, `ImageButton[label="Delete"]`) that click steps of recording triggers match
 - Privacy masking for replays and tap records: `view.tracewayMask`, `android:tag="traceway-mask"`, or `Modifier.tracewayMask()` in Compose
 - Network noise (a lost connection, a timeout, a 4xx) is not reported as an issue by default; `ignoreErrors` and `beforeCapture` filter the rest
@@ -41,7 +41,7 @@ Error tracking, sessions, wireframe session replay and app performance metrics f
 
 - Android `minSdk` 21, `compileSdk` 35 or newer to build against the published artifact.
 - OpenTelemetry Java uses `java.util.function` and `java.time`, so **apps whose `minSdk` is below 26 must enable core library desugaring** (see [Installation](#installation)).
-- The `INTERNET` permission in the app's manifest. The library's own manifest declares `ACCESS_NETWORK_STATE`, which the `wifi` replay image policy reads; nothing else.
+- Network access. The library's manifest declares `INTERNET` and `ACCESS_NETWORK_STATE` (which the `wifi` replay image policy reads); the manifest merger adds both to your app.
 - A Traceway server with OTLP/OpAMP support for Android projects (2.0), or any OTLP/HTTP receiver for [standalone](#standalone-without-a-traceway-server) use.
 
 ## Installation
@@ -91,11 +91,10 @@ class MyApp : Application() {
 }
 ```
 
-Register the application in `AndroidManifest.xml` and add the `INTERNET` permission:
+Register the application class in `AndroidManifest.xml`, or `onCreate()` never runs (the `INTERNET` permission comes with the library's manifest):
 
 ```xml
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
-    <uses-permission android:name="android.permission.INTERNET" />
     <application android:name=".MyApp" ...>
         ...
     </application>
@@ -169,7 +168,8 @@ Traceway.setAttributes(mapOf("plan" to "pro"))
 Traceway.removeAttribute("plan")
 Traceway.clearAttributes()
 
-// The current session (`session.id` on every record), and this installation (`service.instance.id`)
+// The current session (`session.id` on every record), and this installation (`service.instance.id`;
+// null for the moment right after init, until the SDK has read it)
 Traceway.currentSessionId
 Traceway.getInstanceId()
 
@@ -206,7 +206,7 @@ Every record is an OpenTelemetry log record or span and belongs to a *signal*. E
 | Mode | Meaning |
 |------|---------|
 | `stream` | sent as soon as it is produced |
-| `buffer` | kept in a ring buffer on the device (2 MB / 10 minutes by default) until a trigger flushes it |
+| `buffer` | kept in a ring buffer on the device (2 MiB / 10 minutes by default) until a trigger or a capture uploads it |
 | `off` | dropped |
 
 | Signal | Source | Default |
@@ -220,7 +220,7 @@ Every record is an OpenTelemetry log record or span and belongs to a *signal*. E
 | `custom` | `Traceway.recordAction`, `Traceway.track` | buffer |
 | replay | wireframe recording | buffer |
 
-The built-in trigger fires on every exception: it uploads the buffered breadcrumbs of the last 10 minutes and the replay clip. An app that never throws sends only its session start and end (and its metrics). Clips are rationed to one per 5 seconds and 20 per session; breadcrumbs are still sent for the exceptions in between.
+The built-in trigger fires on every exception: it uploads the buffered breadcrumbs of the last 10 minutes and the replay of the last 30 seconds, at most the frames the replay ring holds (`maxBufferFrames`). An app that never throws sends only its session and control records (`session.start`, `session.end`, `traceway.session.update`, `traceway.config.applied`) and its metrics. Clips are rationed to one per 5 seconds and 20 per session; breadcrumbs are still sent for the exceptions in between.
 
 `recordAllSessions = true` streams every breadcrumb signal and the replay instead. The signal names, modes, triggers and limits are the browser and Flutter SDKs', so one rule can target all of them.
 
@@ -230,7 +230,7 @@ The SDK builds its own `SdkLoggerProvider` and `SdkTracerProvider` from the Open
 
 ## Remote config
 
-The SDK polls the server over [OpAMP](https://opentelemetry.io/docs/specs/opamp/) (plain HTTP: at start, every 5 minutes by default, when the app returns to the foreground, and about 2 seconds after `Traceway.setAttribute` or a new session, so a rule targeting an attribute applies soon) and applies the collection settings you define under **Project → Data Collection** in the dashboard: signal modes and sample rates, buffer sizes, replay settings (`replay.mode`, `replay.sessionSampleRate`, `replay.maskAllInputs`, `replay.images`), extra triggers (for example "flush when `checkout_failed` happens twice in a minute") and on-demand captures of one user or device.
+The SDK polls the server over [OpAMP](https://opentelemetry.io/docs/specs/opamp/) (plain HTTP: at start, at the interval the server sets (5 minutes by default, 60 seconds while a capture targets the device), when the app returns to the foreground, and about 2 seconds after `Traceway.setAttribute` or a new session, so a rule targeting an attribute applies soon) and applies the collection settings you define under **Project → Data Collection** in the dashboard: signal modes and sample rates, buffer sizes, replay settings (`replay.mode`, `replay.sessionSampleRate`, `replay.maskAllInputs`, `replay.images`), extra triggers (for example "flush when `checkout_failed` happens twice in a minute") and on-demand captures of one user or device.
 
 - The `capture*` options, `screenCapture`, `replayImages` and `sessions` are **ceilings**. Remote settings can lower what is collected but never raise it: with `captureNetwork = false` no rule can turn network capture on, and without `screenCapture = true` nothing is recorded. `sampleRate`, `baselineSampleRate` and `recordAllSessions` are defaults: a rule can change them in either direction.
 - The last applied settings are cached, so they are in effect from the start of the next launch.
@@ -267,7 +267,7 @@ TracewayOptions(
 )
 ```
 
-An invalid document is ignored with a logcat warning, and the defaults apply.
+A value the SDK cannot use (an unknown mode, an out-of-range number, a malformed trigger) is skipped and the rest of the document applies. A document that names a `schemaVersion` other than 1 is ignored with a Logcat warning, and the defaults apply.
 
 ## Captures
 
@@ -276,7 +276,7 @@ A capture uploads what the device holds from its lookback window and then stream
 - **From the dashboard**: the Capture button on a session or issue targets one installation (`service.instance.id`), user (`user.id`) or session. The device starts it at its next poll; cancelling it stops the streaming at the poll after that. Each capture's lookback is uploaded once per installation.
 - **From a trigger** (`{"type": "capture", ...}` action): started on the device the moment the trigger fires. It survives app restarts until it ends; firing again only extends it.
 
-While a capture streams replay, the recording leaves as consecutive segments of a few seconds, each starting with a full snapshot. An exception during a streaming capture still gets a clip of its own.
+While a capture streams replay, the recording leaves as consecutive segments of up to 10 seconds, each starting with a full snapshot. An exception during a streaming capture still gets a clip of its own.
 
 ### Recording triggers
 
@@ -536,7 +536,7 @@ No Traceway server, account or token is required. `telemetry` must have a shared
 | `exportDelayMs` | `1000` | How long finished records wait to be sent as one batch (at least 50 ms) |
 | `telemetry` | — | Send logs, spans and metrics to another OTLP/HTTP receiver (see [Setups](#setups)) |
 | `propagateTraceHeaderUrls` | `[]` | URL prefixes whose requests carry a W3C `traceparent` header (see [Network requests](#network-requests)) |
-| `ignoreErrors` | `DEFAULT_IGNORE_ERRORS` | Exceptions and messages not to report: `String`s and `Regex`es matched against `Type: message` (see [Errors and messages](#errors-and-messages)) |
+| `ignoreErrors` | `null` (`DEFAULT_IGNORE_ERRORS`) | Exceptions and messages not to report: `String`s and `Regex`es matched against `Type: message` (see [Errors and messages](#errors-and-messages)) |
 | `beforeCapture` | — | `(TracewayCapturedError) -> Boolean`: return false to drop an exception or a message |
 | `legacyConnectionString` | — | The connection string a 1.x build used, to deliver its unsent reports (see [Migrating](#migrating-from-1x)) |
 | `proguardUuid` | — | The R8 build UUID, `BuildConfig.TRACEWAY_PROGUARD_UUID` (see [Crashes and symbolication](#crashes-and-symbolication)) |
@@ -555,11 +555,11 @@ TracewayOptions(
 
 ## Crashes and symbolication
 
-Uncaught exceptions on every thread are caught through the default `UncaughtExceptionHandler`. The exception (`exception.unhandled = true`, with its thread and screen), its breadcrumbs and its replay clip are written to disk before the handler that was installed before (normally the platform's) ends the process; the SDK then tries to send them for up to about two seconds, and sends what is left at the next start. The crash is never swallowed. A crash before the SDK finished starting is kept on disk and reported at the next start (`traceway.crash.before_start = true`).
+Uncaught exceptions on every thread are caught through the default `UncaughtExceptionHandler`. The exception (`exception.unhandled = true`, with its thread and screen), its breadcrumbs and its replay clip are written to disk before the handler that was installed before (normally the platform's) ends the process. On any thread but the main one the SDK then tries to send them, holding the crashing thread for at most 2.5 seconds in all; a crash on the main thread is not sent then, so the frozen screen does not wait. What is left goes at the next start. The crash is never swallowed. A crash before the SDK finished starting is kept on disk and reported at the next start (`traceway.crash.before_start = true`).
 
 Release builds run R8, which renames classes and methods and rewrites line numbers, so crashes arrive obfuscated. Traceway reverses them with the build's `mapping.txt`, matched to the crashing build by a ProGuard UUID that the SDK sends as the `app.debug.proguard_uuid` resource attribute of every record.
 
-The `com.tracewayapp.symbols` Gradle plugin (in [`gradle-plugin/`](gradle-plugin)) automates both halves: it injects a per-build UUID into `BuildConfig.TRACEWAY_PROGUARD_UUID` and uploads `mapping.txt` to your Traceway instance. It's published to Maven Central, so add `mavenCentral()` to your `pluginManagement` repositories in `settings.gradle.kts`:
+The `com.tracewayapp.symbols` Gradle plugin (in [`gradle-plugin/`](gradle-plugin)) automates both halves: it injects a UUID per variant and app version into `BuildConfig.TRACEWAY_PROGUARD_UUID` and uploads `mapping.txt` to your Traceway instance. It's published to Maven Central, so add `mavenCentral()` to your `pluginManagement` repositories in `settings.gradle.kts`:
 
 ```kotlin
 pluginManagement {
@@ -688,6 +688,22 @@ The wireframe of real views and Compose screens is tested on the JVM too, under 
 ```
 
 `LiveServerTest` runs the real client (its own HTTP stack and threads) against a running Traceway server when `TRACEWAY_E2E_CONNECTION` names one with an Android project, e.g. `TRACEWAY_E2E_CONNECTION=token@http://127.0.0.1:8082`.
+
+**End to end against a server** — `tools/e2e/run.py` runs `E2EScriptTest`, a scripted app: the SDK started with `Traceway.init` and the project's connection string, activities of real views and a Compose screen under Robolectric, touches dispatched to their windows (so taps go through the SDK's touch tracking and the screen through its wireframe recorder), and OkHttp calls through `TracewayOkHttpInterceptor` to a local echo server. The script stops at each phase; the harness checks through the dashboard API what the server holds, then lets it go on:
+
+1. Before an error, breadcrumbs and taps stay on the device; only the session is on the server.
+2. A caught exception brings up the issue with its breadcrumbs, the tap with its selector (`MaterialButton#button1`), the HTTP span, the session and a wireframe clip linked to the issue (typed text masked).
+3. A recording trigger of the app's local settings (navigation `/users/{id}`, a tap on the Compose button `#open-profile`, a log line) starts a 20 s capture: the session lists it as a recording reason, logs stream while it runs and not after, replay segments are uploaded.
+4. A capture created through `POST /api/sdk-config/captures` brings up its lookback, streams with the capture id on every record, and stops when cancelled.
+5. A Data Collection rule whose click step is the selector the server recorded for the pay tap matches the next tap, emits its event and records.
+6. A rule sets `replay.images` to `off`, then `always`: after a restart of the SDK the session reports `traceway.replay.images`, and the clip of a photo is a placeholder, then carries a `data:image/jpeg` picture.
+7. `app.*` metrics and `Traceway.metric` / `Traceway.count` reach the metrics API.
+
+The rules it creates target the run's instance only and are deleted at the start of the next run. It needs Python 3, a JDK in `JAVA_HOME` and a dashboard login; it builds the unit tests with `./gradlew` (`--gradle` takes another command), writes the app's log and `result.json` to `build/e2e` (`--out`), and prints the session and issue ids it created. `E2EScriptTest` is skipped in ordinary unit test runs.
+
+```bash
+python3 tools/e2e/run.py --base http://127.0.0.1:8082 --email you@example.com --password … --project "Android App"
+```
 
 **Wireframe gallery** — `WireframeGalleryTest` shows the 28 scenarios the iOS SDK's gallery shows (layout, positioning, transforms, clipping, stacks, constraints, text, rich text, buttons, controls, forms, the keyboard, images with replay images on and off, lists, grids, a carousel, navigation, tabs, dialogs, sheets, menus, privacy masks, a Compose screen, native views, motion, right to left, dark mode) on a 412 × 915 dp xhdpi screen. The real `WireframeRecorder` records them on its clock while each scenario taps, types, drags, opens dialogs, sheets and menus and pushes screens, with touches delivered through the windows' callbacks as a device delivers them. At each of its 70 checkpoints the test saves the picture Android drew of its windows (one pixel per dp) and the frames of the texts on screen. It replays the recording through a strict model of rrweb's replayer and fails when a frame does not rebuild exactly, a checkpoint does not show its texts or shows one it must hide, or a typed secret reaches the recording. It writes `events.json`, `run.json`, `app/<checkpoint>.png` and `tree/<checkpoint>.txt` to `traceway/build/wireframe-gallery` (`WIREFRAME_GALLERY_OUT`); `WIREFRAME_GALLERY_ONLY` runs some scenarios:
 

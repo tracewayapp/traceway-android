@@ -42,16 +42,18 @@ internal const val SCREEN_FONT = "Roboto,\"Segoe UI\",\"Helvetica Neue\",Arial,s
 // ---- numbers ----------------------------------------------------------------
 //
 // Lengths are rounded to a tenth of a dp, so sub-pixel animation noise does
-// not turn into a mutation on every frame. The appenders write into the
-// capture's one StringBuilder, so an unchanged view allocates nothing.
+// not turn into a mutation on every frame. Halves round away from zero, as
+// in the iOS and Flutter SDKs, so -x is written as x with a minus sign. The
+// appenders write into the capture's one StringBuilder, so an unchanged view
+// allocates nothing.
 
 private const val LIMIT = 1e8f
 
 internal fun StringBuilder.appendNum1(value: Float): StringBuilder {
     if (value.isNaN() || value.isInfinite()) return append('0')
-    val r = Math.round(value.coerceIn(-LIMIT, LIMIT) * 10f)
-    if (r < 0) append('-')
-    val a = abs(r)
+    val v = value.coerceIn(-LIMIT, LIMIT)
+    val a = Math.round(abs(v) * 10f)
+    if (v < 0f && a != 0) append('-')
     append(a / 10)
     val f = a % 10
     if (f != 0) append('.').append(f)
@@ -60,9 +62,9 @@ internal fun StringBuilder.appendNum1(value: Float): StringBuilder {
 
 internal fun StringBuilder.appendNum3(value: Float): StringBuilder {
     if (value.isNaN() || value.isInfinite()) return append('0')
-    val r = Math.round(value.coerceIn(-LIMIT, LIMIT).toDouble() * 1000.0)
-    if (r < 0) append('-')
-    val a = abs(r)
+    val v = value.coerceIn(-LIMIT, LIMIT).toDouble()
+    val a = Math.round(abs(v) * 1000.0)
+    if (v < 0.0 && a != 0L) append('-')
     append(a / 1000)
     var f = (a % 1000).toInt()
     if (f != 0) {
@@ -124,31 +126,36 @@ internal fun StringBuilder.appendFill(argb: Int): StringBuilder {
 
 // ---- shapes -----------------------------------------------------------------
 
+/** A corner radius CSS can draw: a NaN, negative or infinite one is square. */
+private fun corner(radius: Float): Float = if (radius > 0f && radius < Float.POSITIVE_INFINITY) radius else 0f
+
 /** `border-radius` of one radius for every corner, or nothing when square. */
 internal fun StringBuilder.appendRadius(radius: Float): StringBuilder {
-    if (radius > 0f) append("border-radius:").appendPx(radius).append(';')
+    if (corner(radius) > 0f) append("border-radius:").appendPx(radius).append(';')
     return this
 }
 
 /**
  * `border-radius` from Android's eight corner radii (x and y of top-left,
  * top-right, bottom-right, bottom-left), or nothing when all are square.
+ * A radius CSS cannot draw (NaN, negative, infinite) is a square corner.
  */
 internal fun StringBuilder.appendRadii(r: FloatArray): StringBuilder {
     if (r.size < 8) return this
-    fun zero(i: Int) = r[i] <= 0f || r[i + 1] <= 0f
+    fun c(i: Int) = corner(r[i])
+    fun zero(i: Int) = c(i) == 0f || c(i + 1) == 0f
     if (zero(0) && zero(2) && zero(4) && zero(6)) return this
-    val uniform = r[0] == r[2] && r[2] == r[4] && r[4] == r[6] &&
-        r[1] == r[3] && r[3] == r[5] && r[5] == r[7]
+    val uniform = c(0) == c(2) && c(2) == c(4) && c(4) == c(6) &&
+        c(1) == c(3) && c(3) == c(5) && c(5) == c(7)
     append("border-radius:")
     if (uniform) {
-        appendPx(r[0])
-        if (r[0] != r[1]) append('/').appendPx(r[1])
+        appendPx(c(0))
+        if (c(0) != c(1)) append('/').appendPx(c(1))
         return append(';')
     }
-    appendPx(r[0]).append(' ').appendPx(r[2]).append(' ').appendPx(r[4]).append(' ').appendPx(r[6])
-    if (r[0] != r[1] || r[2] != r[3] || r[4] != r[5] || r[6] != r[7]) {
-        append('/').appendPx(r[1]).append(' ').appendPx(r[3]).append(' ').appendPx(r[5]).append(' ').appendPx(r[7])
+    appendPx(c(0)).append(' ').appendPx(c(2)).append(' ').appendPx(c(4)).append(' ').appendPx(c(6))
+    if (c(0) != c(1) || c(2) != c(3) || c(4) != c(5) || c(6) != c(7)) {
+        append('/').appendPx(c(1)).append(' ').appendPx(c(3)).append(' ').appendPx(c(5)).append(' ').appendPx(c(7))
     }
     return append(';')
 }
@@ -197,6 +204,7 @@ internal fun StringBuilder.appendLinearGradient(
     width: Float, height: Float,
     colors: IntArray, stops: FloatArray? = null,
 ): StringBuilder {
+    if (colors.isEmpty()) return this
     // CSS angles run clockwise from "to top".
     val dx = (x1 - x0) * width
     val dy = (y1 - y0) * height
@@ -208,6 +216,7 @@ internal fun StringBuilder.appendLinearGradient(
 
 /** A radial gradient around ([cx], [cy]), fractions of the box. */
 internal fun StringBuilder.appendRadialGradient(cx: Float, cy: Float, colors: IntArray): StringBuilder {
+    if (colors.isEmpty()) return this
     append("background-image:radial-gradient(circle at ").appendNum1(cx * 100f).append("% ")
         .appendNum1(cy * 100f).append("%,")
     return appendStops(colors, null).append(");")
@@ -215,6 +224,7 @@ internal fun StringBuilder.appendRadialGradient(cx: Float, cy: Float, colors: In
 
 /** A sweep gradient around ([cx], [cy]), fractions of the box, starting at 3 o'clock. */
 internal fun StringBuilder.appendSweepGradient(cx: Float, cy: Float, colors: IntArray): StringBuilder {
+    if (colors.isEmpty()) return this
     append("background-image:conic-gradient(from 90deg at ").appendNum1(cx * 100f).append("% ")
         .appendNum1(cy * 100f).append("%,")
     return appendStops(colors, null).append(");")
@@ -257,12 +267,19 @@ internal class TextLook {
     }
 }
 
+/**
+ * The CSS weight of a font of [weight], written as the app set it, as the iOS
+ * and Flutter SDKs do: a weight means the same in every SDK's replay. A
+ * viewer without a medium face (Roboto Medium) draws 500 with its regular one.
+ */
+internal fun cssWeight(weight: Int): Int = weight
+
 internal fun StringBuilder.appendFont(
     color: Int, weight: Int, italic: Boolean, underline: Boolean, strike: Boolean,
     letterSpacing: Float, monospace: Boolean,
 ): StringBuilder {
     append("color:").appendColor(color).append(';')
-    if (weight != 400 && weight > 0) append("font-weight:").append(weight).append(';')
+    if (weight != 400 && weight > 0) append("font-weight:").append(cssWeight(weight)).append(';')
     if (italic) append("font-style:italic;")
     if (underline || strike) {
         append("text-decoration:")

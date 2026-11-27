@@ -1,5 +1,6 @@
 package com.tracewayapp.traceway
 
+import com.tracewayapp.traceway.internal.ExecutorScheduler
 import com.tracewayapp.traceway.internal.HttpResponse
 import com.tracewayapp.traceway.internal.Json
 import com.tracewayapp.traceway.internal.ManualScheduler
@@ -162,7 +163,7 @@ class TracewayClientTest {
         assertTrue(stack, stack.startsWith("java.lang.IllegalArgumentException: bad input\n\tat "))
         assertNotNull(record.attr("traceway.exception.id"))
         assertEquals(client.currentSessionId, record.attr("session.id"))
-        assertNotNull(record.attr("traceway.session.started_at"))
+        assertNull("only session events carry the start, as in the browser SDK", record.attr("traceway.session.started_at"))
         assertEquals("u-1", record.attr("user.id"))
         // No screen recording in this app: the clip status says why there is none.
         assertEquals("disabled", record.attr("traceway.replay.status"))
@@ -465,6 +466,19 @@ class TracewayClientTest {
     }
 
     @Test
+    fun sessionEventsCarryTheErrorsHeldBackSoFar() {
+        val client = start()
+        client.flush(2000)
+        assertEquals(0L, named("session.start").single().attr("traceway.error.suppressed_total"))
+        repeat(3) { client.captureException(IllegalStateException("same")) }
+        scheduler.advance(1000)
+        client.flush(2000)
+        assertEquals(2L, named("traceway.session.update").single().attr("traceway.error.suppressed_total"))
+        client.shutdown(2000)
+        assertEquals(2L, named("session.end").single().attr("traceway.error.suppressed_total"))
+    }
+
+    @Test
     fun sessionEventsReportTheReplayImagePolicy() {
         start(
             TracewayOptions(
@@ -644,7 +658,7 @@ class TracewayClientTest {
         val client = start(TracewayOptions(attributes = mapOf("tier" to "gold")))
         val body = http.to(OPAMP_URL).first().body
         val text = String(body, Charsets.ISO_8859_1)
-        assertTrue(text.contains(client.getInstanceId()))
+        assertTrue(text.contains(client.getInstanceId()!!))
         assertTrue(text.contains("tier"))
         assertTrue(text.contains("gold"))
     }
@@ -743,6 +757,38 @@ class TracewayClientTest {
         assertTrue(http.requests.none { it.url.startsWith("https://traceway.test") })
     }
 
+    // ---------------------------------------------------------------- bounds
+
+    @Test
+    fun aRemoteBufferSizeIsAppliedUpToWhatTheDeviceCanHold() {
+        remoteDocument = """{"schemaVersion":1,"buffer":{"maxBytes":67108864}}"""
+        val client = TracewayClient.initializeForTest(
+            CONNECTION,
+            TracewayOptions(),
+            TracewayTestOverrides(logExporter = logs, spanExporter = spans, http = http, scheduler = scheduler, maxHeapBytes = 256L * 1024 * 1024),
+        )
+        assertEquals("the server's value is taken", 64L * 1024 * 1024, client.settings.bufferMaxBytes)
+        assertEquals("a sixteenth of a 256 MB heap", 16L * 1024 * 1024, client.bufferLimitBytes)
+        assertEquals(64L * 1024 * 1024, deviceBufferCapBytes(4096L * 1024 * 1024))
+        remoteDocument = null
+        assertEquals("the built-in 2 MiB is below every cap", 2L * 1024 * 1024, start().bufferLimitBytes)
+    }
+
+    @Test
+    fun flushAfterShutdownDoesNotWaitItsWholeTimeout() {
+        val client = TracewayClient.initializeForTest(
+            CONNECTION,
+            TracewayOptions(),
+            TracewayTestOverrides(logExporter = logs, spanExporter = spans, http = http, scheduler = ExecutorScheduler()),
+        )
+        assertTrue(client.awaitReady())
+        client.shutdown(2000)
+        val started = System.nanoTime()
+        client.flush(3000)
+        val tookMs = (System.nanoTime() - started) / 1_000_000
+        assertTrue("took $tookMs ms", tookMs < 1000)
+    }
+
     // ---------------------------------------------------------------- crashes
 
     @Test
@@ -765,6 +811,21 @@ class TracewayClientTest {
         assertEquals("true", crash.attributes["exception.unhandled"])
         assertEquals("fatal", crash.attributes["exception.message"])
         assertTrue(sent.map { it.body }.toString(), sent.any { it.body == "right before the crash" })
+    }
+
+    @Test
+    fun aCrashIsSentWhenNothingIsKeptOnDisk() {
+        // persistToDisk = false, or no usable state directory: there is no outbox to write the crash to.
+        val client = start(TracewayOptions(persistToDisk = false), stateDir = null, inMemory = false)
+        client.log("right before the crash")
+        client.simulateCrash(Thread.currentThread(), IllegalStateException("fatal"))
+        // The process would end here: what was not sent by now is lost.
+        val sent = http.to(LOGS_URL).flatMap { Otlp.logs(it.plain) }
+        val crash = sent.singleOrNull { it.eventName == "exception" }
+        assertNotNull("the crash left before the process ended: ${sent.map { it.eventName }}", crash)
+        assertEquals("true", crash!!.attributes["exception.unhandled"])
+        assertEquals("fatal", crash.attributes["exception.message"])
+        assertTrue("with its breadcrumbs", sent.any { it.body == "right before the crash" })
     }
 
     @Test

@@ -1,6 +1,7 @@
 package com.tracewayapp.traceway.network
 
 import com.tracewayapp.traceway.TracewayClient
+import com.tracewayapp.traceway.guarded
 import okhttp3.Interceptor
 import okhttp3.Response
 import java.io.IOException
@@ -23,43 +24,39 @@ import java.io.IOException
  * `captureNetwork` is false or Traceway is not initialized.
  */
 class TracewayOkHttpInterceptor : Interceptor {
+    /**
+     * The app's call goes through unchanged whatever happens in the SDK: the
+     * response it gets is the one the chain returned, and the exception it
+     * gets is the one the chain threw, the same object.
+     */
     @Throws(IOException::class)
     override fun intercept(chain: Interceptor.Chain): Response {
         val original = chain.request()
         val client = TracewayClient.instance ?: return chain.proceed(original)
-        val handle = try {
+        val handle = guarded("okhttp start", null) {
             client.startRequest(original.method, original.url.toString(), original.header("traceparent") != null)
-        } catch (_: Throwable) {
-            null
         }
-        val request = handle?.traceparent?.let { original.newBuilder().header("traceparent", it).build() } ?: original
-        val requestBytes = try {
-            request.body?.contentLength()?.takeIf { it >= 0 }
-        } catch (_: Throwable) {
-            null
+        val request = guarded("okhttp traceparent", original) {
+            handle?.traceparent?.let { original.newBuilder().header("traceparent", it).build() } ?: original
         }
-        return try {
-            val response = chain.proceed(request)
-            if (handle != null) {
-                val responseBytes = response.body?.contentLength()?.takeIf { it >= 0 }
-                    ?: response.header("Content-Length")?.toLongOrNull()
-                safe { client.endRequest(handle, response.code, requestBytes, responseBytes, null) }
-            }
-            response
+        val requestBytes = guarded("okhttp request size", null) { request.body?.contentLength()?.takeIf { it >= 0 } }
+        val response = try {
+            chain.proceed(request)
         } catch (e: IOException) {
-            if (handle != null) safe { client.endRequest(handle, null, requestBytes, null, e.javaClass.simpleName) }
+            if (handle != null) guarded("okhttp end") { client.endRequest(handle, null, requestBytes, null, e.javaClass.simpleName) }
             throw e
         } catch (e: RuntimeException) {
-            if (handle != null) safe { client.endRequest(handle, null, requestBytes, null, e.javaClass.simpleName) }
+            if (handle != null) guarded("okhttp end") { client.endRequest(handle, null, requestBytes, null, e.javaClass.simpleName) }
             throw e
         }
-    }
-
-    private inline fun safe(block: () -> Unit) {
-        try {
-            block()
-        } catch (_: Throwable) {
-            // Never let telemetry break the app's networking.
+        // Reading the response for the span is the SDK's business: a failure there never fails the app's call.
+        if (handle != null) {
+            guarded("okhttp end") {
+                val responseBytes = response.body?.contentLength()?.takeIf { it >= 0 }
+                    ?: response.header("Content-Length")?.toLongOrNull()
+                client.endRequest(handle, response.code, requestBytes, responseBytes, null)
+            }
         }
+        return response
     }
 }

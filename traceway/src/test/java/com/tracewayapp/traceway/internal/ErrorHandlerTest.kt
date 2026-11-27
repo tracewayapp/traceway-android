@@ -4,6 +4,8 @@ import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
+import java.io.ByteArrayOutputStream
+import java.io.PrintStream
 import org.junit.Before
 import org.junit.Test
 
@@ -72,5 +74,44 @@ class ErrorHandlerTest {
         handler.uncaughtException(Thread.currentThread(), RuntimeException("1"))
         handler.uncaughtException(Thread.currentThread(), RuntimeException("2"))
         assertEquals(2, calls)
+    }
+
+    @Test
+    fun withNoHandlerBeforeTheCrashIsStillPrintedAsTheJvmWould() {
+        Thread.setDefaultUncaughtExceptionHandler(null)
+        var reported = 0
+        ErrorHandler(onCrash = { _, _ -> reported++ }).install()
+        val err = System.err
+        val printed = ByteArrayOutputStream()
+        System.setErr(PrintStream(printed, true))
+        try {
+            Thread.getDefaultUncaughtExceptionHandler()!!.uncaughtException(Thread.currentThread(), RuntimeException("lost?"))
+        } finally {
+            System.setErr(err)
+        }
+        assertEquals(1, reported)
+        val text = printed.toString()
+        assertTrue(text, text.startsWith("Exception in thread \"${Thread.currentThread().name}\" java.lang.RuntimeException: lost?"))
+        assertTrue(text, text.contains("\tat "))
+    }
+
+    @Test
+    fun uninstallGivesTheDefaultHandlerBackOrOnlyPassesCrashesOn() {
+        val before = Thread.getDefaultUncaughtExceptionHandler()
+        var reported = 0
+        val handler = ErrorHandler(onCrash = { _, _ -> reported++ })
+        handler.install()
+        handler.uninstall()
+        assertSame("still on top: the previous one is back", before, Thread.getDefaultUncaughtExceptionHandler())
+
+        // The app put its own handler on top of ours: ours stays in its chain, reporting nothing, passing it on.
+        handler.install()
+        val ours = Thread.getDefaultUncaughtExceptionHandler()!!
+        Thread.setDefaultUncaughtExceptionHandler { t, e -> ours.uncaughtException(t, e) }
+        handler.uninstall()
+        val error = RuntimeException("after shutdown")
+        Thread.getDefaultUncaughtExceptionHandler()!!.uncaughtException(Thread.currentThread(), error)
+        assertEquals(0, reported)
+        assertSame(error, chained.single())
     }
 }

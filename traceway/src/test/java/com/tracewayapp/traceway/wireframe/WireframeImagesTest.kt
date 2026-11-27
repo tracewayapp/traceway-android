@@ -13,12 +13,17 @@ import com.tracewayapp.traceway.TracewayImagePolicy
 import com.tracewayapp.traceway.TracewayMaskMode
 import com.tracewayapp.traceway.tracewayMask
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
 import org.robolectric.annotation.GraphicsMode
+import java.util.Random
+import java.util.concurrent.Executor
 
 /**
  * Pictures in the wireframe: what image views show, recorded as the replay
@@ -194,5 +199,324 @@ class WireframeImagesTest {
         assertEquals("the one recorded stays, the new one is not", listOf("im p0", "im"), classes(screen))
         assertEquals(1, s.capture.images.all.size)
         assertEquals(1, pictureStyles(screen).size)
+    }
+
+    // ---- the policy, without a screen ---------------------------------------------
+
+    /** Pictures recorded as [policy] allows, encoded by [encoder] (by default never). */
+    private fun images(policy: TracewayImagePolicy = TracewayImagePolicy.ALWAYS, encoder: Executor = Executor { }) =
+        WireframeImages(onReady = {}, encoder = encoder).apply {
+            this.policy = policy
+            beginCapture()
+        }
+
+    @Test
+    fun thePoliciesAreOrderedAndNamedAsOnTheWire() {
+        assertEquals(listOf("off", "wifi", "always"), TracewayImagePolicy.entries.map { it.wire })
+        assertEquals(TracewayImagePolicy.WIFI, TracewayImagePolicy.lower(TracewayImagePolicy.ALWAYS, TracewayImagePolicy.WIFI))
+        assertEquals(TracewayImagePolicy.WIFI, TracewayImagePolicy.lower(TracewayImagePolicy.WIFI, TracewayImagePolicy.ALWAYS))
+        assertEquals(TracewayImagePolicy.OFF, TracewayImagePolicy.lower(TracewayImagePolicy.WIFI, TracewayImagePolicy.OFF))
+        assertEquals(TracewayImagePolicy.ALWAYS, TracewayImagePolicy.from("always"))
+        for (bad in listOf("WIFI", "sometimes", true, 1, null)) assertNull("$bad", TracewayImagePolicy.from(bad))
+    }
+
+    @Test
+    fun thePolicyDecidesByTheConnectionWhenAFrameIsCaptured() {
+        assertEquals("off until the settings allow pictures", TracewayImagePolicy.OFF, WireframeImages(onReady = {}).policy)
+        val images = images(TracewayImagePolicy.OFF)
+        var unmetered = true
+        images.unmetered = { unmetered }
+        images.beginCapture()
+        assertFalse(images.allowed)
+        assertNull("nothing is recorded while pictures are off", images.lookup(photo(), 100f, 50f))
+        assertTrue(images.all.isEmpty())
+
+        images.policy = TracewayImagePolicy.WIFI
+        images.beginCapture()
+        assertTrue(images.allowed)
+        // The connection changes during the frame: the frame keeps what it was captured with.
+        unmetered = false
+        assertTrue(images.allowed)
+        images.beginCapture()
+        assertFalse("cellular, a hotspot", images.allowed)
+
+        images.policy = TracewayImagePolicy.ALWAYS
+        images.beginCapture()
+        assertTrue("always does not ask the connection", images.allowed)
+
+        images.policy = TracewayImagePolicy.WIFI
+        images.unmetered = { throw IllegalStateException("no connectivity service") }
+        images.beginCapture()
+        assertFalse("a connection that cannot be read is not Wi-Fi", images.allowed)
+    }
+
+    /** The size [lookup] copies a bitmap of [bw] x [bh] shown [wDp] x [hDp] at, or null when it records none. */
+    private fun copySize(wDp: Float, hDp: Float, bw: Int, bh: Int): List<Int>? {
+        val images = images()
+        assertNull("the first frame shows the placeholder", images.lookup(Bitmap.createBitmap(bw, bh, Bitmap.Config.ALPHA_8), wDp, hDp))
+        return images.all.singleOrNull()?.let { listOf(it.wPx, it.hPx) }
+    }
+
+    @Test
+    fun picturesAreCopiedAtTheirDisplayedSize() {
+        assertEquals("1.5 pixels per dp", listOf(150, 120), copySize(100f, 80f, 1000, 800))
+        assertEquals("the longest side is at most 512", listOf(512, 384), copySize(400f, 300f, 1000, 800))
+        assertEquals(listOf(256, 512), copySize(300f, 600f, 1000, 1000))
+        assertEquals("never more pixels than the bitmap has", listOf(60, 60), copySize(100f, 100f, 60, 60))
+        assertNull(copySize(0f, 100f, 60, 60))
+        assertNull(copySize(100f, -1f, 60, 60))
+        assertNull(copySize(Float.POSITIVE_INFINITY, 100f, 60, 60))
+        assertNull(copySize(100f, Float.NaN, 60, 60))
+    }
+
+    @Test
+    fun pngOnlyForSmallSeeThroughPictures() {
+        val images = images(encoder = Executor { it.run() })
+        fun encoded(bitmap: Bitmap, wDp: Float, hDp: Float): WireframeImages.Image {
+            images.lookup(bitmap, wDp, hDp)
+            val image = images.all.last()
+            assertNotNull(image.css)
+            return image
+        }
+        fun mime(image: WireframeImages.Image) = Regex("data:([^;]+);").find(image.css!!)!!.groupValues[1]
+        val seeThrough = { w: Int, h: Int -> Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888).apply { eraseColor(0x80FF0000.toInt()) } }
+
+        val small = encoded(seeThrough(128, 32), 128f, 32f)
+        assertEquals(listOf(128, 32), listOf(small.wPx, small.hPx))
+        assertEquals("image/png", mime(small))
+        val png = android.util.Base64.decode(Regex("base64,([^)]+)\\)").find(small.css!!)!!.groupValues[1], 0)
+        val decoded = BitmapFactory.decodeByteArray(png, 0, png.size)
+        assertEquals("the picture keeps its transparency", 0x80, Color.alpha(decoded.getPixel(10, 10)))
+
+        val wide = encoded(seeThrough(200, 200), 86f, 20f)
+        assertEquals(129, wide.wPx)
+        assertEquals("image/jpeg", mime(wide))
+        assertEquals("image/jpeg", mime(encoded(photo(32, 32), 32f, 32f)))
+        assertEquals(60, WireframeImages.JPEG_QUALITY)
+        assertEquals(96 * 1024, WireframeImages.MAX_BYTES)
+        assertTrue(listOf(small.bytes, wide.bytes).all { it in 1..WireframeImages.MAX_BYTES })
+    }
+
+    @Test
+    fun aPictureTooBigIsRetriedAtHalfItsSizeAndOneThatCannotBeEncodedIsLeftOut() {
+        val random = Random(7)
+        val noise = Bitmap.createBitmap(512, 512, Bitmap.Config.ARGB_8888).apply {
+            setPixels(IntArray(512 * 512) { random.nextInt() or (0xFF shl 24) }, 0, 512, 0, 0, 512, 512)
+            setHasAlpha(false)
+        }
+        val images = images(encoder = Executor { it.run() })
+        images.lookup(noise, 400f, 400f)
+        val image = images.all.single()
+        assertEquals(512, image.wPx)
+        assertFalse(image.failed)
+        val jpeg = android.util.Base64.decode(Regex("base64,([^)]+)\\)").find(image.css!!)!!.groupValues[1], 0)
+        val decoded = BitmapFactory.decodeByteArray(jpeg, 0, jpeg.size)
+        assertEquals("over ${WireframeImages.MAX_BYTES} bytes at 512 px, so half that", 256, decoded.width)
+        assertEquals(jpeg.size, image.bytes)
+        assertTrue("${image.bytes}", image.bytes <= WireframeImages.MAX_BYTES)
+
+        // The app recycles its bitmap before the encoder gets to it: the encoder only reads the copy taken on the
+        // main thread during the capture, never the app's bitmap (a recycled bitmap read off the main thread aborts
+        // the process), so the picture is still recorded.
+        val later = ArrayList<Runnable>()
+        val deferred = images(encoder = Executor { later.add(it) })
+        val gone = photo()
+        deferred.lookup(gone, 200f, 100f)
+        gone.recycle()
+        later.forEach { it.run() }
+        val copied = deferred.all.single()
+        assertFalse(copied.failed)
+        assertNotNull(copied.css)
+        assertNull("a recycled bitmap is not looked at", deferred.lookup(gone, 200f, 100f))
+
+        // A bitmap that cannot even be copied is left out, for good.
+        val encoded = ArrayList<Runnable>()
+        val unreadable = images(encoder = Executor { encoded.add(it) })
+        val recycled = photo().apply { recycle() }
+        assertNull(unreadable.lookup(recycled, 200f, 100f))
+        assertTrue("nothing to copy, nothing to encode", encoded.isEmpty())
+    }
+
+    @Test
+    fun theEncoderNeverTouchesTheAppsBitmapAfterLookup() {
+        // Image loaders recycle and reuse pooled bitmaps on their own schedule; a recycle while another thread reads
+        // the bitmap aborts the process in hwui. The encoder must only ever see the SDK's own copy.
+        val queued = ArrayList<Runnable>()
+        val images = images(encoder = Executor { queued.add(it) })
+        val bm = photo(200, 200)
+        assertNull(images.lookup(bm, 100f, 100f))
+        bm.recycle()
+        queued.forEach { it.run() }
+        val image = images.all.single()
+        assertFalse(image.failed)
+        assertNotNull(image.css)
+        val jpeg = android.util.Base64.decode(Regex("base64,([^)]+)\\)").find(image.css!!)!!.groupValues[1], 0)
+        val decoded = BitmapFactory.decodeByteArray(jpeg, 0, jpeg.size)
+        assertEquals("copied at the size it shows", 150, decoded.width)
+        val pixel = decoded.getPixel(75, 75)
+        assertTrue("the app's picture, red: ${Integer.toHexString(pixel)}", Color.red(pixel) > 150 && Color.green(pixel) < 100)
+    }
+
+    @Test
+    fun copiesWaitingForTheEncoderAreBounded() {
+        val queued = ArrayList<Runnable>()
+        val images = images(encoder = Executor { queued.add(it) })
+        // Each 342 x 512 copy takes about 0.7 MB: a few wait at most, the rest wait for later frames.
+        val bitmaps = List(12) { photo(400, 600) }
+        for (b in bitmaps) images.lookup(b, 400f, 600f)
+        val waiting = images.all.size
+        assertTrue("$waiting", waiting in 1 until bitmaps.size)
+        assertTrue(waiting.toLong() * 342 * 512 * 4 <= WireframeImages.MAX_PENDING_BYTES)
+        // Encoded, their copies are released: the next frame copies more.
+        queued.forEach { it.run() }
+        queued.clear()
+        images.beginCapture()
+        for (b in bitmaps) images.lookup(b, 400f, 600f)
+        assertTrue(images.all.size > waiting)
+    }
+
+    @Test
+    fun pastTheCapPicturesNotShownForAWhileMakeRoom() {
+        val images = WireframeImages(onReady = {}, maxImages = 2, encoder = Executor { it.run() }).apply {
+            policy = TracewayImagePolicy.ALWAYS
+        }
+        val t0 = 1_000_000L
+        images.beginCapture(t0)
+        val a = photo(color = Color.RED)
+        val b = photo(color = Color.GREEN)
+        images.lookup(a, 100f, 50f)
+        images.lookup(b, 100f, 50f)
+        assertEquals(2, images.all.size)
+
+        // Both still show: a third waits.
+        images.beginCapture(t0 + 1000)
+        val c = photo(color = Color.BLUE)
+        assertNull(images.lookup(c, 100f, 50f))
+        assertEquals(listOf("p0", "p1"), images.all.map { it.cls })
+
+        // Neither was shown for longer than a picture lingers: the new one takes their place, with a class of its own.
+        images.beginCapture(t0 + WireframeImages.LINGER_MS + 1)
+        images.lookup(c, 100f, 50f)
+        assertEquals(listOf("p2"), images.all.map { it.cls })
+        assertNotNull(images.lookup(c, 100f, 50f))
+    }
+
+    @Test
+    fun aNewSessionRecordsItsPicturesAgain() {
+        val images = WireframeImages(onReady = {}, maxImages = 1, encoder = Executor { it.run() }).apply {
+            policy = TracewayImagePolicy.ALWAYS
+        }
+        images.beginCapture(1_000L)
+        images.lookup(photo(), 100f, 50f)
+        val other = photo(color = Color.GREEN)
+        images.beginCapture(2_000L)
+        assertNull("the cap is reached", images.lookup(other, 100f, 50f))
+        images.newSession()
+        images.beginCapture(3_000L)
+        images.lookup(other, 100f, 50f)
+        assertEquals(listOf("p1"), images.all.map { it.cls })
+    }
+
+    // ---- where a picture sits in its view -------------------------------------------
+
+    /** Where [node] is inside [v], and its size: left, top, width, height in dp. */
+    private fun RealScreen.placed(screen: VNode, node: VNode, v: View): List<Float> {
+        val at = IntArray(2)
+        v.getLocationOnScreen(at)
+        val (x, y) = position(screen, node)
+        return listOf(x - at[0] / density, y - at[1] / density, styleNumber(node, "width"), styleNumber(node, "height"))
+    }
+
+    private fun assertPlaced(message: String, expected: List<Float>, got: List<Float>) {
+        for (k in 0 until 4) assertEquals("$message: $got", expected[k], got[k], 0.6f)
+    }
+
+    private fun row(a: Context, vararg views: View): LinearLayout = LinearLayout(a).apply {
+        orientation = LinearLayout.HORIZONTAL
+        for (v in views) addView(v)
+    }
+
+    /** Image views of 100 x 100 dp, each showing its bitmap with its scale type, four to a row. */
+    private fun placements(policy: TracewayImagePolicy, vararg shown: Pair<Bitmap, ImageView.ScaleType>): Triple<RealScreen, VNode, List<ImageView>> {
+        val views = ArrayList<ImageView>()
+        val s = RealScreen.open { a ->
+            for ((bitmap, scale) in shown) views.add(imageView(a, bitmap, 100, 100, scale))
+            column(a, *views.chunked(4).map { row(a, *it.toTypedArray()) }.toTypedArray())
+        }.policy(policy)
+        return Triple(s, s.settled(), views)
+    }
+
+    private fun pictureNodes(screen: VNode): List<VNode> =
+        allNodes(screen).filter { val c = it.attributes["class"] ?: ""; c == "im" || c.startsWith("im ") }.toList()
+
+    @Test
+    fun scaleTypesPlaceThePictureInItsView() {
+        val scales = arrayOf(
+            ImageView.ScaleType.FIT_XY, ImageView.ScaleType.FIT_CENTER, ImageView.ScaleType.CENTER_CROP,
+            ImageView.ScaleType.CENTER, ImageView.ScaleType.FIT_START, ImageView.ScaleType.FIT_END,
+        )
+        // A 50 x 20 picture in 100 x 100 views, as placeholders.
+        val (s, screen, views) = placements(TracewayImagePolicy.OFF, *scales.map { photo(50, 20) to it }.toTypedArray())
+        val nodes = pictureNodes(screen)
+        assertEquals(scales.size, nodes.size)
+        val expected = listOf(
+            listOf(0f, 0f, 100f, 100f),
+            listOf(0f, 30f, 100f, 40f),
+            // Cropped: as large as the view, the picture's middle.
+            listOf(0f, 0f, 100f, 100f),
+            listOf(25f, 40f, 50f, 20f),
+            listOf(0f, 0f, 100f, 40f),
+            listOf(0f, 60f, 100f, 40f),
+        )
+        for (i in scales.indices) assertPlaced("${scales[i]}", expected[i], s.placed(screen, nodes[i], views[i]))
+    }
+
+    @Test
+    fun theRemainingScaleTypesAPictureLargerThanItsViewAndOneWithoutASize() {
+        lateinit var plain: ImageView
+        val views = ArrayList<ImageView>()
+        val s = RealScreen.open { a ->
+            views.add(imageView(a, photo(50, 20), 100, 100, ImageView.ScaleType.CENTER_INSIDE))
+            views.add(imageView(a, photo(50, 20), 100, 100, ImageView.ScaleType.MATRIX))
+            views.add(imageView(a, photo(300, 60), 100, 100, ImageView.ScaleType.CENTER_INSIDE))
+            views.add(imageView(a, photo(300, 60), 100, 100, ImageView.ScaleType.CENTER))
+            plain = ImageView(a).apply {
+                setImageDrawable(android.graphics.drawable.ColorDrawable(Color.MAGENTA))
+                scaleType = ImageView.ScaleType.CENTER
+                layoutParams = LinearLayout.LayoutParams(100, 100)
+            }
+            column(a, row(a, *views.toTypedArray()), plain)
+        }.policy(TracewayImagePolicy.OFF)
+        val screen = s.settled()
+        val nodes = pictureNodes(screen)
+        assertEquals(4, nodes.size)
+        assertPlaced("not enlarged", listOf(25f, 40f, 50f, 20f), s.placed(screen, nodes[0], views[0]))
+        assertPlaced("at its own size, from the corner", listOf(0f, 0f, 50f, 20f), s.placed(screen, nodes[1], views[1]))
+        // Larger than the view: CENTER_INSIDE shrinks it to fit; CENTER overflows it and the view cuts it.
+        assertPlaced("shrunk", listOf(0f, 40f, 100f, 20f), s.placed(screen, nodes[2], views[2]))
+        assertPlaced("cut", listOf(0f, 20f, 100f, 60f), s.placed(screen, nodes[3], views[3]))
+        // A drawable without a size covers the view, whatever the scale type.
+        val fill = allNodes(screen).single { style(it).contains("background-color:#ff00ff") }
+        assertPlaced("covers", listOf(0f, 0f, 100f, 100f), s.placed(screen, fill, plain))
+    }
+
+    @Test
+    fun aRecordedPictureIsSizedAndOffsetAsItsScaleTypePlacesIt() {
+        val scales = arrayOf(
+            ImageView.ScaleType.FIT_CENTER, ImageView.ScaleType.CENTER_CROP, ImageView.ScaleType.CENTER, ImageView.ScaleType.FIT_END,
+        )
+        val (s, screen, views) = placements(TracewayImagePolicy.ALWAYS, *scales.map { photo(150, 60) to it }.toTypedArray())
+        val nodes = pictureNodes(screen)
+        assertEquals(listOf("im p0", "im p1", "im p2", "im p3"), nodes.map { it.attributes["class"] })
+        // Fitted: the node is the picture.
+        assertPlaced("FIT_CENTER", listOf(0f, 30f, 100f, 40f), s.placed(screen, nodes[0], views[0]))
+        assertTrue(style(nodes[0]), style(nodes[0]).contains("background-size:100px 40px;background-position:0px 0px;"))
+        // Cropped and overflowing: the node is the view, and the picture is larger and shifted in it.
+        assertPlaced("CENTER_CROP", listOf(0f, 0f, 100f, 100f), s.placed(screen, nodes[1], views[1]))
+        assertTrue(style(nodes[1]), style(nodes[1]).contains("background-size:250px 100px;background-position:-75px 0px;"))
+        assertPlaced("CENTER", listOf(0f, 20f, 100f, 60f), s.placed(screen, nodes[2], views[2]))
+        assertTrue(style(nodes[2]), style(nodes[2]).contains("background-size:150px 60px;background-position:-25px 0px;"))
+        assertPlaced("FIT_END", listOf(0f, 60f, 100f, 40f), s.placed(screen, nodes[3], views[3]))
+        assertTrue(style(nodes[3]), style(nodes[3]).contains("background-size:100px 40px;background-position:0px 0px;"))
     }
 }

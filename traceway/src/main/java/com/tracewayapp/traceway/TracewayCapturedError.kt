@@ -32,3 +32,22 @@ class TracewayCapturedError internal constructor(
 
     override fun toString(): String = "TracewayCapturedError($line)"
 }
+
+/**
+ * Whether one of [patterns] ([TracewayOptions.ignoreErrors]) matches [line]:
+ * a [String] that occurs in it, a [Regex] or a [java.util.regex.Pattern]
+ * that finds a match in it. An empty string, or a pattern of any other
+ * type, matches nothing.
+ */
+internal fun ignoreErrorsMatch(patterns: List<Any?>, line: String): Boolean {
+    for (pattern in patterns) {
+        val hit = when (pattern) {
+            is String -> pattern.isNotEmpty() && line.contains(pattern)
+            is Regex -> pattern.containsMatchIn(line)
+            is java.util.regex.Pattern -> pattern.matcher(line).find()
+            else -> false
+        }
+        if (hit) return true
+    }
+    return false
+}

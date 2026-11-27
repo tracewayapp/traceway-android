@@ -166,6 +166,12 @@ internal class WireframeRecorder(
         pushBlank()
     }
 
+    /** Stops for good ([TracewayClient.shutdown]): the encoder threads end too. */
+    fun dispose() {
+        stop()
+        onMain { (source as? ViewFrameSource)?.dispose() }
+    }
+
     override fun clearBuffer() {
         synchronized(lock) {
             frames.clear()

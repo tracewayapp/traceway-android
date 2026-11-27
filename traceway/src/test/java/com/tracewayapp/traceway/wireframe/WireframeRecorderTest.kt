@@ -20,6 +20,9 @@ class WireframeRecorderTest {
     @Suppress("UNCHECKED_CAST")
     private fun data(event: Map<String, Any?>) = event["data"] as Map<String, Any?>
 
+    private fun frame(screen: VNode?, width: Float = 400f, height: Float = 800f, href: String? = "/home") =
+        WireframeFrame(screen, width, height, scheduler.now(), href)
+
     @Test
     fun `a clip replays to the last screen, touches included`() {
         source.screen = rows.screen(0)
@@ -168,17 +171,25 @@ class WireframeRecorderTest {
         recorder.start()
         scheduler.runDue()
         recorder.pointerDown(1, 0f, 0f, touch = true)
+        recorder.pointerDown(2, 100f, 0f, touch = true)
         for (i in 0 until 20) {
             recorder.pointerMove(1, i.toFloat(), i * 2f, touch = true)
+            recorder.pointerMove(2, 100f + i, 0f, touch = true)
             scheduler.advance(10)
         }
         recorder.pointerUp(1, 20f, 40f, touch = true, tap = false)
+        recorder.pointerUp(2, 120f, 0f, touch = true, tap = false)
         val clip = recorder.captureRecording("c")!!
-        val moves = clip.events.filter { it["type"] == 3 && data(it)["source"] == 6 }
-        assertEquals(4, moves.size)
         @Suppress("UNCHECKED_CAST")
-        val position = (data(moves[1])["positions"] as List<Map<String, Any?>>).single()
-        assertEquals(mapOf("x" to 5, "y" to 10, "id" to screenNodeId, "timeOffset" to 0), position)
+        val moves = clip.events.filter { it["type"] == 3 && data(it)["source"] == 6 }
+            .map { (data(it)["positions"] as List<Map<String, Any?>>).single() }
+        // 200 ms of moves every 10 ms: one every 50 ms for each finger, the
+        // other finger's moves in between do not count.
+        val first = moves.filter { (it["x"] as Int) < 100 }
+        val second = moves.filter { (it["x"] as Int) >= 100 }
+        assertEquals(4, first.size)
+        assertEquals(mapOf("x" to 5, "y" to 10, "id" to screenNodeId, "timeOffset" to 0), first[1])
+        assertEquals(listOf(100, 105, 110, 115), second.map { it["x"] })
     }
 
     @Test
@@ -218,5 +229,170 @@ class WireframeRecorderTest {
         source.draw()
         scheduler.advance(200)
         assertEquals(1, recorder.bufferedFrameCount)
+    }
+
+    @Test
+    fun `a clip of a full ring starts at the oldest frame kept and ends at the newest`() {
+        val recorder = recorder(maxFrames = 5)
+        val start = scheduler.now()
+        for (i in 0 until 10) {
+            scheduler.advance(100)
+            recorder.push(frame(rows.screen(i % 3, label = { "frame $i row $it" })))
+        }
+        assertEquals(5, recorder.bufferedFrameCount)
+        scheduler.advance(100)
+        val clip = recorder.captureRecording("c", start, scheduler.now())!!
+        // Frames 0 to 4 left the ring: the clip starts at frame 5.
+        assertEquals(start + 600, clip.startedAtMs)
+        val first = Mirror().apply { play(clip.events.take(2)) }
+        assertEquals(listOf("frame 5 row 0", "frame 5 row 1", "frame 5 row 2"), first.texts())
+        val mirror = Mirror().apply { play(clip.events) }
+        assertEquals(listOf("frame 9 row 0"), mirror.texts())
+    }
+
+    @Test
+    fun `a clip starts at the first frame inside its window`() {
+        val recorder = recorder()
+        assertFalse(recorder.hasFrames(null, null))
+        assertNull(recorder.captureRecording("none", null, null))
+        scheduler.advance(1000)
+        val first = scheduler.now()
+        recorder.push(frame(rows.screen(0)))
+        // From before anything was recorded: the clip starts at the first frame.
+        assertEquals(first, recorder.captureRecording("c", first - 5000, first + 10)!!.startedAtMs)
+        assertFalse(recorder.hasFrames(first + 10, first + 10))
+        assertFalse(recorder.hasFrames(first - 5000, first))
+        assertTrue(recorder.hasFrames(first - 5000, first + 1))
+        // A clip whose end is the moment of its only frame ends at once.
+        assertNull(recorder.captureRecording("e", first - 10, first))
+    }
+
+    @Test
+    fun `an empty or inverted window has no clip`() {
+        val recorder = recorder()
+        val first = scheduler.now()
+        recorder.push(frame(rows.screen(0)))
+        scheduler.advance(1000)
+        recorder.push(frame(rows.screen(1)))
+        scheduler.advance(1000)
+        assertNotNull(recorder.captureRecording("ok", first + 500, first + 1500))
+        // A frame shows at both ends, yet the window holds no time.
+        assertNull(recorder.captureRecording("empty", first + 500, first + 500))
+        assertNull(recorder.captureRecording("inverted", first + 1500, first + 500))
+        // Without an end the window runs to now: a start after now is inverted too.
+        assertNull(recorder.captureRecording("future", scheduler.now() + 1000, null))
+        assertFalse(recorder.hasFrames(first + 1500, first + 500))
+    }
+
+    @Test
+    fun `a clip without an end runs to now and one without a start from the first frame`() {
+        val recorder = recorder()
+        val first = scheduler.now()
+        recorder.push(frame(rows.screen(0), href = null))
+        scheduler.advance(1500)
+        val clip = recorder.captureRecording("c", null, null)!!
+        assertEquals(first, clip.startedAtMs)
+        assertEquals(scheduler.now(), clip.endedAtMs)
+        assertEquals("c", clip.clipId)
+        assertEquals("a frame without a screen name replays at /", "/", data(clip.events.first())["href"])
+        assertEquals(listOf(4, 2, 5), clip.events.map { it["type"] })
+        assertEquals(mapOf("left" to 0, "top" to 0), data(clip.events[1])["initialOffset"])
+        assertEquals("traceway.end", data(clip.events.last())["tag"])
+        assertEquals(scheduler.now(), clip.events.last()["timestamp"])
+        assertTrue(recorder.hasFrames(null, null))
+    }
+
+    @Test
+    fun `pointer events map to rrweb and moves are throttled`() {
+        val recorder = recorder()
+        // Not recording: pointers are not kept.
+        recorder.pointerDown(1, 1f, 1f, touch = true)
+        source.screen = rows.screen(0)
+        recorder.start()
+        scheduler.runDue()
+        val start = scheduler.now()
+        recorder.pointerDown(1, 1f, 2f, touch = true)
+        scheduler.advance(10)
+        recorder.pointerMove(1, 3f, 4f, touch = true)
+        scheduler.advance(10)
+        recorder.pointerMove(1, 5f, 6f, touch = true) // within 50 ms: dropped
+        scheduler.advance(60)
+        recorder.pointerMove(1, 7f, 8f, touch = true)
+        recorder.pointerUp(1, 7f, 8f, touch = true, tap = false)
+        scheduler.advance(10)
+        recorder.pointerDown(2, 9f, 9f, touch = false)
+        recorder.pointerMove(2, 10f, 10f, touch = false)
+        recorder.pointerUp(2, 10f, 10f, touch = false, tap = true)
+        recorder.pointerDown(3, 1f, 1f, touch = true)
+        recorder.pointerCancel(3, 1f, 1f, touch = true)
+        scheduler.advance(10)
+        val events = recorder.captureRecording("c", start, scheduler.now())!!.events
+        val input = events.filter { it["type"] == 3 && data(it)["source"] != 0 }.map { data(it) }
+        @Suppress("UNCHECKED_CAST")
+        fun describe(d: Map<String, Any?>): String {
+            if (d["source"] == 2) return "i${d["type"]}p${d["pointerType"]}"
+            val p = (d["positions"] as List<Map<String, Any?>>)[0]
+            return "m${d["source"]}@${p["x"]},${p["y"]}"
+        }
+        assertEquals(
+            listOf("i7p2", "m6@3,4", "m6@7,8", "i9p2", "i1p0", "m1@10,10", "i0p0", "i2p0", "i7p2", "i10p2"),
+            input.map(::describe),
+        )
+        @Suppress("UNCHECKED_CAST")
+        assertEquals(screenNodeId, (input[1]["positions"] as List<Map<String, Any?>>)[0]["id"])
+        assertTrue(input.filter { it["source"] == 2 }.all { it["id"] == screenNodeId })
+        recorder.stop()
+        assertFalse(recorder.isRunning)
+        // Stopping leaves the screen blank from then on.
+        scheduler.advance(100)
+        assertFalse(recorder.hasFrames(scheduler.now() - 10, scheduler.now()))
+    }
+
+    @Test
+    fun `only touches inside the clip are replayed`() {
+        val recorder = recorder()
+        source.screen = rows.screen(0)
+        recorder.start()
+        scheduler.runDue()
+        recorder.pointerDown(1, 1f, 1f, touch = true)
+        recorder.pointerUp(1, 1f, 1f, touch = true, tap = true)
+        scheduler.advance(1000)
+        val since = scheduler.now()
+        recorder.pointerDown(2, 2f, 2f, touch = true)
+        scheduler.advance(100)
+        val until = scheduler.now()
+        recorder.pointerUp(2, 2f, 2f, touch = true, tap = true)
+        val events = recorder.captureRecording("c", since, until)!!.events
+        val touches = events.filter { it["type"] == 3 && data(it)["source"] == 2 }.map { data(it) }
+        // The tap before the clip is left out; the finger that lifts after it
+        // ends is still down when the replay ends.
+        assertEquals(listOf(7), touches.map { it["type"] })
+        assertEquals(2, touches[0]["x"])
+        assertEquals(until, events.last()["timestamp"])
+    }
+
+    @Test
+    fun `the frame rate and the ring are clamped`() {
+        assertEquals(1, recorder(fps = 0).fps)
+        assertEquals(30, recorder(fps = 60).fps)
+        assertEquals(10, WireframeRecorder(50, source = source, mainThread = ManualMainThread(scheduler), clock = scheduler::now).fps)
+        val tiny = recorder(maxFrames = 0)
+        for (i in 0 until 4) {
+            scheduler.advance(100)
+            tiny.push(frame(rows.screen(i)))
+        }
+        assertEquals("a ring holds at least two frames", 2, tiny.bufferedFrameCount)
+        tiny.start()
+        tiny.start()
+        assertTrue(tiny.isRunning)
+        assertNotNull("one observer", source.onDraw)
+        tiny.stop()
+        tiny.stop()
+        assertFalse(tiny.isRunning)
+        assertNull(source.onDraw)
+        // The newest frame and, once, the blank screen after it.
+        val clip = tiny.captureRecording("c", null, scheduler.now() + 1)!!
+        assertEquals(listOf("row 0", "row 1", "row 2", "row 3"), Mirror().apply { play(clip.events.take(2)) }.texts())
+        assertEquals(listOf(4, 2, 4, 2, 5), clip.events.map { it["type"] })
     }
 }

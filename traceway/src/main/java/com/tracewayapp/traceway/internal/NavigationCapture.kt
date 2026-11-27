@@ -21,18 +21,33 @@ internal class NavigationCapture(
     private var current: String? = null
     private val fragments: Any? = if (FragmentSupport.available) FragmentSupport(this) else null
 
+    @Volatile
+    private var stopped = false
+
     override fun onActivityCreated(activity: Activity, savedInstanceState: Bundle?) {
         createdActivities[activity] = true
         (fragments as? FragmentSupport)?.attach(activity)
     }
 
     override fun onActivityResumed(activity: Activity) {
+        // An activity created before this capture (Traceway started again after a shutdown) is followed from now.
+        (fragments as? FragmentSupport)?.attach(activity)
         val fresh = createdActivities.remove(activity) == true
         report("/" + screenName(activity.javaClass), if (fresh) "push" else "pop")
     }
 
+    /**
+     * Stops reporting and takes the fragment callbacks off the fragment
+     * managers they were put on, which would otherwise keep this client
+     * alive (and report to it) after `Traceway.shutdown`. Main thread.
+     */
+    fun uninstall() {
+        stopped = true
+        (fragments as? FragmentSupport)?.detachAll()
+    }
+
     internal fun report(path: String, action: String) {
-        if (path == current) return
+        if (stopped || path == current) return
         val from = current
         current = path
         try {
@@ -54,6 +69,9 @@ internal class NavigationCapture(
 private class FragmentSupport(private val capture: NavigationCapture) {
     private val createdViews = WeakHashMap<Any, Boolean>()
 
+    /** The fragment managers the callbacks are registered on. */
+    private val managers = WeakHashMap<androidx.fragment.app.FragmentManager, Boolean>()
+
     private val callbacks = object : androidx.fragment.app.FragmentManager.FragmentLifecycleCallbacks() {
         override fun onFragmentViewCreated(
             fm: androidx.fragment.app.FragmentManager,
@@ -74,9 +92,23 @@ private class FragmentSupport(private val capture: NavigationCapture) {
     fun attach(activity: Activity) {
         try {
             if (activity is androidx.fragment.app.FragmentActivity) {
-                activity.supportFragmentManager.registerFragmentLifecycleCallbacks(callbacks, true)
+                val manager = activity.supportFragmentManager
+                if (managers.containsKey(manager)) return
+                manager.registerFragmentLifecycleCallbacks(callbacks, true)
+                managers[manager] = true
             }
         } catch (_: Throwable) {
+        }
+    }
+
+    fun detachAll() {
+        val all = ArrayList(managers.keys)
+        managers.clear()
+        for (manager in all) {
+            try {
+                manager.unregisterFragmentLifecycleCallbacks(callbacks)
+            } catch (_: Throwable) {
+            }
         }
     }
 

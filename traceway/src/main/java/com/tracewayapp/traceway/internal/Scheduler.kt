@@ -1,5 +1,6 @@
 package com.tracewayapp.traceway.internal
 
+import com.tracewayapp.traceway.guarded
 import java.util.PriorityQueue
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
@@ -91,13 +92,8 @@ internal class ExecutorScheduler(
         diskThread.shutdown()
     }
 
-    private fun runGuarded(task: () -> Unit) {
-        try {
-            task()
-        } catch (_: Throwable) {
-            // A failing task must never take the thread down with it.
-        }
-    }
+    /** A failing task must never take the thread down with it (its uncaught handler would end the app). */
+    private fun runGuarded(task: () -> Unit) = guarded("scheduled task", task)
 
     private fun daemon(name: String): ThreadFactory {
         val n = AtomicInteger()

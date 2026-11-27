@@ -336,6 +336,10 @@ class ViewWireframeTest {
             column(
                 a,
                 TextView(a).apply { text = "Bold title"; textSize = 20f; setTypeface(typeface, Typeface.BOLD) },
+                TextView(a).apply {
+                    text = "Medium title"
+                    setTextAppearance(com.google.android.material.R.style.TextAppearance_Material3_TitleMedium)
+                },
                 TextView(a).apply { text = "Code 0123"; typeface = Typeface.MONOSPACE },
                 sized(TextView(a).apply { text = "Centered"; gravity = Gravity.CENTER_HORIZONTAL }, 120, WRAP_CONTENT),
                 sized(
@@ -353,6 +357,9 @@ class ViewWireframeTest {
         val screen = s.screen()
         val bold = withText(screen, "Bold title")!!
         assertTrue(style(bold), style(bold).contains("font-size:20px;") && style(bold).contains("font-weight:700;"))
+        // Roboto Medium is written as the app set it, as the iOS and Flutter SDKs write their weights.
+        val medium = withText(screen, "Medium title")!!
+        assertTrue(style(medium), style(medium).contains("font-size:16px;") && style(medium).contains("font-weight:500;"))
         assertTrue(style(withText(screen, "Code 0123")!!).contains("font-family:monospace;"))
         val centered = withText(screen, "Centered")!!
         assertEquals("t n", centered.attributes["class"])
@@ -802,7 +809,9 @@ class ViewWireframeTest {
                 radius = 16f
                 cardElevation = 6f
                 setCardBackgroundColor(Color.WHITE)
-                addView(TextView(a).apply { text = "Card body"; setPadding(16, 16, 16, 16) })
+                setStrokeColor(Color.RED)
+                strokeWidth = 2
+                addView(TextView(a).apply { text = "Card body"; setPadding(16, 16, 16, 16); setBackgroundColor(Color.YELLOW) })
                 layoutParams = LinearLayout.LayoutParams(300, 100)
             }
             column(
@@ -834,6 +843,14 @@ class ViewWireframeTest {
         val cardBox = ancestors(screen, withText(screen, "Card body")!!).first { style(it).contains("background-color:#ffffff") }
         assertTrue(style(cardBox), style(cardBox).contains("border-radius:16px;"))
         assertTrue(style(cardBox), style(cardBox).contains("box-shadow:0 "))
+        // The card's outline (its foreground) is drawn over its content, which fills the card.
+        val cardOutline = cardBox.children.last()
+        assertEquals(
+            "left:0px;top:0px;width:300px;height:100px;border-radius:16px;box-shadow:inset 0 0 0 2px #ff0000;",
+            style(cardOutline),
+        )
+        val content = cardBox.children.indexOfFirst { allText(it).contains("Card body") }
+        assertTrue(dumpVNode(cardBox), content in 0 until cardBox.children.size - 1)
         assertTrue("the outlined button has an outline", styles(screen).any { it.contains("inset 0 0 0 1px") })
     }
 

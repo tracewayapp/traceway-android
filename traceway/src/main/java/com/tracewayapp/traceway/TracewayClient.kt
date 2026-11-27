@@ -137,6 +137,43 @@ private const val MAX_HEALTH_DELAY_MS = 300_000L
 /** The longest route template [TracewayClient.setRoute] keeps. */
 private const val MAX_ROUTE_LENGTH = 64
 
+/** The most the ring buffer holds whatever the settings say: the server allows 64 MiB, a phone's heap may be 192 MB. */
+private const val MAX_BUFFER_BYTES = 64L * 1024 * 1024
+
+/**
+ * The ring buffer's ceiling on this device: a sixteenth of the heap, at
+ * most [MAX_BUFFER_BYTES] (§13.5, buffers stay bounded). A dashboard value
+ * above it is applied up to it.
+ */
+internal fun deviceBufferCapBytes(maxHeapBytes: Long = Runtime.getRuntime().maxMemory()): Long {
+    val heap = if (maxHeapBytes <= 0 || maxHeapBytes == Long.MAX_VALUE) 256L * 1024 * 1024 else maxHeapBytes
+    return minOf(MAX_BUFFER_BYTES, maxOf(1L * 1024 * 1024, heap / 16))
+}
+
+/**
+ * A copy of [from] without null keys or values, which a Java map can hold
+ * whatever its Kotlin type says. A map that fails while it is read (another
+ * thread changing it) gives what was read before the failure.
+ */
+internal fun copyNonNull(from: Map<*, *>?, into: MutableMap<String, Any> = LinkedHashMap()): MutableMap<String, Any> {
+    if (from == null) return into
+    try {
+        for ((k, v) in from) {
+            if (k is String && v != null) into[k] = v
+        }
+    } catch (e: Throwable) {
+        Guard.failed("attributes", e)
+    }
+    return into
+}
+
+/** [copyNonNull] for maps of strings, values as text. */
+private fun copyStrings(from: Map<*, *>?): LinkedHashMap<String, String> {
+    val out = LinkedHashMap<String, String>()
+    for ((k, v) in copyNonNull(from)) out[k] = v as? String ?: v.toString()
+    return out
+}
+
 /** Kept while the SDK starts even when breadcrumbs filled the queue. */
 private val KEPT_BEFORE_READY = setOf(
     Events.EXCEPTION,
@@ -164,6 +201,12 @@ internal class TracewayTestOverrides(
     val opampMinPollIntervalMs: Long? = null,
     /** Whether the Android instrumentation (activities, frames, crashes, taps) is installed. */
     val instrument: Boolean = false,
+    /** Runs before each step of [TracewayClient.instrument] with its name; a test makes one fail. */
+    val beforeInstallStep: ((String) -> Unit)? = null,
+    /** The heap [deviceBufferCapBytes] sizes the ring buffer by, instead of this JVM's. */
+    val maxHeapBytes: Long? = null,
+    /** Starts the `TracewayStart` thread's work instead of a new thread; a test makes it fail. */
+    val startThread: ((Runnable) -> Unit)? = null,
 )
 
 /** An HTTP request recorded as a client span, from [TracewayClient.startRequest] to [TracewayClient.endRequest]. */
@@ -216,6 +259,9 @@ class TracewayClient private constructor(
     private val sdkStartElapsed = android.os.SystemClock.elapsedRealtime()
     private val stateDir: File? = stateDirectory()
 
+    /** [deviceBufferCapBytes], the ring buffer's ceiling whatever the settings say. */
+    private val bufferCapBytes = deviceBufferCapBytes(overrides?.maxHeapBytes ?: Runtime.getRuntime().maxMemory())
+
     /** Set while the app is crashing: telemetry goes to disk, and clips are assembled on the crashing thread. */
     @Volatile
     private var crashing = false
@@ -254,6 +300,10 @@ class TracewayClient private constructor(
 
     @Volatile
     private var ready = false
+
+    /** Whether [instanceUid] was read from disk or made: before that it is all zeros. */
+    @Volatile
+    private var instanceKnown = false
 
     @Volatile
     private var isShutdown = false
@@ -319,8 +369,12 @@ class TracewayClient private constructor(
     private var recorderCallbacks: Application.ActivityLifecycleCallbacks? = null
     private var lifecycle: AppLifecycle? = null
     private var touchTracker: TouchTracker? = null
+    private var errorHandler: ErrorHandler? = null
+    private var navigationCapture: NavigationCapture? = null
+    private var logCaptureInstalled = false
 
     init {
+        if (options.debug) Guard.debug = true
         if (connectionString != null) {
             val parsed = parseConnectionString(connectionString)
             token = parsed.token
@@ -331,7 +385,7 @@ class TracewayClient private constructor(
             }
         }
         routes = TelemetryRoutes.resolve(endpoints, token, options.telemetry)
-        globalAttributes.putAll(options.attributes)
+        globalAttributes.putAll(copyStrings(options.attributes))
 
         var defaults = defaultSettings(
             baselineSampleRate = options.baselineSampleRate,
@@ -363,7 +417,7 @@ class TracewayClient private constructor(
             now = scheduler::now,
         )
         val settings = control.settings
-        buffer = RingBuffer(settings.bufferMaxBytes, settings.bufferMaxAgeMs, scheduler::now)
+        buffer = RingBuffer(bufferBytes(settings), settings.bufferMaxAgeMs, scheduler::now)
         triggers = TriggerEngine(random = overrides?.random ?: { Math.random() }, now = scheduler::now)
         triggers.setTriggers(settings.triggers)
         recordings = RecordingsTransport(
@@ -394,7 +448,7 @@ class TracewayClient private constructor(
             storageScope = routes.metrics.key,
             scopeName = SdkInfo.NAME,
             scopeVersion = SdkInfo.VERSION,
-            dimensions = options.metricDimensions,
+            dimensions = copyStrings(options.metricDimensions),
             deferUntilStart = true,
             scheduler = scheduler,
         )
@@ -411,57 +465,126 @@ class TracewayClient private constructor(
 
     private val remoteConfig: Boolean get() = options.remoteConfig && !standalone
 
+    /** The ring buffer's size: what the settings say, at most this device's [bufferCapBytes]. */
+    private fun bufferBytes(settings: Settings): Long = minOf(settings.bufferMaxBytes, bufferCapBytes)
+
     // ------------------------------------------------------------- startup
 
-    /** Installs the Android instrumentation; on the main thread, from [Traceway.init]. */
+    /**
+     * Installs the Android instrumentation; on the main thread, from
+     * [Traceway.init]. Each hook is installed on its own: one that fails
+     * leaves the SDK running without it.
+     */
     internal fun instrument(app: Application) {
         val life = AppLifecycle(app)
         lifecycle = life
-        life.addListener(object : AppLifecycle.Listener {
-            override fun onForeground() = onLifecycle(foreground = true)
-            override fun onBackground() = onLifecycle(foreground = false)
-        })
-        if (options.captureNavigation) {
-            life.addListener(NavigationCapture { path, action, from -> recordNavigation(path, action, from) })
+        step("lifecycle") {
+            life.addListener(object : AppLifecycle.Listener {
+                override fun onForeground() = onLifecycle(foreground = true)
+                override fun onBackground() = onLifecycle(foreground = false)
+            })
         }
-        if (options.captureLogs) LogCapture.install(logLineSink)
-        ErrorHandler(onCrash = { thread, error -> captureCrash(thread, error) }).install()
+        if (options.captureNavigation) {
+            step("navigation") {
+                val navigation = NavigationCapture { path, action, from -> recordNavigation(path, action, from) }
+                navigationCapture = navigation
+                life.addListener(navigation)
+            }
+        }
+        if (options.captureLogs) {
+            step("logs") {
+                LogCapture.install(logLineSink)
+                logCaptureInstalled = true
+            }
+        }
+        step("crashes") {
+            val handler = ErrorHandler(onCrash = { thread, error -> captureCrash(thread, error) })
+            errorHandler = handler
+            handler.install()
+        }
 
-        val tracker = TouchTracker()
-        touchTracker = tracker
-        tracker.addTapListener(object : TapListener {
-            override fun onTap(root: View, xPx: Float, yPx: Float, xDp: Float, yDp: Float) = recordTap(root, xPx, yPx, xDp, yDp)
-            override fun onHover(root: View, xPx: Float, yPx: Float, xDp: Float, yDp: Float) = recordHover(root, xPx, yPx)
-        })
-        tracker.install(app)
+        step("taps") {
+            val tracker = TouchTracker()
+            touchTracker = tracker
+            tracker.addTapListener(object : TapListener {
+                override fun onTap(root: View, xPx: Float, yPx: Float, xDp: Float, yDp: Float) = recordTap(root, xPx, yPx, xDp, yDp)
+                override fun onHover(root: View, xPx: Float, yPx: Float, xDp: Float, yDp: Float) = recordHover(root, xPx, yPx)
+            })
+            tracker.install(app)
+        }
 
         if (recordsScreen) {
-            val recorder = WireframeRecorder.create(
-                app,
-                maxFrames = options.maxBufferFrames,
-                fps = options.fps.coerceIn(1, 30),
-                debug = options.debug,
-                clock = scheduler::now,
-            )
-            recorder.screenName = { currentScreen }
-            recorder.images?.let { images ->
-                val network = NetworkState(app)
-                networkState = network
-                images.unmetered = { network.unmetered }
-                images.budget = imageBudget
+            step("replay") {
+                val recorder = WireframeRecorder.create(
+                    app,
+                    maxFrames = options.maxBufferFrames,
+                    fps = options.fps.coerceIn(1, 30),
+                    debug = options.debug,
+                    clock = scheduler::now,
+                )
+                recorder.screenName = { currentScreen }
+                recorder.images?.let { images ->
+                    val network = NetworkState(app)
+                    networkState = network
+                    images.unmetered = { network.unmetered }
+                    images.budget = imageBudget
+                }
+                // The recorder follows the activities and the foreground itself.
+                recorderCallbacks = recorder.attach(app)
+                touchTracker?.addPointerListener(recorder)
+                setScreenRecorder(recorder)
             }
-            // The recorder follows the activities and the foreground itself.
-            recorderCallbacks = recorder.attach(app)
-            tracker.addPointerListener(recorder)
-            setScreenRecorder(recorder)
         }
         if (options.captureMetrics) {
-            val v = AppVitals(metrics, currentScreen = { metricsScreen }, scheduler = scheduler)
-            vitals = v
-            v.watchColdStart(sdkStartElapsed)
-            v.start(app)
+            step("vitals") {
+                val v = AppVitals(metrics, currentScreen = { metricsScreen }, scheduler = scheduler)
+                vitals = v
+                v.watchColdStart(sdkStartElapsed)
+                v.start(app)
+            }
         }
-        life.install()
+        step("foreground") { life.install() }
+    }
+
+    /** One step of [instrument]: a failure is logged in debug and leaves the others in place. */
+    private inline fun step(name: String, block: () -> Unit) {
+        try {
+            overrides?.beforeInstallStep?.invoke(name)
+            block()
+        } catch (e: Throwable) {
+            debugLog("could not install $name: $e")
+        }
+    }
+
+    /**
+     * Undoes [instrument] after [initialize] failed: the hooks are removed,
+     * the crash handler gives the default back, and nothing waits for a
+     * start that will not happen.
+     */
+    private fun abandon() {
+        isShutdown = true
+        readyLatch.countDown()
+        uninstallHooks()
+        guarded("abandon") { scheduler.shutdown() }
+    }
+
+    /** Removes what [instrument] installed; each part on its own, as [shutdown] and [abandon] need. */
+    private fun uninstallHooks() {
+        guarded("uninstall vitals") { vitals?.stop() }
+        guarded("uninstall taps") { touchTracker?.uninstall() }
+        guarded("uninstall lifecycle") { lifecycle?.uninstall() }
+        guarded("uninstall navigation") { navigationCapture?.uninstall() }
+        guarded("uninstall replay") {
+            recorderCallbacks?.let { application?.unregisterActivityLifecycleCallbacks(it) }
+            recorderCallbacks = null
+            (screenRecorder as? WireframeRecorder)?.dispose()
+        }
+        guarded("uninstall network state") { networkState?.close() }
+        guarded("uninstall logs") {
+            if (logCaptureInstalled) LogCapture.uninstall(logSink = logLineSink)
+            logCaptureInstalled = false
+        }
+        guarded("uninstall crashes") { errorHandler?.uninstall() }
     }
 
     private fun start() {
@@ -508,11 +631,14 @@ class TracewayClient private constructor(
 
         val storedUid = s.get("instanceUid") as? String
         val uid = storedUid?.let { Ids.uuidToBytes(it) }
-        if (uid != null) {
-            instanceUid = uid
-        } else {
-            instanceUid = Ids.uuidToBytes(Ids.uuidv7())!!
-            s.set("instanceUid", Ids.bytesToUuid(instanceUid))
+        synchronized(lock) {
+            if (uid != null) {
+                instanceUid = uid
+            } else {
+                instanceUid = Ids.uuidToBytes(Ids.uuidv7()) ?: Ids.uuidToBytes(java.util.UUID.randomUUID().toString()) ?: ByteArray(16)
+                s.set("instanceUid", Ids.bytesToUuid(instanceUid))
+            }
+            instanceKnown = true
         }
 
         var appliedHash: ByteArray? = null
@@ -551,7 +677,7 @@ class TracewayClient private constructor(
             val p = BufferPersistence(stateDir, DiskScheduler(scheduler), destination = bufferDestination)
             val settings = control.settings
             if (settings.persist) {
-                p.load(sessions?.currentId, maxAgeMs = settings.bufferMaxAgeMs, maxBytes = settings.bufferMaxBytes)
+                p.load(sessions?.currentId, maxAgeMs = settings.bufferMaxAgeMs, maxBytes = bufferBytes(settings))
                 synchronized(lock) { p.retain { control.canExport(it) } }
             } else {
                 p.clear()
@@ -755,11 +881,17 @@ class TracewayClient private constructor(
 
     // ------------------------------------------------------------ public API
 
-    /** The id this installation reports to the server (`service.instance.id`), usable to target it from the dashboard. */
-    fun getInstanceId(): String = synchronized(lock) { Ids.bytesToUuid(instanceUid) }
+    /**
+     * The id this installation reports to the server (`service.instance.id`),
+     * usable to target it from the dashboard; null until the SDK has read
+     * it from disk (or made one), just after [Traceway.init].
+     */
+    fun getInstanceId(): String? = guarded("getInstanceId", null) {
+        synchronized(lock) { if (instanceKnown) Ids.bytesToUuid(instanceUid) else null }
+    }
 
     /** The current session, or null before the SDK started. */
-    val currentSessionId: String? get() = synchronized(lock) { sessions?.currentId }
+    val currentSessionId: String? get() = guarded("currentSessionId", null) { synchronized(lock) { sessions?.currentId } }
 
     /**
      * Reports a caught exception, with the screen it happened on. Dropped
@@ -767,29 +899,32 @@ class TracewayClient private constructor(
      * [TracewayOptions.beforeCapture] returns false.
      */
     @JvmOverloads
-    fun captureException(error: Throwable, attributes: Map<String, String>? = null) {
-        val attrs = exceptionAttributes(error, attributes)
-        val captured = TracewayCapturedError(
-            error = error,
-            type = attrs["exception.type"] as String,
-            message = attrs["exception.message"] as String,
-            isMessage = false,
-            attributes = readOnly(attrs),
-            stackTrace = attrs["exception.stacktrace"] as String,
-        )
-        if (!reports(captured)) return
-        attrs[Events.ATTR_EXCEPTION_ID] = Ids.uuidv4()
-        emit(
-            eventName = Events.EXCEPTION,
-            severity = Severity.ERROR,
-            severityText = "ERROR",
-            attributes = attrs,
-        )
+    fun captureException(error: Throwable?, attributes: Map<String, String>? = null) {
+        if (error == null) return
+        guarded("captureException") {
+            val attrs = exceptionAttributes(error, attributes)
+            val captured = TracewayCapturedError(
+                error = error,
+                type = attrs["exception.type"] as String,
+                message = attrs["exception.message"] as String,
+                isMessage = false,
+                attributes = readOnly(attrs),
+                stackTrace = attrs["exception.stacktrace"] as String,
+            )
+            if (!reports(captured)) return
+            attrs[Events.ATTR_EXCEPTION_ID] = Ids.uuidv4()
+            emit(
+                eventName = Events.EXCEPTION,
+                severity = Severity.ERROR,
+                severityText = "ERROR",
+                attributes = attrs,
+            )
+        }
     }
 
     private fun exceptionAttributes(error: Throwable, attributes: Map<String, String>?): LinkedHashMap<String, Any> {
         val attrs = LinkedHashMap<String, Any>(screenContext())
-        attributes?.let { attrs.putAll(it) }
+        copyNonNull(attributes, attrs)
         attrs["exception.type"] = error.javaClass.name
         attrs["exception.message"] = safeMessage(error) ?: ""
         attrs["exception.stacktrace"] = safeStackTrace(error)
@@ -805,7 +940,8 @@ class TracewayClient private constructor(
      * drop it. A callback that throws keeps it.
      */
     private fun reports(captured: TracewayCapturedError): Boolean {
-        if (ignored(captured.line)) return false
+        // An app pattern that fails (a regex that overflows the stack) filters nothing.
+        if (guarded("ignoreErrors", false) { ignored(captured.line) }) return false
         val before = options.beforeCapture ?: return true
         return try {
             before(captured)
@@ -820,18 +956,8 @@ class TracewayClient private constructor(
      * would let a method named like a pattern (any `onTimeout` for the
      * default `/timeout/i`) silence every error that passes through it.
      */
-    private fun ignored(line: String): Boolean {
-        for (pattern in options.ignoreErrors ?: TracewayOptions.DEFAULT_IGNORE_ERRORS) {
-            val hit = when (pattern) {
-                is String -> pattern.isNotEmpty() && line.contains(pattern)
-                is Regex -> pattern.containsMatchIn(line)
-                is java.util.regex.Pattern -> pattern.matcher(line).find()
-                else -> false
-            }
-            if (hit) return true
-        }
-        return false
-    }
+    private fun ignored(line: String): Boolean =
+        ignoreErrorsMatch(options.ignoreErrors ?: TracewayOptions.DEFAULT_IGNORE_ERRORS, line)
 
     /**
      * Where the app was when an issue happened: the screen on top, its route
@@ -879,70 +1005,86 @@ class TracewayClient private constructor(
 
     /** Reports a free-form message as an issue, with the screen it was sent from; filtered like [captureException]. */
     @JvmOverloads
-    fun captureMessage(message: String, attributes: Map<String, String>? = null) {
-        val attrs = LinkedHashMap<String, Any>(screenContext())
-        attributes?.let { attrs.putAll(it) }
-        val captured = TracewayCapturedError(null, null, message, true, readOnly(attrs), null)
-        if (!reports(captured)) return
-        attrs[Events.ATTR_EXCEPTION_ID] = Ids.uuidv4()
-        emit(eventName = Events.MESSAGE, severity = Severity.INFO, severityText = "INFO", body = message, attributes = attrs)
+    fun captureMessage(message: String?, attributes: Map<String, String>? = null) {
+        if (message == null) return
+        guarded("captureMessage") {
+            val attrs = LinkedHashMap<String, Any>(screenContext())
+            copyNonNull(attributes, attrs)
+            val captured = TracewayCapturedError(null, null, message, true, readOnly(attrs), null)
+            if (!reports(captured)) return
+            attrs[Events.ATTR_EXCEPTION_ID] = Ids.uuidv4()
+            emit(eventName = Events.MESSAGE, severity = Severity.INFO, severityText = "INFO", body = message, attributes = attrs)
+        }
     }
 
     /** Records a custom breadcrumb, shown on the session timeline. */
     @JvmOverloads
-    fun recordAction(category: String, name: String, data: Map<String, Any?>? = null) {
-        markActivity()
-        val attrs = LinkedHashMap<String, Any>()
-        attrs["traceway.action.category"] = category
-        attrs["traceway.action.name"] = name
-        if (!data.isNullOrEmpty()) {
-            attrs["traceway.action.data"] = try {
-                Json.stringify(data)
-            } catch (_: Throwable) {
-                runCatching { data.toString() }.getOrDefault("")
+    fun recordAction(category: String?, name: String?, data: Map<String, Any?>? = null) {
+        guarded("recordAction") {
+            markActivity()
+            val attrs = LinkedHashMap<String, Any>()
+            attrs["traceway.action.category"] = category ?: ""
+            attrs["traceway.action.name"] = name ?: ""
+            if (!data.isNullOrEmpty()) {
+                attrs["traceway.action.data"] = try {
+                    Json.stringify(data)
+                } catch (_: Throwable) {
+                    runCatching { data.toString() }.getOrDefault("")
+                }
             }
+            emit(eventName = Events.ACTION, severity = Severity.INFO, attributes = attrs)
         }
-        emit(eventName = Events.ACTION, severity = Severity.INFO, attributes = attrs)
     }
 
     /** Emits a named product event, e.g. `checkout_failed`. Triggers can match it by `event.name`. */
     @JvmOverloads
-    fun track(eventName: String, attributes: Map<String, Any>? = null) {
-        if (eventName.isEmpty()) return
-        // A copy: the record may wait for the SDK to start, and the app may change its map meanwhile.
-        val attrs = try {
-            LinkedHashMap(attributes ?: emptyMap())
-        } catch (_: Throwable) {
-            return
+    fun track(eventName: String?, attributes: Map<String, Any>? = null) {
+        if (eventName.isNullOrEmpty()) return
+        guarded("track") {
+            // A copy: the record may wait for the SDK to start, and the app may change its map meanwhile.
+            val attrs = copyNonNull(attributes)
+            emit(eventName = eventName, severity = Severity.INFO, attributes = attrs)
         }
-        emit(eventName = eventName, severity = Severity.INFO, attributes = attrs)
     }
 
     /** Sets an attribute attached to every later record and reported to the server for remote-config targeting. */
-    fun setAttribute(key: String, value: String) {
-        if (key.isEmpty()) return
-        synchronized(lock) {
-            if (!globalAttributes.containsKey(key) && globalAttributes.size >= MAX_GLOBAL_ATTRIBUTES) return
-            globalAttributes[key] = value
-            scheduleRefresh()
+    fun setAttribute(key: String?, value: String?) {
+        if (key.isNullOrEmpty() || value == null) return
+        guarded("setAttribute") {
+            synchronized(lock) {
+                if (!globalAttributes.containsKey(key) && globalAttributes.size >= MAX_GLOBAL_ATTRIBUTES) return
+                globalAttributes[key] = value
+                scheduleRefresh()
+            }
         }
     }
 
-    fun setAttributes(attributes: Map<String, String>) = attributes.forEach { (k, v) -> setAttribute(k, v) }
-
-    fun removeAttribute(key: String) = synchronized(lock) {
-        if (globalAttributes.remove(key) != null) scheduleRefresh()
+    fun setAttributes(attributes: Map<String, String>?) {
+        guarded("setAttributes") { for ((k, v) in copyStrings(attributes)) setAttribute(k, v) }
     }
 
-    fun clearAttributes() = synchronized(lock) {
-        if (globalAttributes.isEmpty()) return
-        globalAttributes.clear()
-        scheduleRefresh()
+    fun removeAttribute(key: String?) {
+        if (key == null) return
+        guarded("removeAttribute") {
+            synchronized(lock) {
+                if (globalAttributes.remove(key) != null) scheduleRefresh()
+            }
+        }
+    }
+
+    fun clearAttributes() {
+        guarded("clearAttributes") {
+            synchronized(lock) {
+                if (globalAttributes.isEmpty()) return
+                globalAttributes.clear()
+                scheduleRefresh()
+            }
+        }
     }
 
     /** Asks the server for collection settings now instead of at the next poll. */
     fun refreshConfig() {
-        opamp?.refresh()
+        guarded("refreshConfig") { opamp?.refresh() }
     }
 
     /**
@@ -952,12 +1094,13 @@ class TracewayClient private constructor(
      * [captureException] or [captureMessage].
      */
     @JvmOverloads
-    fun log(message: String, level: TracewayLogLevel = TracewayLogLevel.INFO, attributes: Map<String, String>? = null) {
-        if (!options.captureLogs) return
-        val attrs = LinkedHashMap<String, Any>()
-        attributes?.let { attrs.putAll(it) }
-        attrs["log.source"] = "api"
-        consoleLine(message, level, attrs)
+    fun log(message: String?, level: TracewayLogLevel? = TracewayLogLevel.INFO, attributes: Map<String, String>? = null) {
+        if (!options.captureLogs || message == null) return
+        guarded("log") {
+            val attrs = copyNonNull(attributes)
+            attrs["log.source"] = "api"
+            consoleLine(message, level ?: TracewayLogLevel.INFO, attrs)
+        }
     }
 
     /** Records a log line; [severity] is trace, debug, info, warn, error or fatal. */
@@ -966,7 +1109,7 @@ class TracewayClient private constructor(
         ReplaceWith("log(message, TracewayLogLevel.INFO)", "com.tracewayapp.traceway.TracewayLogLevel"),
     )
     @JvmOverloads
-    fun recordLog(message: String, severity: String = "info") = log(message, TracewayLogLevel.of(severity))
+    fun recordLog(message: String?, severity: String? = "info") = log(message, TracewayLogLevel.of(severity ?: "info"))
 
     private fun consoleLine(message: String, level: TracewayLogLevel, attributes: Map<String, Any>) {
         // The SDK's own output is not app telemetry, nor is a line printed while a record is emitted.
@@ -982,7 +1125,12 @@ class TracewayClient private constructor(
      * Navigation or another router.
      */
     @JvmOverloads
-    fun recordNavigation(path: String, action: String = "push", from: String? = null, route: String? = null) {
+    fun recordNavigation(path: String?, action: String? = "push", from: String? = null, route: String? = null) {
+        if (path == null) return
+        guarded("recordNavigation") { navigated(path, action ?: "push", from, route) }
+    }
+
+    private fun navigated(path: String, action: String, from: String?, route: String?) {
         markActivity()
         val nowMs = scheduler.now()
         // A removal takes a screen away without the user arriving anywhere: on the timeline, not a navigation.
@@ -1018,9 +1166,11 @@ class TracewayClient private constructor(
      * 64 characters.
      */
     fun setRoute(template: String?) {
-        val route = routeTemplate(template)
-        currentRoute = route
-        if (route != null && options.captureMetrics) vitals?.routeNamed(route)
+        guarded("setRoute") {
+            val route = routeTemplate(template)
+            currentRoute = route
+            if (route != null && options.captureMetrics) vitals?.routeNamed(route)
+        }
     }
 
     private fun routeTemplate(template: String?): String? {
@@ -1039,15 +1189,15 @@ class TracewayClient private constructor(
      * nothing.
      */
     @JvmOverloads
-    fun startInteraction(name: String, attributes: Map<String, Any>? = null): TracewayInteraction {
+    fun startInteraction(name: String?, attributes: Map<String, Any>? = null): TracewayInteraction {
         val t = tracer
         var span: Span? = null
-        if (t != null && ready && !isShutdown && name.isNotEmpty()) {
+        if (t != null && ready && !isShutdown && !name.isNullOrEmpty()) {
             try {
                 val parent = TracewayInteraction.currentContext()
                 val builder = t.spanBuilder(name).setSpanKind(SpanKind.INTERNAL)
                 if (parent != null) builder.setParent(parent) else builder.setNoParent()
-                attributes?.forEach { (key, value) ->
+                copyNonNull(attributes).forEach { (key, value) ->
                     when (value) {
                         is String -> builder.setAttribute(key, value)
                         is Boolean -> builder.setAttribute(key, value)
@@ -1064,32 +1214,38 @@ class TracewayClient private constructor(
                 debugLog("interaction failed: $e")
             }
         }
-        return TracewayInteraction(span) { error, attrs -> captureException(error, attrs) }
+        return guarded("startInteraction", null) { TracewayInteraction(span) { error, attrs -> captureException(error, attrs) } }
+            ?: TracewayInteraction(null) { _, _ -> }
     }
 
     /** The screen on top shows everything it loads: ends its time to full display (`app.screen.ttfd`). */
     fun reportFullyDisplayed() {
-        if (options.captureMetrics) vitals?.fullyDisplayed()
+        guarded("reportFullyDisplayed") { if (options.captureMetrics) vitals?.fullyDisplayed() }
     }
 
     /** Observes [value] of an app-defined distribution, e.g. `checkout.duration`. */
     @JvmOverloads
-    fun recordMetric(name: String, value: Double, dimensions: Map<String, Any>? = null) {
-        if (options.captureMetrics) runCatching { metrics.metric(name, value, dimensions) }
+    fun recordMetric(name: String?, value: Double, dimensions: Map<String, Any>? = null) {
+        if (name == null) return
+        guarded("metric") { if (options.captureMetrics) metrics.metric(name, value, copyNonNull(dimensions)) }
     }
 
     /** Adds [n] to an app-defined counter. */
     @JvmOverloads
-    fun recordCount(name: String, n: Double = 1.0, dimensions: Map<String, Any>? = null) {
-        if (options.captureMetrics) runCatching { metrics.count(name, n, dimensions) }
+    fun recordCount(name: String?, n: Double = 1.0, dimensions: Map<String, Any>? = null) {
+        if (name == null) return
+        guarded("count") { if (options.captureMetrics) metrics.count(name, n, copyNonNull(dimensions)) }
     }
 
     /** Sets an app-defined dimension on every metric from now on (`custom.<key>`); null removes it. */
-    fun setMetricDimension(key: String, value: String?) = metrics.setDimension(key, value)
+    fun setMetricDimension(key: String?, value: String?) {
+        if (key == null) return
+        guarded("setMetricDimension") { metrics.setDimension(key, value) }
+    }
 
     /** Notes user activity so the session's inactivity timeout restarts. */
     fun markActivity() {
-        synchronized(lock) { sessions?.markActivity() }
+        guarded("markActivity") { synchronized(lock) { sessions?.markActivity() } }
     }
 
     // ------------------------------------------------------------- network
@@ -1107,7 +1263,12 @@ class TracewayClient private constructor(
      * [com.tracewayapp.traceway.network.TracewayOkHttpInterceptor]; other
      * HTTP stacks can call it too, then [endRequest].
      */
-    fun startRequest(method: String, url: String, hasTraceparent: Boolean = false): RequestHandle? {
+    fun startRequest(method: String?, url: String?, hasTraceparent: Boolean = false): RequestHandle? {
+        if (method == null || url == null) return null
+        return guarded("startRequest", null) { requestStarted(method, url, hasTraceparent) }
+    }
+
+    private fun requestStarted(method: String, url: String, hasTraceparent: Boolean): RequestHandle? {
         if (!options.captureNetwork || isShutdown || isOwnRequest(url)) return null
         // Before the SDK is ready there is no tracer yet: the request is still timed, and recorded once it is.
         val t = tracer ?: return RequestHandle(null, method.uppercase(), url, scheduler.now(), null)
@@ -1134,7 +1295,12 @@ class TracewayClient private constructor(
     }
 
     /** Ends a request started with [startRequest]. [error] names the failure when no response came. */
-    fun endRequest(handle: RequestHandle, statusCode: Int?, requestBytes: Long?, responseBytes: Long?, error: String?) {
+    fun endRequest(handle: RequestHandle?, statusCode: Int?, requestBytes: Long?, responseBytes: Long?, error: String?) {
+        if (handle == null) return
+        guarded("endRequest") { requestEnded(handle, statusCode, requestBytes, responseBytes, error) }
+    }
+
+    private fun requestEnded(handle: RequestHandle, statusCode: Int?, requestBytes: Long?, responseBytes: Long?, error: String?) {
         val endMs = scheduler.now()
         if (handle.span == null) {
             synchronized(lock) {
@@ -1284,7 +1450,13 @@ class TracewayClient private constructor(
      */
     @JvmOverloads
     fun flush(timeoutMs: Long = 10_000) {
-        val deadline = System.currentTimeMillis() + timeoutMs
+        // After shutdown nothing is sent any more: there is nothing to wait for.
+        if (isShutdown) return
+        guarded("flush") { flushUnguarded(timeoutMs) }
+    }
+
+    private fun flushUnguarded(timeoutMs: Long) {
+        val deadline = System.currentTimeMillis() + maxOf(0L, timeoutMs)
         fun left() = maxOf(1L, deadline - System.currentTimeMillis())
         if (!awaitQuietly(readyLatch, left())) return
         synchronized(lock) {
@@ -1316,49 +1488,70 @@ class TracewayClient private constructor(
     /** Flushes (up to [timeoutMs]) and stops the SDK. [Traceway.init] starts it again. Blocks. */
     @JvmOverloads
     fun shutdown(timeoutMs: Long = 10_000) {
-        if (isShutdown) return
-        awaitQuietly(readyLatch, timeoutMs)
-        synchronized(lock) {
-            sessions?.current?.let { emitSessionEnd(it, scheduler.now()) }
-            // The session may go on after a restart: its memory is observed when it ends.
-            if (options.captureMetrics) memoryPeaks.remember(sessions?.currentId)
+        synchronized(shutdownLock) {
+            if (isShutdown || shuttingDown) return
+            shuttingDown = true
         }
-        vitals?.stop()
+        // Every part on its own: one that fails must not leave the others (hooks, threads) behind.
+        guarded("shutdown wait") { awaitQuietly(readyLatch, timeoutMs) }
+        guarded("shutdown session") {
+            synchronized(lock) {
+                sessions?.current?.let { emitSessionEnd(it, scheduler.now()) }
+                // The session may go on after a restart: its memory is observed when it ends.
+                if (options.captureMetrics) memoryPeaks.remember(sessions?.currentId)
+            }
+        }
+        guarded("shutdown vitals") { vitals?.stop() }
         flush(timeoutMs)
-        metrics.stop()
+        guarded("shutdown metrics") { metrics.stop() }
         isShutdown = true
-        synchronized(lock) {
-            sessions?.stop()
-            refreshTimer?.cancel()
-            overrideTimer?.cancel()
-            progressTimer?.cancel()
+        guarded("shutdown timers") {
+            synchronized(lock) {
+                sessions?.stop()
+                refreshTimer?.cancel()
+                overrideTimer?.cancel()
+                progressTimer?.cancel()
+            }
         }
-        opamp?.stop()
-        synchronized(lock) { replay.stop() }
-        touchTracker?.uninstall()
-        lifecycle?.uninstall()
-        recorderCallbacks?.let { application?.unregisterActivityLifecycleCallbacks(it) }
-        recorderCallbacks = null
-        networkState?.close()
-        synchronized(healthLock) {
-            healthTimer?.cancel()
-            healthTimer = null
+        guarded("shutdown opamp") { opamp?.stop() }
+        guarded("shutdown replay") { synchronized(lock) { replay.stop() } }
+        uninstallHooks()
+        guarded("shutdown health") {
+            synchronized(healthLock) {
+                healthTimer?.cancel()
+                healthTimer = null
+            }
         }
-        LogCapture.uninstall(logSink = logLineSink)
-        store.flush()
-        // What the processors still export from here is written to disk, for the next start, not sent.
-        (logExporter as? PersistingExporter)?.persistOnly = true
-        (spanExporter as? PersistingExporter)?.persistOnly = true
-        try {
+        guarded("shutdown store") { store.flush() }
+        // What the processors still export from here is written to disk, for the next start, not sent; without a
+        // place on disk it is sent.
+        if (keepsOnDisk()) setPersistOnly(true)
+        guarded("shutdown providers") {
             loggerProvider?.shutdown()?.join(2, TimeUnit.SECONDS)
             tracerProvider?.shutdown()?.join(2, TimeUnit.SECONDS)
-        } catch (_: Throwable) {
         }
         // After the processors' last export: a batch that fails then is still queued on disk for the next start.
-        outbox?.dispose()
-        tracewayOutbox?.dispose()
-        scheduler.shutdown()
+        guarded("shutdown outbox") {
+            outbox?.dispose()
+            tracewayOutbox?.dispose()
+        }
+        guarded("shutdown scheduler") { scheduler.shutdown() }
         synchronized(Companion) { if (current === this) current = null }
+    }
+
+    private val shutdownLock = Any()
+    private var shuttingDown = false
+
+    /** Whether the exporters can write what they hold to the outbox, to be sent at the next start. */
+    private fun keepsOnDisk(): Boolean = guarded("outbox", false) {
+        outbox?.usable == true && (tracewayOutbox == null || tracewayOutbox?.usable == true)
+    }
+
+    private fun setPersistOnly(on: Boolean) {
+        guarded("persistOnly") {
+            (logExporter as? PersistingExporter)?.persistOnly = on
+            (spanExporter as? PersistingExporter)?.persistOnly = on
+        }
     }
 
     // ------------------------------------------------------------- crashes
@@ -1367,7 +1560,9 @@ class TracewayClient private constructor(
      * An uncaught exception is about to end the process: report it, write it
      * with its breadcrumbs and replay clip to disk (nothing in flight would
      * survive), then try to send it all for a moment. What does not make it
-     * is sent at the next start.
+     * is sent at the next start. Without a place on disk
+     * ([TracewayOptions.persistToDisk] off, or no usable directory) it is
+     * sent right away instead, on any thread, within the same budget.
      */
     private fun captureCrash(thread: Thread, error: Throwable) {
         if (isShutdown) return
@@ -1383,9 +1578,10 @@ class TracewayClient private constructor(
                 return
             }
             crashing = true
-            // Nothing in flight would survive the process: from here on every export is written to the outbox.
-            (logExporter as? PersistingExporter)?.persistOnly = true
-            (spanExporter as? PersistingExporter)?.persistOnly = true
+            // Nothing in flight would survive the process: from here on every export is written to the outbox, when
+            // there is one that can keep it. Otherwise what is exported goes out live, and is waited for below.
+            val toDisk = keepsOnDisk()
+            if (toDisk) setPersistOnly(true)
             synchronized(lock) {
                 if (options.captureMetrics) metrics.crash()
                 val attrs = exceptionAttributes(error, mapOf("thread.name" to thread.name))
@@ -1408,9 +1604,15 @@ class TracewayClient private constructor(
             if (control.settings.persist) persisted?.saveNow(session, entries)
             if (options.captureMetrics) metrics.flush(final = true)
             store.flush()
-            // Everything is on disk now. Off the main thread, try to send it before the process ends; on it, the
-            // next start sends it rather than the screen staying frozen.
-            if (!isMainThread()) {
+            if (!toDisk) {
+                // Nothing can wait for the next start: what the processors handed over is on its way now.
+                logSink?.forceFlush()?.join(left(), TimeUnit.MILLISECONDS)
+                spanSink?.forceFlush()?.join(left(), TimeUnit.MILLISECONDS)
+                val pending = listOfNotNull(logExporter?.flush(), spanExporter?.flush(), recordings.flush())
+                CompletableResultCode.ofAll(pending).join(left(), TimeUnit.MILLISECONDS)
+            } else if (!isMainThread()) {
+                // Everything is on disk now. Off the main thread, try to send it before the process ends; on it, the
+                // next start sends it rather than the screen staying frozen.
                 val pending = listOfNotNull(outbox?.drain(), tracewayOutbox?.drain(), recordings.flush())
                 CompletableResultCode.ofAll(pending).join(left(), TimeUnit.MILLISECONDS)
             }
@@ -1419,8 +1621,7 @@ class TracewayClient private constructor(
         } finally {
             // The app's own handler may swallow the crash and keep running.
             crashing = false
-            (logExporter as? PersistingExporter)?.persistOnly = false
-            (spanExporter as? PersistingExporter)?.persistOnly = false
+            setPersistOnly(false)
             if (interrupted) Thread.currentThread().interrupt()
         }
     }
@@ -1505,14 +1706,16 @@ class TracewayClient private constructor(
         body: String? = null,
         attributes: Map<String, Any> = emptyMap(),
         timeMs: Long? = null,
-        context: Context = Context.current(),
+        context: Context? = null,
     ) {
         if (isShutdown) return
         val timestamp = timeMs ?: scheduler.now()
         synchronized(lock) {
             if (!ready) {
+                // The caller's context (an interaction's trace) is kept for the record that waits.
+                val caller = context ?: currentContext()
                 queue(eventName in KEPT_BEFORE_READY) {
-                    emit(eventName, severity, severityText, body, attributes, timestamp, context)
+                    emit(eventName, severity, severityText, body, attributes, timestamp, caller)
                 }
                 return
             }
@@ -1520,7 +1723,7 @@ class TracewayClient private constructor(
             emitDepth++
             try {
                 val b = l.logRecordBuilder()
-                b.setContext(context)
+                (context ?: currentContext())?.let { b.setContext(it) }
                 b.setTimestamp(timestamp, TimeUnit.MILLISECONDS)
                 if (eventName != null) b.setEventName(eventName)
                 if (severity != null) b.setSeverity(severity)
@@ -1547,12 +1750,19 @@ class TracewayClient private constructor(
         }
     }
 
+    /**
+     * The OpenTelemetry context of the calling thread, or null when it cannot
+     * be read: on API 21-23 without core library desugaring OpenTelemetry's
+     * context storage fails to load (NoClassDefFoundError).
+     */
+    private fun currentContext(): Context? = guarded("context", null) { Context.current() }
+
     private fun emitSessionEnd(session: SessionInfo, endedAtMs: Long) {
         if (!reportedSessions.remove(session.id)) return
         emit(eventName = Events.SESSION_END, severity = Severity.INFO, timeMs = endedAtMs, attributes = sessionAttributes(session))
     }
 
-    /** What every session event carries: the session and how much of its diagnostic budget replay used. */
+    /** What every session event carries: the session, how much of its diagnostic budget replay used and what was dropped. */
     private fun sessionAttributes(session: SessionInfo): Map<String, Any> {
         val out = LinkedHashMap<String, Any>()
         out[Events.ATTR_SESSION_ID] = session.id
@@ -1561,6 +1771,7 @@ class TracewayClient private constructor(
         out["traceway.replay.images"] = (sessionImagePolicy ?: control.settings.replayImages).wire
         out["traceway.replay.failed_segments"] = recordings.failedSegments.toLong()
         out["traceway.context.evicted"] = buffer.evictedCount.toLong()
+        out["traceway.error.suppressed_total"] = synchronized(healthLock) { suppressedTotal }
         return out
     }
 
@@ -1575,6 +1786,8 @@ class TracewayClient private constructor(
         if (!resumed) {
             buffer.clear()
             persisted?.clearRestored()
+            // Its pictures are recorded again, against its own image budget.
+            (screenRecorder as? WireframeRecorder)?.images?.newSession()
         }
         triggers.resetSession()
         val limits = store.get("triggerLimits").asJsonObject()
@@ -1582,7 +1795,9 @@ class TracewayClient private constructor(
         restoreTriggerProgress(session.id)
         replay.onSessionStart()
         if (options.captureMetrics) {
-            memoryPeaks.settle(session.id)
+            val id = session.id
+            // On the disk thread, in order with remember and ended: they read and write the same stored peak.
+            scheduler.disk { memoryPeaks.settle(id) }
             metrics.sessionStarted(session.id, resumed)
         }
         if (control.settings.sessionsEnabled) {
@@ -1600,7 +1815,11 @@ class TracewayClient private constructor(
 
     private fun onSessionEnd(session: SessionInfo, endedAtMs: Long) {
         replay.onSessionEnd(session.id)
-        if (options.captureMetrics) memoryPeaks.ended(session.id)
+        if (options.captureMetrics) {
+            val id = session.id
+            // Reads /proc: off the caller's thread, which can be the main one (a tap that ends an expired session).
+            scheduler.disk { memoryPeaks.ended(id) }
+        }
         emitSessionEnd(session, endedAtMs)
     }
 
@@ -1621,11 +1840,9 @@ class TracewayClient private constructor(
         override fun admit(bytes: Int): Boolean = replay.budget.admitImage(liveSessionId, bytes.toLong())
     }
 
+    // Only session events carry traceway.session.started_at, as in the browser SDK: the server reads the
+    // session's start from them and nothing else.
     private fun enrichLog(record: ReadWriteLogRecord, signal: String): Boolean {
-        val session = sessions?.current
-        if (session != null && record.getAttribute(ATTR_STARTED_AT) == null) {
-            record.setAttribute(ATTR_STARTED_AT, session.startedAtMs)
-        }
         for ((key, value) in globalAttributes) {
             val k = AttributeKey.stringKey(key)
             if (record.getAttribute(k) == null) record.setAttribute(k, value)
@@ -2056,7 +2273,7 @@ class TracewayClient private constructor(
         buffer.retain { control.canExport(it.signal) }
         persisted?.retain { control.canExport(it) }
         if (!settings.persist) persisted?.clear(keepRestored = false)
-        buffer.configure(maxBytes = settings.bufferMaxBytes, maxAgeMs = settings.bufferMaxAgeMs)
+        buffer.configure(maxBytes = bufferBytes(settings), maxAgeMs = settings.bufferMaxAgeMs)
         // Triggers already running keep their progress: what was saved can be older, and would undo a fire.
         restoreTriggerProgress(sessions?.currentId, only = triggers.setTriggers(settings.triggers))
         val kinds = HashSet<String>()
@@ -2172,32 +2389,39 @@ class TracewayClient private constructor(
         }
     }
 
+    /** The app came to the foreground or left it; on the main thread, from [AppLifecycle]. */
     private fun onLifecycle(foreground: Boolean) {
         if (isShutdown) return
-        if (options.captureMetrics) vitals?.lifecycleChanged(foreground)
+        guarded("lifecycle vitals") { if (options.captureMetrics) vitals?.lifecycleChanged(foreground) }
         if (foreground) {
-            markActivity()
-            opamp?.poll()
-            legacyReports?.drain()
-            outbox?.drain()
-            tracewayOutbox?.drain()
+            guarded("foreground") {
+                markActivity()
+                opamp?.poll()
+                legacyReports?.drain()
+                outbox?.drain()
+                tracewayOutbox?.drain()
+            }
         } else {
-            synchronized(lock) {
-                replay.onPaused()
-                if (options.captureMetrics && started) {
-                    memoryPeaks.remember(sessions?.currentId)
-                    // Stored before it is sent: the process may not live to see the answer.
-                    metrics.flush(final = true)
+            guarded("background") {
+                synchronized(lock) {
+                    replay.onPaused()
+                    if (options.captureMetrics && started) {
+                        // Read from /proc, so off the main thread, in order with the other memory peak updates.
+                        val session = sessions?.currentId
+                        scheduler.disk { memoryPeaks.remember(session) }
+                        // Stored before it is sent: the process may not live to see the answer.
+                        metrics.flush(final = true)
+                    }
+                    saveTriggerProgress(now = true)
                 }
-                saveTriggerProgress(now = true)
+                scheduler.io {
+                    persistBuffer()
+                    store.flush()
+                }
+                (tracewayOutbox ?: outbox)?.drain()
+                logSink?.forceFlush()
+                spanSink?.forceFlush()
             }
-            scheduler.io {
-                persistBuffer()
-                store.flush()
-            }
-            (tracewayOutbox ?: outbox)?.drain()
-            logSink?.forceFlush()
-            spanSink?.forceFlush()
         }
     }
 
@@ -2222,6 +2446,10 @@ class TracewayClient private constructor(
     @VisibleForTesting
     internal val bufferedCount: Int get() = synchronized(lock) { buffer.length }
 
+    /** The ring buffer's size in bytes as applied: the settings', at most the device's cap. */
+    @VisibleForTesting
+    internal val bufferLimitBytes: Long get() = synchronized(lock) { buffer.limitBytes }
+
     @VisibleForTesting
     internal fun awaitReady(timeoutMs: Long = 5000): Boolean = readyLatch.await(timeoutMs, TimeUnit.MILLISECONDS)
 
@@ -2237,7 +2465,6 @@ class TracewayClient private constructor(
     internal fun simulateCrash(thread: Thread, error: Throwable) = captureCrash(thread, error)
 
     companion object {
-        private val ATTR_STARTED_AT = AttributeKey.longKey(Events.ATTR_SESSION_STARTED_AT)
         private val ATTR_EXCEPTION_TYPE = AttributeKey.stringKey("exception.type")
         private val ATTR_EXCEPTION_MESSAGE = AttributeKey.stringKey("exception.message")
         private val ATTR_SUPPRESSED = AttributeKey.longKey("traceway.error.suppressed_count")
@@ -2255,18 +2482,48 @@ class TracewayClient private constructor(
             get() = current
 
         /**
+         * What the SDK needs of the platform and cannot do without, checked
+         * before anything is installed: OpenTelemetry's context, which on API
+         * 21-23 needs core library desugaring (`java.util.function`). Throws a
+         * [LinkageError] when it is missing.
+         */
+        @VisibleForTesting
+        @Volatile
+        internal var platformCheck: () -> Unit = { Context.current() }
+
+        /**
          * Starts the SDK, or returns the running client. Without a
          * [connectionString] it runs standalone and sends everything to
-         * [TracewayOptions.telemetry].
+         * [TracewayOptions.telemetry]. Nothing is left installed when it
+         * fails: [instance] stays null.
          * @throws IllegalArgumentException for an invalid connection string or telemetry setting.
+         * @throws IllegalStateException when the platform lacks what the SDK needs.
          */
-        internal fun initialize(application: Application, connectionString: String?, options: TracewayOptions): TracewayClient {
+        internal fun initialize(
+            application: Application,
+            connectionString: String?,
+            options: TracewayOptions,
+            overrides: TracewayTestOverrides? = null,
+        ): TracewayClient {
             synchronized(this) {
                 current?.let { if (!it.isShutdown) return it }
-                val client = TracewayClient(application, connectionString, options, null)
+                try {
+                    platformCheck()
+                } catch (e: LinkageError) {
+                    throw IllegalStateException("this device lacks java.util.function; enable core library desugaring ($e)")
+                }
+                val client = TracewayClient(application, connectionString, options, overrides)
+                try {
+                    client.instrument(application)
+                    val work = Runnable { client.start() }
+                    val launch = overrides?.startThread
+                    if (launch != null) launch(work) else Thread(work, "TracewayStart").apply { isDaemon = true }.start()
+                } catch (e: Throwable) {
+                    // Out of memory for a thread at cold start, say: the app runs on without the SDK, and without its hooks.
+                    client.abandon()
+                    throw e
+                }
                 current = client
-                client.instrument(application)
-                Thread({ client.start() }, "TracewayStart").apply { isDaemon = true }.start()
                 return client
             }
         }

@@ -527,6 +527,24 @@ class OpampTest {
     }
 
     @Test
+    fun `a server that always asks for the full state gets no tight poll loop`() {
+        val c = client { _, index ->
+            // Bounded, so a regression fails instead of spinning forever.
+            check(index < 50) { "polled $index times" }
+            ok(fromHex(OpampGoldens.S2A_REPORT_FULL_STATE))
+        }
+        c.start()
+        scheduler.runDue()
+        assertEquals("the first answer is followed at once", 2, requests.size)
+        scheduler.runDue()
+        scheduler.advance(29_999)
+        assertEquals("then no faster than the minimum interval", 2, requests.size)
+        scheduler.advance(1)
+        assertEquals(3, requests.size)
+        c.stop()
+    }
+
+    @Test
     fun `takes a new instance uid from the server`() {
         val changes = ArrayList<String>()
         val c = client(onInstanceUidChange = { changes.add(hex(it)) }) { _, index ->

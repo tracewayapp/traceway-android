@@ -26,7 +26,9 @@ import android.view.View
  * breadcrumbs that led to them (logs, HTTP calls, screens, taps, custom
  * events) and a wireframe recording of the last seconds on screen. What is
  * collected follows the project's Data Collection settings, polled over
- * OpAMP. Every method is a no-op before [init].
+ * OpAMP. Every method is a no-op before [init], and none of them throws
+ * into the app: a failure inside the SDK, a null from Java included, is
+ * contained and the call does nothing.
  */
 object Traceway {
     private const val TAG = "Traceway"
@@ -40,25 +42,35 @@ object Traceway {
      * form ending in `/api/report`). Pass null to run standalone, sending
      * everything to [TracewayOptions.telemetry].
      *
-     * An invalid connection string or telemetry setting does not take the
-     * app down: it is logged, and the app runs without the SDK (null).
+     * An invalid connection string or telemetry setting, or any failure
+     * while starting, does not take the app down: it is logged, and the app
+     * runs without the SDK (null). So does a null [application].
      */
     @JvmStatic
     @JvmOverloads
     fun init(
-        application: Application,
+        application: Application?,
         connectionString: String?,
-        options: TracewayOptions = TracewayOptions(),
+        options: TracewayOptions? = TracewayOptions(),
     ): TracewayClient? = try {
-        TracewayClient.initialize(application, connectionString, options)
-    } catch (e: IllegalArgumentException) {
-        Log.e(TAG, "Traceway is not running: ${e.message}")
+        if (application == null) throw IllegalArgumentException("application is null")
+        TracewayClient.initialize(application, connectionString, options ?: TracewayOptions())
+    } catch (e: Throwable) {
+        if (e is InterruptedException) Thread.currentThread().interrupt()
+        logNotRunning(e)
         null
     }
 
     /** Starts Traceway standalone: no Traceway server, everything goes to [TracewayOptions.telemetry]. */
     @JvmStatic
-    fun init(application: Application, options: TracewayOptions): TracewayClient? = init(application, null, options)
+    fun init(application: Application?, options: TracewayOptions?): TracewayClient? = init(application, null, options)
+
+    private fun logNotRunning(e: Throwable) {
+        try {
+            Log.e(TAG, "Traceway is not running: ${if (e is IllegalArgumentException) e.message else e.toString()}")
+        } catch (_: Throwable) {
+        }
+    }
 
     /** The running client, or null. */
     @JvmStatic
@@ -68,7 +80,7 @@ object Traceway {
     /** The current session's id (`session.id` on every record), or null before the SDK started. */
     @JvmStatic
     val currentSessionId: String?
-        get() = client?.currentSessionId
+        get() = guarded("currentSessionId", null) { client?.currentSessionId }
 
     /**
      * Reports a caught exception, with optional attributes and the screen it
@@ -77,50 +89,50 @@ object Traceway {
      */
     @JvmStatic
     @JvmOverloads
-    fun captureException(error: Throwable, attributes: Map<String, String>? = null) {
-        client?.captureException(error, attributes)
+    fun captureException(error: Throwable?, attributes: Map<String, String>? = null) {
+        guarded("captureException") { client?.captureException(error, attributes) }
     }
 
     /** Reports a free-form message as an issue, filtered like [captureException]. */
     @JvmStatic
     @JvmOverloads
-    fun captureMessage(message: String, attributes: Map<String, String>? = null) {
-        client?.captureMessage(message, attributes)
+    fun captureMessage(message: String?, attributes: Map<String, String>? = null) {
+        guarded("captureMessage") { client?.captureMessage(message, attributes) }
     }
 
     /** Records a custom breadcrumb, shown on the session timeline. */
     @JvmStatic
     @JvmOverloads
-    fun recordAction(category: String, name: String, data: Map<String, Any?>? = null) {
-        client?.recordAction(category, name, data)
+    fun recordAction(category: String?, name: String?, data: Map<String, Any?>? = null) {
+        guarded("recordAction") { client?.recordAction(category, name, data) }
     }
 
     /** Emits a named product event (`checkout_failed`); triggers can match it by name. */
     @JvmStatic
     @JvmOverloads
-    fun track(eventName: String, attributes: Map<String, Any>? = null) {
-        client?.track(eventName, attributes)
+    fun track(eventName: String?, attributes: Map<String, Any>? = null) {
+        guarded("track") { client?.track(eventName, attributes) }
     }
 
     /** An attribute on every later record, also usable to target this user or device from Data Collection rules. */
     @JvmStatic
-    fun setAttribute(key: String, value: String) {
-        client?.setAttribute(key, value)
+    fun setAttribute(key: String?, value: String?) {
+        guarded("setAttribute") { client?.setAttribute(key, value) }
     }
 
     @JvmStatic
-    fun setAttributes(attributes: Map<String, String>) {
-        client?.setAttributes(attributes)
+    fun setAttributes(attributes: Map<String, String>?) {
+        guarded("setAttributes") { client?.setAttributes(attributes) }
     }
 
     @JvmStatic
-    fun removeAttribute(key: String) {
-        client?.removeAttribute(key)
+    fun removeAttribute(key: String?) {
+        guarded("removeAttribute") { client?.removeAttribute(key) }
     }
 
     @JvmStatic
     fun clearAttributes() {
-        client?.clearAttributes()
+        guarded("clearAttributes") { client?.clearAttributes() }
     }
 
     /**
@@ -134,8 +146,8 @@ object Traceway {
      */
     @JvmStatic
     @JvmOverloads
-    fun recordNavigation(path: String, action: String = "push", from: String? = null, route: String? = null) {
-        client?.recordNavigation(path, action, from, route)
+    fun recordNavigation(path: String?, action: String? = "push", from: String? = null, route: String? = null) {
+        guarded("recordNavigation") { client?.recordNavigation(path, action, from, route) }
     }
 
     /**
@@ -145,7 +157,7 @@ object Traceway {
      */
     @JvmStatic
     fun setRoute(template: String?) {
-        client?.setRoute(template)
+        guarded("setRoute") { client?.setRoute(template) }
     }
 
     /**
@@ -155,8 +167,8 @@ object Traceway {
      */
     @JvmStatic
     @JvmOverloads
-    fun log(message: String, level: TracewayLogLevel = TracewayLogLevel.INFO, attributes: Map<String, String>? = null) {
-        client?.log(message, level, attributes)
+    fun log(message: String?, level: TracewayLogLevel? = TracewayLogLevel.INFO, attributes: Map<String, String>? = null) {
+        guarded("log") { client?.log(message, level, attributes) }
     }
 
     /** Records a log line. [severity]: trace, debug, info, warn, error, fatal. */
@@ -166,8 +178,8 @@ object Traceway {
     )
     @JvmStatic
     @JvmOverloads
-    fun recordLog(message: String, severity: String = "info") {
-        client?.log(message, TracewayLogLevel.of(severity))
+    fun recordLog(message: String?, severity: String? = "info") {
+        guarded("recordLog") { client?.log(message, TracewayLogLevel.of(severity ?: "info")) }
     }
 
     /**
@@ -178,33 +190,33 @@ object Traceway {
      */
     @JvmStatic
     @JvmOverloads
-    fun startInteraction(name: String, attributes: Map<String, Any>? = null): TracewayInteraction =
-        client?.startInteraction(name, attributes) ?: TracewayInteraction(null) { _, _ -> }
+    fun startInteraction(name: String?, attributes: Map<String, Any>? = null): TracewayInteraction =
+        guarded("startInteraction", null) { client?.startInteraction(name, attributes) } ?: TracewayInteraction(null) { _, _ -> }
 
     /** The screen on top shows everything it loads: ends its time to full display (`app.screen.ttfd`). */
     @JvmStatic
     fun reportFullyDisplayed() {
-        client?.reportFullyDisplayed()
+        guarded("reportFullyDisplayed") { client?.reportFullyDisplayed() }
     }
 
     /** Observes [value] of an app-defined distribution, e.g. `checkout.duration`, charted like the built-in metrics. */
     @JvmStatic
     @JvmOverloads
-    fun metric(name: String, value: Double, dimensions: Map<String, Any>? = null) {
-        client?.recordMetric(name, value, dimensions)
+    fun metric(name: String?, value: Double, dimensions: Map<String, Any>? = null) {
+        guarded("metric") { client?.recordMetric(name, value, dimensions) }
     }
 
     /** Adds [n] to an app-defined counter. */
     @JvmStatic
     @JvmOverloads
-    fun count(name: String, n: Double = 1.0, dimensions: Map<String, Any>? = null) {
-        client?.recordCount(name, n, dimensions)
+    fun count(name: String?, n: Double = 1.0, dimensions: Map<String, Any>? = null) {
+        guarded("count") { client?.recordCount(name, n, dimensions) }
     }
 
     /** An app-defined dimension on every metric from now on (`custom.<key>`); null removes it. */
     @JvmStatic
-    fun setMetricDimension(key: String, value: String?) {
-        client?.setMetricDimension(key, value)
+    fun setMetricDimension(key: String?, value: String?) {
+        guarded("setMetricDimension") { client?.setMetricDimension(key, value) }
     }
 
     /**
@@ -215,37 +227,39 @@ object Traceway {
      */
     @JvmStatic
     @JvmOverloads
-    fun mask(view: View, mode: TracewayMaskMode = TracewayMaskMode.blur()) {
-        TracewayMasks.set(view, mode)
+    fun mask(view: View?, mode: TracewayMaskMode? = TracewayMaskMode.blur()) {
+        if (view == null) return
+        guarded("mask") { TracewayMasks.set(view, mode ?: TracewayMaskMode.blur()) }
     }
 
     /** Removes the mask [mask] set on [view]; a mask tag from its layout still applies. */
     @JvmStatic
-    fun unmask(view: View) {
-        TracewayMasks.set(view, null)
+    fun unmask(view: View?) {
+        if (view == null) return
+        guarded("unmask") { TracewayMasks.set(view, null) }
     }
 
     /** The id this installation reports (`service.instance.id`), to target it from the dashboard. */
     @JvmStatic
-    fun getInstanceId(): String? = client?.getInstanceId()
+    fun getInstanceId(): String? = guarded("getInstanceId", null) { client?.getInstanceId() }
 
     /** Asks the server for collection settings now. */
     @JvmStatic
     fun refreshConfig() {
-        client?.refreshConfig()
+        guarded("refreshConfig") { client?.refreshConfig() }
     }
 
     /** Sends what is ready now, waiting up to [timeoutMs]. Blocks: call it off the main thread. */
     @JvmStatic
     @JvmOverloads
     fun flush(timeoutMs: Long = 10_000) {
-        client?.flush(timeoutMs)
+        guarded("flush") { client?.flush(timeoutMs) }
     }
 
     /** Flushes and stops Traceway. Blocks: call it off the main thread. */
     @JvmStatic
     @JvmOverloads
     fun shutdown(timeoutMs: Long = 10_000) {
-        client?.shutdown(timeoutMs)
+        guarded("shutdown") { client?.shutdown(timeoutMs) }
     }
 }

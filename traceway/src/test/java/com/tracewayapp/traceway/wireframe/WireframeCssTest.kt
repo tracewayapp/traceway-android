@@ -58,6 +58,123 @@ class WireframeCssTest {
     }
 
     @Test
+    fun `halves round away from zero and lengths no screen has stay finite`() {
+        assertEquals("12px", px(12f))
+        assertEquals("12.3px", px(12.34f))
+        assertEquals("12.4px", px(12.35f))
+        assertEquals("1.3px", px(1.25f))
+        assertEquals("-1.3px", px(-1.25f))
+        assertEquals("0px", px(-0.04f))
+        assertEquals("0px", px(Float.NaN))
+        assertEquals("0.333", num3(0.33333f))
+        assertEquals("0.063", num3(0.0625f))
+        assertEquals("-0.063", num3(-0.0625f))
+        assertEquals("0", num3(0.0004f))
+        assertEquals("0", num3(-0.0004f))
+        assertEquals("0", num3(Float.NaN))
+        // A mirrored layout is written with mirrored numbers.
+        for (v in listOf(0.05f, 0.25f, 1.25f, 7.45f, 12.35f, 99.95f)) {
+            assertEquals("$v", "-" + num1(v), num1(-v))
+            assertEquals("$v", "-" + num3(v / 100f), num3(-v / 100f))
+        }
+        // Infinities are no length; a finite one no screen has is clamped, not overflowed.
+        assertEquals("0", num1(Float.POSITIVE_INFINITY))
+        assertEquals("0", num1(Float.NEGATIVE_INFINITY))
+        assertEquals("100000000", num1(Float.MAX_VALUE))
+        assertEquals("-100000000px", px(-Float.MAX_VALUE))
+        assertEquals("100000000", num3(Float.MAX_VALUE))
+    }
+
+    @Test
+    fun `fills and transparency are decided in eight bits`() {
+        assertEquals("#ff0000", cssColor(0xFFFF0000.toInt()))
+        assertEquals("rgba(0,128,255,0.502)", cssColor(0x800080FF.toInt()))
+        assertEquals("rgba(0,0,0,0.004)", cssColor(0x01000000))
+        assertEquals("", StringBuilder().appendFill(0x00FFFFFF).toString())
+        assertEquals("background-color:#ffffff;", StringBuilder().appendFill(0xFFFFFFFF.toInt()).toString())
+        assertEquals("background-color:rgba(0,0,0,0.502);", StringBuilder().appendFill(0x80000000.toInt()).toString())
+        assertTrue(isTransparent(0x00FFFFFF))
+        assertTrue(!isTransparent(0x01000000))
+        // The alpha is scaled and rounded to a byte; the color stays.
+        assertEquals(0x80000000.toInt(), withAlpha(0xFF000000.toInt(), 0.5f))
+        assertEquals(0x40FF0000, withAlpha(0x80FF0000.toInt(), 0.5f))
+        assertEquals("a factor past 1 is 1", 0x80FF0000.toInt(), withAlpha(0x80FF0000.toInt(), 2f))
+        assertEquals("below 0 is transparent", 0x00FF0000, withAlpha(0x80FF0000.toInt(), -1f))
+    }
+
+    @Test
+    fun `unusable corners and shadows are left out`() {
+        assertEquals("", StringBuilder().appendRadius(Float.NaN).toString())
+        assertEquals("", StringBuilder().appendRadius(-4f).toString())
+        assertEquals("", StringBuilder().appendRadius(Float.POSITIVE_INFINITY).toString())
+        assertEquals("border-radius:4px;", StringBuilder().appendRadius(4.04f).toString())
+        val unusable = floatArrayOf(Float.NaN, Float.NaN, -4f, -4f, Float.POSITIVE_INFINITY, Float.POSITIVE_INFINITY, 0f, 0f)
+        assertEquals("", StringBuilder().appendRadii(unusable).toString())
+        // One unusable corner is square; the others keep their radius.
+        val oneNaN = floatArrayOf(6f, 6f, Float.NaN, Float.NaN, 6f, 6f, 6f, 6f)
+        assertEquals("border-radius:6px 0px 6px 6px;", StringBuilder().appendRadii(oneNaN).toString())
+        val oneNegative = floatArrayOf(6f, 6f, -2f, -2f, 6f, 6f, 6f, 6f)
+        assertEquals("border-radius:6px 0px 6px 6px;", StringBuilder().appendRadii(oneNegative).toString())
+        assertEquals("too few radii", "", StringBuilder().appendRadii(floatArrayOf(4f, 4f, 4f, 4f)).toString())
+        val black = 0xFF000000.toInt()
+        assertEquals("", StringBuilder().appendShadows(Float.NaN, black, Float.NaN, black).toString())
+        assertEquals("", StringBuilder().appendShadows(4f, 0, 1f, 0x00FFFFFF).toString())
+        assertEquals("box-shadow:inset 0 0 0 1px #000000;", StringBuilder().appendShadows(-2f, black, 1f, black).toString())
+    }
+
+    @Test
+    fun `gradients carry their stops`() {
+        val bw = intArrayOf(0xFF000000.toInt(), 0xFFFFFFFF.toInt())
+        assertEquals(
+            "background-image:linear-gradient(90deg,#000000 0%,#ffffff 25%);",
+            StringBuilder().appendLinearGradient(0f, 0.5f, 1f, 0.5f, 10f, 10f, bw, floatArrayOf(0f, 0.25f)).toString(),
+        )
+        // Fewer stops than colors: the rest go without one.
+        assertEquals(
+            "background-image:linear-gradient(180deg,#000000 50%,#ffffff);",
+            StringBuilder().appendLinearGradient(0.5f, 0f, 0.5f, 1f, 10f, 10f, bw, floatArrayOf(0.5f)).toString(),
+        )
+        assertEquals("", StringBuilder().appendLinearGradient(0f, 0f, 1f, 1f, 10f, 10f, IntArray(0)).toString())
+    }
+
+    @Test
+    fun `gradient angles run clockwise from the top in the box's proportions`() {
+        val bw = intArrayOf(0xFF000000.toInt(), 0xFFFFFFFF.toInt())
+        fun angle(sx: Float, sy: Float, ex: Float, ey: Float, w: Float = 10f, h: Float = 10f) =
+            StringBuilder().appendLinearGradient(sx, sy, ex, ey, w, h, bw).toString()
+        assertTrue("bottom to top", angle(0.5f, 1f, 0.5f, 0f).contains("(0deg,"))
+        assertTrue("right to left", angle(1f, 0.5f, 0f, 0.5f).contains("(270deg,"))
+        assertTrue("a square's diagonal", angle(0f, 0f, 1f, 1f).contains("(135deg,"))
+        // The same diagonal of a wide box is flatter.
+        assertTrue(angle(0f, 0f, 1f, 1f, 30f, 10f), angle(0f, 0f, 1f, 1f, 30f, 10f).contains("(108.4deg,"))
+        assertTrue(angle(1f, 1f, 0f, 0f), angle(1f, 1f, 0f, 0f).contains("(315deg,"))
+    }
+
+    @Test
+    fun `radial and sweep gradients are placed at their center`() {
+        val colors = intArrayOf(0xFFFF0000.toInt(), 0x800000FF.toInt())
+        assertEquals(
+            "background-image:radial-gradient(circle at 50% 25%,#ff0000,rgba(0,0,255,0.502));",
+            StringBuilder().appendRadialGradient(0.5f, 0.25f, colors).toString(),
+        )
+        assertEquals(
+            "background-image:conic-gradient(from 90deg at 50% 50%,#ff0000,rgba(0,0,255,0.502));",
+            StringBuilder().appendSweepGradient(0.5f, 0.5f, colors).toString(),
+        )
+        assertEquals("", StringBuilder().appendRadialGradient(0f, 0f, IntArray(0)).toString())
+        assertEquals("", StringBuilder().appendSweepGradient(0f, 0f, IntArray(0)).toString())
+    }
+
+    @Test
+    fun `masks keep white space and line breaks`() {
+        assertEquals("**** ****\n**", maskText("4242 4242\nab", StringBuilder()).toString())
+        assertEquals("**\t*", maskText("a1\t%", StringBuilder()).toString())
+        // The mask is written after what the builder holds.
+        assertEquals("x:***", maskText("pin", StringBuilder("x:")).toString())
+        assertEquals("", maskText("", StringBuilder()).toString())
+    }
+
+    @Test
     fun `text spills out of its box unless the app cut it`() {
         val look = TextLook()
         look.fontSize = 20f
@@ -121,5 +238,8 @@ class WireframeCssTest {
         assertEquals(screenNodeId, away.id)
         assertEquals(awayScreenTextBoxId, away.children[0].id)
         assertEquals(awayScreenTextId, away.children[0].children[0].id)
+        assertEquals("tw", away.attributes["id"])
+        assertTrue(allNodes(away).all { it.id < firstCapturedNodeId })
+        assertEquals(listOf("App in the background"), texts(away))
     }
 }

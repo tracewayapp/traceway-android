@@ -7,6 +7,7 @@ import android.net.Network
 import android.net.NetworkCapabilities
 import android.os.Build
 import android.os.SystemClock
+import com.tracewayapp.traceway.guarded
 
 /**
  * Whether the device's connection is unmetered (Wi-Fi, Ethernet): what the
@@ -69,13 +70,13 @@ internal class NetworkState(context: Context) {
     private fun listen() {
         val m = manager ?: return
         val cb = object : ConnectivityManager.NetworkCallback() {
-            override fun onCapabilitiesChanged(network: Network, capabilities: NetworkCapabilities) {
+            override fun onCapabilitiesChanged(network: Network, capabilities: NetworkCapabilities) = guarded("network callback") {
                 lastUnmetered = capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_METERED) ||
                     (Build.VERSION.SDK_INT >= 30 &&
                         capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_TEMPORARILY_NOT_METERED))
             }
 
-            override fun onLost(network: Network) {
+            override fun onLost(network: Network) = guarded("network callback") {
                 lastUnmetered = read()
             }
         }

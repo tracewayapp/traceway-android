@@ -105,6 +105,9 @@ internal class WireframeComposeCapture(private val c: WireframeCapture) {
             } catch (t: Throwable) {
                 while (out.size > at) out.removeAt(out.size - 1)
                 if (t is LinkageError) broken = true
+            } finally {
+                // Not kept between captures: it would keep its activity alive.
+                this.view = null
             }
         }
         val sb = c.sb

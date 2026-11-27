@@ -6,7 +6,10 @@
     "edges": 0.9825,
     "ssim": 0.9652
    },
-   "golden": null,
+   "golden": {
+    "changed": 0.00307,
+    "strict": 0.00755
+   },
    "size": [
     412,
     915,
@@ -20,7 +23,10 @@
     "edges": 0.9825,
     "ssim": 0.9651
    },
-   "golden": null,
+   "golden": {
+    "changed": 0.00307,
+    "strict": 0.00755
+   },
    "size": [
     412,
     915,
@@ -34,7 +40,10 @@
     "edges": 0.9981,
     "ssim": 0.9413
    },
-   "golden": null,
+   "golden": {
+    "changed": 0,
+    "strict": 0
+   },
    "size": [
     412,
     915,
@@ -48,7 +57,10 @@
     "edges": 0.9981,
     "ssim": 0.9413
    },
-   "golden": null,
+   "golden": {
+    "changed": 0,
+    "strict": 0
+   },
    "size": [
     412,
     915,
@@ -62,7 +74,10 @@
     "edges": 1,
     "ssim": 0.957
    },
-   "golden": null,
+   "golden": {
+    "changed": 0,
+    "strict": 0
+   },
    "size": [
     412,
     915,
@@ -76,7 +91,10 @@
     "edges": 0.9982,
     "ssim": 0.9411
    },
-   "golden": null,
+   "golden": {
+    "changed": 0,
+    "strict": 0
+   },
    "size": [
     412,
     915,
@@ -90,7 +108,10 @@
     "edges": 0.996,
     "ssim": 0.9578
    },
-   "golden": null,
+   "golden": {
+    "changed": 0,
+    "strict": 0
+   },
    "size": [
     412,
     915,
@@ -104,7 +125,10 @@
     "edges": 0.996,
     "ssim": 0.9622
    },
-   "golden": null,
+   "golden": {
+    "changed": 0,
+    "strict": 0
+   },
    "size": [
     412,
     915,
@@ -118,7 +142,10 @@
     "edges": 0.9982,
     "ssim": 0.9732
    },
-   "golden": null,
+   "golden": {
+    "changed": 0,
+    "strict": 0
+   },
    "size": [
     412,
     915,
@@ -132,7 +159,10 @@
     "edges": 0.9982,
     "ssim": 0.9735
    },
-   "golden": null,
+   "golden": {
+    "changed": 0,
+    "strict": 0
+   },
    "size": [
     412,
     915,
@@ -146,7 +176,10 @@
     "edges": 0.9567,
     "ssim": 0.9318
    },
-   "golden": null,
+   "golden": {
+    "changed": 0.00049,
+    "strict": 0.00123
+   },
    "size": [
     412,
     915,
@@ -160,7 +193,10 @@
     "edges": 0.957,
     "ssim": 0.9255
    },
-   "golden": null,
+   "golden": {
+    "changed": 0.00048,
+    "strict": 0.00123
+   },
    "size": [
     412,
     915,
@@ -170,11 +206,14 @@
   },
   "dark-mode": {
    "fidelity": {
-    "color": 0.9929,
-    "edges": 0.9255,
-    "ssim": 0.9406
+    "color": 0.994,
+    "edges": 0.9985,
+    "ssim": 0.961
    },
-   "golden": null,
+   "golden": {
+    "changed": 0.00201,
+    "strict": 0.00397
+   },
    "size": [
     412,
     915,
@@ -184,11 +223,14 @@
   },
   "dark-mode-light": {
    "fidelity": {
-    "color": 0.9928,
-    "edges": 0.9202,
-    "ssim": 0.926
+    "color": 0.9953,
+    "edges": 0.9985,
+    "ssim": 0.9612
    },
-   "golden": null,
+   "golden": {
+    "changed": 0.00209,
+    "strict": 0.00401
+   },
    "size": [
     412,
     915,
@@ -202,7 +244,10 @@
     "edges": 0.9717,
     "ssim": 0.9085
    },
-   "golden": null,
+   "golden": {
+    "changed": 0.00092,
+    "strict": 0.00216
+   },
    "size": [
     412,
     915,
@@ -216,7 +261,10 @@
     "edges": 0.9654,
     "ssim": 0.9021
    },
-   "golden": null,
+   "golden": {
+    "changed": 0.00092,
+    "strict": 0.00216
+   },
    "size": [
     412,
     915,
@@ -230,7 +278,10 @@
     "edges": 0.9654,
     "ssim": 0.9021
    },
-   "golden": null,
+   "golden": {
+    "changed": 0.00092,
+    "strict": 0.00216
+   },
    "size": [
     412,
     915,
@@ -244,7 +295,10 @@
     "edges": 0.9994,
     "ssim": 0.97
    },
-   "golden": null,
+   "golden": {
+    "changed": 0.00067,
+    "strict": 0.00251
+   },
    "size": [
     412,
     915,
@@ -258,7 +312,10 @@
     "edges": 1,
     "ssim": 0.9845
    },
-   "golden": null,
+   "golden": {
+    "changed": 0,
+    "strict": 0
+   },
    "size": [
     412,
     915,
@@ -272,7 +329,10 @@
     "edges": 0.9996,
     "ssim": 0.9671
    },
-   "golden": null,
+   "golden": {
+    "changed": 0.00011,
+    "strict": 0.00086
+   },
    "size": [
     412,
     915,
@@ -286,7 +346,10 @@
     "edges": 0.9994,
     "ssim": 0.97
    },
-   "golden": null,
+   "golden": {
+    "changed": 0.00067,
+    "strict": 0.00251
+   },
    "size": [
     412,
     915,
@@ -300,7 +363,10 @@
     "edges": 0.9943,
     "ssim": 0.9452
    },
-   "golden": null,
+   "golden": {
+    "changed": 0,
+    "strict": 0
+   },
    "size": [
     412,
     915,
@@ -314,7 +380,10 @@
     "edges": 0.9695,
     "ssim": 0.9311
    },
-   "golden": null,
+   "golden": {
+    "changed": 0,
+    "strict": 0
+   },
    "size": [
     412,
     915,
@@ -328,7 +397,10 @@
     "edges": 0.9994,
     "ssim": 0.94
    },
-   "golden": null,
+   "golden": {
+    "changed": 0,
+    "strict": 0
+   },
    "size": [
     412,
     915,
@@ -342,7 +414,10 @@
     "edges": 0.9999,
     "ssim": 0.9835
    },
-   "golden": null,
+   "golden": {
+    "changed": 0,
+    "strict": 0
+   },
    "size": [
     412,
     915,
@@ -356,7 +431,10 @@
     "edges": 0.9999,
     "ssim": 0.9835
    },
-   "golden": null,
+   "golden": {
+    "changed": 0,
+    "strict": 0
+   },
    "size": [
     412,
     915,
@@ -370,7 +448,10 @@
     "edges": 0.9999,
     "ssim": 0.9833
    },
-   "golden": null,
+   "golden": {
+    "changed": 0,
+    "strict": 0
+   },
    "size": [
     412,
     915,
@@ -384,7 +465,10 @@
     "edges": 0.9941,
     "ssim": 0.9746
    },
-   "golden": null,
+   "golden": {
+    "changed": 0,
+    "strict": 0
+   },
    "size": [
     412,
     915,
@@ -398,7 +482,10 @@
     "edges": 0.994,
     "ssim": 0.975
    },
-   "golden": null,
+   "golden": {
+    "changed": 0,
+    "strict": 0
+   },
    "size": [
     412,
     915,
@@ -412,7 +499,10 @@
     "edges": 0.8905,
     "ssim": 0.8435
    },
-   "golden": null,
+   "golden": {
+    "changed": 0,
+    "strict": 0
+   },
    "size": [
     412,
     915,
@@ -426,7 +516,10 @@
     "edges": 0.8971,
     "ssim": 0.8285
    },
-   "golden": null,
+   "golden": {
+    "changed": 0,
+    "strict": 0
+   },
    "size": [
     412,
     915,
@@ -440,7 +533,10 @@
     "edges": 1,
     "ssim": 0.9852
    },
-   "golden": null,
+   "golden": {
+    "changed": 0,
+    "strict": 0
+   },
    "size": [
     412,
     915,
@@ -454,7 +550,10 @@
     "edges": 0.9854,
     "ssim": 0.9763
    },
-   "golden": null,
+   "golden": {
+    "changed": 0.00038,
+    "strict": 0.00128
+   },
    "size": [
     412,
     915,
@@ -468,7 +567,10 @@
     "edges": 0.9811,
     "ssim": 0.9774
    },
-   "golden": null,
+   "golden": {
+    "changed": 0,
+    "strict": 0
+   },
    "size": [
     412,
     915,
@@ -482,7 +584,10 @@
     "edges": 0.9753,
     "ssim": 0.9674
    },
-   "golden": null,
+   "golden": {
+    "changed": 0,
+    "strict": 0
+   },
    "size": [
     412,
     915,
@@ -496,7 +601,10 @@
     "edges": 0.9712,
     "ssim": 0.9555
    },
-   "golden": null,
+   "golden": {
+    "changed": 0,
+    "strict": 0
+   },
    "size": [
     412,
     915,
@@ -510,7 +618,10 @@
     "edges": 1,
     "ssim": 0.9575
    },
-   "golden": null,
+   "golden": {
+    "changed": 0,
+    "strict": 0
+   },
    "size": [
     412,
     915,
@@ -524,7 +635,10 @@
     "edges": 1,
     "ssim": 0.9326
    },
-   "golden": null,
+   "golden": {
+    "changed": 0,
+    "strict": 0
+   },
    "size": [
     412,
     915,
@@ -538,7 +652,10 @@
     "edges": 0.9997,
     "ssim": 0.9412
    },
-   "golden": null,
+   "golden": {
+    "changed": 0,
+    "strict": 0
+   },
    "size": [
     412,
     915,
@@ -552,7 +669,10 @@
     "edges": 1,
     "ssim": 0.9575
    },
-   "golden": null,
+   "golden": {
+    "changed": 0,
+    "strict": 0
+   },
    "size": [
     412,
     915,
@@ -566,7 +686,10 @@
     "edges": 0.8892,
     "ssim": 0.9635
    },
-   "golden": null,
+   "golden": {
+    "changed": 0.00024,
+    "strict": 0.00079
+   },
    "size": [
     412,
     915,
@@ -580,7 +703,10 @@
     "edges": 1,
     "ssim": 0.9835
    },
-   "golden": null,
+   "golden": {
+    "changed": 0.00024,
+    "strict": 0.00079
+   },
    "size": [
     412,
     915,
@@ -594,7 +720,10 @@
     "edges": 1,
     "ssim": 0.9871
    },
-   "golden": null,
+   "golden": {
+    "changed": 0,
+    "strict": 0
+   },
    "size": [
     412,
     915,
@@ -608,7 +737,10 @@
     "edges": 1,
     "ssim": 0.9865
    },
-   "golden": null,
+   "golden": {
+    "changed": 0,
+    "strict": 0
+   },
    "size": [
     412,
     915,
@@ -622,7 +754,10 @@
     "edges": 1,
     "ssim": 0.9871
    },
-   "golden": null,
+   "golden": {
+    "changed": 0,
+    "strict": 0
+   },
    "size": [
     412,
     915,
@@ -636,7 +771,10 @@
     "edges": 0.4953,
     "ssim": 0.7328
    },
-   "golden": null,
+   "golden": {
+    "changed": 0,
+    "strict": 0
+   },
    "size": [
     412,
     915,
@@ -650,7 +788,10 @@
     "edges": 0.4837,
     "ssim": 0.7943
    },
-   "golden": null,
+   "golden": {
+    "changed": 0,
+    "strict": 0
+   },
    "size": [
     412,
     915,
@@ -664,7 +805,10 @@
     "edges": 0.9942,
     "ssim": 0.9617
    },
-   "golden": null,
+   "golden": {
+    "changed": 0.00021,
+    "strict": 0.00027
+   },
    "size": [
     412,
     915,
@@ -678,7 +822,10 @@
     "edges": 0.9942,
     "ssim": 0.9617
    },
-   "golden": null,
+   "golden": {
+    "changed": 0.00021,
+    "strict": 0.00027
+   },
    "size": [
     412,
     915,
@@ -692,7 +839,10 @@
     "edges": 0.9957,
     "ssim": 0.9643
    },
-   "golden": null,
+   "golden": {
+    "changed": 0,
+    "strict": 0
+   },
    "size": [
     412,
     915,
@@ -706,7 +856,10 @@
     "edges": 0.9733,
     "ssim": 0.9553
    },
-   "golden": null,
+   "golden": {
+    "changed": 0,
+    "strict": 0
+   },
    "size": [
     412,
     915,
@@ -720,7 +873,10 @@
     "edges": 0.9978,
     "ssim": 0.9674
    },
-   "golden": null,
+   "golden": {
+    "changed": 0,
+    "strict": 0
+   },
    "size": [
     412,
     915,
@@ -734,7 +890,10 @@
     "edges": 0.8994,
     "ssim": 0.8822
    },
-   "golden": null,
+   "golden": {
+    "changed": 0,
+    "strict": 0
+   },
    "size": [
     412,
     915,
@@ -748,7 +907,10 @@
     "edges": 0.8944,
     "ssim": 0.8825
    },
-   "golden": null,
+   "golden": {
+    "changed": 0,
+    "strict": 0
+   },
    "size": [
     412,
     915,
@@ -762,7 +924,10 @@
     "edges": 0.9908,
     "ssim": 0.9232
    },
-   "golden": null,
+   "golden": {
+    "changed": 0,
+    "strict": 0
+   },
    "size": [
     412,
     915,
@@ -776,7 +941,10 @@
     "edges": 0.9906,
     "ssim": 0.9244
    },
-   "golden": null,
+   "golden": {
+    "changed": 0,
+    "strict": 0
+   },
    "size": [
     412,
     915,
@@ -790,7 +958,10 @@
     "edges": 0.9988,
     "ssim": 0.9548
    },
-   "golden": null,
+   "golden": {
+    "changed": 0,
+    "strict": 0
+   },
    "size": [
     412,
     915,
@@ -804,7 +975,10 @@
     "edges": 0.9988,
     "ssim": 0.9551
    },
-   "golden": null,
+   "golden": {
+    "changed": 0,
+    "strict": 0
+   },
    "size": [
     412,
     915,
@@ -818,7 +992,10 @@
     "edges": 0.999,
     "ssim": 0.9245
    },
-   "golden": null,
+   "golden": {
+    "changed": 0.00012,
+    "strict": 0.00082
+   },
    "size": [
     412,
     915,
@@ -832,7 +1009,10 @@
     "edges": 1,
     "ssim": 0.9539
    },
-   "golden": null,
+   "golden": {
+    "changed": 0.00022,
+    "strict": 0.00103
+   },
    "size": [
     412,
     915,
@@ -846,7 +1026,10 @@
     "edges": 0.9883,
     "ssim": 0.9515
    },
-   "golden": null,
+   "golden": {
+    "changed": 0,
+    "strict": 0
+   },
    "size": [
     412,
     915,
@@ -860,7 +1043,10 @@
     "edges": 1,
     "ssim": 0.9748
    },
-   "golden": null,
+   "golden": {
+    "changed": 0,
+    "strict": 0
+   },
    "size": [
     412,
     915,
@@ -874,7 +1060,10 @@
     "edges": 1,
     "ssim": 0.9753
    },
-   "golden": null,
+   "golden": {
+    "changed": 0,
+    "strict": 0
+   },
    "size": [
     412,
     915,
@@ -888,7 +1077,10 @@
     "edges": 0.9996,
     "ssim": 0.9817
    },
-   "golden": null,
+   "golden": {
+    "changed": 0.00049,
+    "strict": 0.00166
+   },
    "size": [
     412,
     915,
@@ -902,7 +1094,10 @@
     "edges": 0.9982,
     "ssim": 0.9821
    },
-   "golden": null,
+   "golden": {
+    "changed": 0.00054,
+    "strict": 0.00166
+   },
    "size": [
     412,
     915,
@@ -916,7 +1111,10 @@
     "edges": 0.9976,
     "ssim": 0.9799
    },
-   "golden": null,
+   "golden": {
+    "changed": 0.00053,
+    "strict": 0.00167
+   },
    "size": [
     412,
     915,
@@ -930,7 +1128,10 @@
     "edges": 1,
     "ssim": 0.8762
    },
-   "golden": null,
+   "golden": {
+    "changed": 0.00079,
+    "strict": 0.00147
+   },
    "size": [
     412,
     915,
@@ -944,7 +1145,10 @@
     "edges": 1,
     "ssim": 0.863
    },
-   "golden": null,
+   "golden": {
+    "changed": 0.00079,
+    "strict": 0.00147
+   },
    "size": [
     412,
     915,
@@ -958,7 +1162,10 @@
     "edges": 0.9998,
     "ssim": 0.978
    },
-   "golden": null,
+   "golden": {
+    "changed": 0,
+    "strict": 0
+   },
    "size": [
     412,
     915,
@@ -972,7 +1179,10 @@
     "edges": 0.9998,
     "ssim": 0.9779
    },
-   "golden": null,
+   "golden": {
+    "changed": 0,
+    "strict": 0
+   },
    "size": [
     412,
     915,
@@ -983,9 +1193,9 @@
  },
  "scenarios": {
   "buttons": {
-   "bytes": 14840,
-   "events": 13,
-   "mutations": 4
+   "bytes": 14960,
+   "events": 14,
+   "mutations": 5
   },
   "carousel": {
    "bytes": 54862,
@@ -1008,7 +1218,7 @@
    "mutations": 17
   },
   "dark-mode": {
-   "bytes": 11257,
+   "bytes": 11719,
    "events": 8,
    "mutations": 4
   },
@@ -1033,9 +1243,9 @@
    "mutations": 14
   },
   "images": {
-   "bytes": 33334,
-   "events": 4,
-   "mutations": 4
+   "bytes": 33452,
+   "events": 5,
+   "mutations": 5
   },
   "images-off": {
    "bytes": 7173,
@@ -1093,9 +1303,9 @@
    "mutations": 2
   },
   "rtl": {
-   "bytes": 9847,
-   "events": 2,
-   "mutations": 2
+   "bytes": 9967,
+   "events": 3,
+   "mutations": 3
   },
   "sheets": {
    "bytes": 11071,

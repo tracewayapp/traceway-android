@@ -48,6 +48,7 @@ import android.widget.AbsSeekBar
 import android.widget.CheckBox
 import android.widget.CompoundButton
 import android.widget.EditText
+import android.widget.FrameLayout
 import android.widget.HorizontalScrollView
 import android.widget.ImageView
 import android.widget.ProgressBar
@@ -218,7 +219,7 @@ internal class WireframeCapture(context: Context?, onAssetReady: () -> Unit = {}
         val sh = (base.y + base.view.height).toFloat()
         if (sw <= 0f || sh <= 0f) return null
         glyphs.shown.clear()
-        images.beginCapture()
+        images.beginCapture(nowMs)
         val children = lists.acquire()
         try {
             for (root in roots) {
@@ -611,8 +612,9 @@ internal class WireframeCapture(context: Context?, onAssetReady: () -> Unit = {}
         if (sx != 0 || sy != 0 || v is ScrollView || v is HorizontalScrollView) rec.wrap = true
         if (padded && overflowsPadding) rec.wrap = true
         val bg = background(v, rec, w, h)
+        val fg = foregroundOutline(v)
         val clipsOutline = v.clipToOutline
-        val needsNode = compose || rec.group || rec.wrap || bg || alpha < 0.999f || !plain ||
+        val needsNode = compose || rec.group || rec.wrap || bg || fg != null || alpha < 0.999f || !plain ||
             (clippedByParent && overflows) || clipsOutline
         if (!needsNode) {
             // Layout only: the children are placed in the parent's element.
@@ -651,6 +653,7 @@ internal class WireframeCapture(context: Context?, onAssetReady: () -> Unit = {}
             } else {
                 visitChildren(v, kids, lx, ly, lx, ly, ccl, cct, ccr, ccb, m)
             }
+            if (fg != null) foregroundNode(rec, kids, fg)
             sb.setLength(0)
             geometry(v, rl, rt, w, h, plain, alpha)
             if (rec.bgKind != Rec.BG_NONE && !bgInset(rec, w, h)) backgroundCss(v, rec, w, h)
@@ -1187,11 +1190,13 @@ internal class WireframeCapture(context: Context?, onAssetReady: () -> Unit = {}
         plain: Boolean, alpha: Float, m: Int, custom: Boolean,
     ) {
         val bg = background(v, rec, w, h)
-        if (!bg && !custom) return
+        val fg = foregroundOutline(v)
+        if (!bg && fg == null && !custom) return
         rec.group = true
         val kids = lists.acquire()
         try {
             if (bg) backgroundNode(v, rec, kids, w, h, m)
+            if (fg != null) foregroundNode(rec, kids, fg)
             sb.setLength(0)
             geometry(v, rl, rt, w, h, plain, alpha)
             if (rec.bgKind != Rec.BG_NONE && !bgInset(rec, w, h)) backgroundCss(v, rec, w, h)
@@ -1690,6 +1695,35 @@ internal class WireframeCapture(context: Context?, onAssetReady: () -> Unit = {}
         out.add(element(rec, BG_ROLE, null, EMPTY))
     }
 
+    /**
+     * The drawable of [v]'s foreground when it draws an outline (an outlined
+     * MaterialCardView's stroke, which the card draws over its content), or
+     * null. Only the outline is kept: what else a foreground paints is a
+     * ripple's press or a scrim.
+     */
+    private fun foregroundOutline(v: View): Drawable? {
+        val d = (if (Build.VERSION.SDK_INT >= 23) v.foreground else (v as? FrameLayout)?.foreground) ?: return null
+        val leaf = unwrap(d) ?: return null
+        if (leaf is RippleDrawable && contentLayers(leaf) == 0) return null
+        if (leaf.bounds.isEmpty) return null
+        val info = shapes.shape(leaf)
+        return if (info.strokePx > 0f && !isTransparent(info.stroke)) leaf else null
+    }
+
+    /** The outline [foregroundOutline] found, as a node over the view's children where the foreground draws. */
+    private fun foregroundNode(rec: Rec, out: ArrayList<VNode>, fg: Drawable) {
+        val b = fg.bounds
+        val w = b.width().toFloat()
+        val h = b.height().toFloat()
+        val info = shapes.shape(fg)
+        sb.setLength(0)
+        sb.append("left:").appendPx(b.left * inv).append(";top:").appendPx(b.top * inv)
+            .append(";width:").appendPx(w * inv).append(";height:").appendPx(h * inv).append(';')
+        shapeCorners(info, w, h)
+        sb.appendShadows(0f, 0, info.strokePx * inv, info.stroke)
+        out.add(element(rec, FG_ROLE, null, EMPTY))
+    }
+
     /** The background's CSS for a box of [w] x [h] pixels, with the view's elevation shadow. */
     private fun backgroundCss(v: View, rec: Rec, w: Int, h: Int) {
         val elevation = v.z * inv
@@ -1749,18 +1783,23 @@ internal class WireframeCapture(context: Context?, onAssetReady: () -> Unit = {}
                 }
             }
         }
+        shapeCorners(info, w, h)
+        sb.appendShadows(elevation, shadow, info.strokePx * inv, info.stroke)
+    }
+
+    /** The `border-radius` of [info]'s shape on a box of [w] x [h] pixels. */
+    private fun shapeCorners(info: ShapeInfo, w: Float, h: Float) {
         if (info.oval) {
             sb.append("border-radius:50%;")
-        } else {
-            val radii = info.radiiPx
-            if (radii != null) {
-                for (i in 0 until 8) scratchRadii[i] = min(radii[i], min(w, h) / 2) * inv
-                sb.appendRadii(scratchRadii)
-            } else {
-                sb.appendRadius(min(info.radiusPx, min(w, h) / 2) * inv)
-            }
+            return
         }
-        sb.appendShadows(elevation, shadow, info.strokePx * inv, info.stroke)
+        val radii = info.radiiPx
+        if (radii != null) {
+            for (i in 0 until 8) scratchRadii[i] = min(radii[i], min(w, h) / 2) * inv
+            sb.appendRadii(scratchRadii)
+        } else {
+            sb.appendRadius(min(info.radiusPx, min(w, h) / 2) * inv)
+        }
     }
 
     private val scratchRadii = FloatArray(8)
@@ -1883,6 +1922,7 @@ internal class WireframeCapture(context: Context?, onAssetReady: () -> Unit = {}
         private const val BG_ROLE = 3
         private const val DIM_ROLE = 9
         private const val BG_PICTURE_ROLE = 7
+        private const val FG_ROLE = 8
         private const val TOGGLE_ROLE = 4
         private const val PART_ROLE = 4
         private const val ICON_ROLE = 10

@@ -34,8 +34,8 @@ sealed class TracewayMaskMode {
  * `Traceway.mask(view, mode)` and `Traceway.unmask(view)`.
  */
 var View.tracewayMask: TracewayMaskMode?
-    get() = TracewayMasks.own(this)
-    set(value) = TracewayMasks.set(this, value)
+    get() = guarded("tracewayMask", null) { TracewayMasks.own(this) }
+    set(value) = guarded("tracewayMask") { TracewayMasks.set(this, value) }
 
 /** Where masks are recorded and read; the wireframe capture and tap recording honor them. */
 internal object TracewayMasks {

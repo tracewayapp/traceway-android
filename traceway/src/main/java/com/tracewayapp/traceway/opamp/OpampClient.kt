@@ -1,6 +1,7 @@
 package com.tracewayapp.traceway.opamp
 
 import com.tracewayapp.traceway.core.Ids
+import com.tracewayapp.traceway.guarded
 import com.tracewayapp.traceway.internal.Cancellable
 import com.tracewayapp.traceway.internal.HttpResponse
 import com.tracewayapp.traceway.internal.HttpTransport
@@ -93,6 +94,9 @@ internal class OpampHttpClient(
     private var waiters = ArrayList<() -> Unit>()
     private var stopped = true
 
+    /** Answers in a row that asked for another poll at once: past the first, the next waits [minIntervalMs]. */
+    private var pollsAtOnce = 0
+
     init {
         if (appliedConfigHash != null && appliedConfigHash.isNotEmpty()) {
             status = RemoteConfigStatus(
@@ -149,7 +153,7 @@ internal class OpampHttpClient(
         if (exchange) {
             scheduler.io { exchange() }
         } else if (onDone != null) {
-            scheduler.io { safely(onDone) }
+            scheduler.io { guarded("opamp callback", onDone) }
         }
     }
 
@@ -231,7 +235,7 @@ internal class OpampHttpClient(
         if (code == 0) return Next.BackOff(null)
         if (code == 401 || code == 403 || code == 404 || code == 405 || code == 501) {
             stop()
-            onStopped?.let { callback -> safely { callback(code) } }
+            onStopped?.let { callback -> guarded("opamp callback") { callback(code) } }
             return Next.Stopped
         }
         if (code == 413) {
@@ -274,7 +278,7 @@ internal class OpampHttpClient(
         val newUid = message.newInstanceUid
         if (newUid != null && newUid.size == 16) {
             synchronized(lock) { uid = newUid.copyOf() }
-            onInstanceUidChange?.let { callback -> safely { callback(newUid.copyOf()) } }
+            onInstanceUidChange?.let { callback -> guarded("opamp callback") { callback(newUid.copyOf()) } }
         }
         val heartbeat = message.heartbeatIntervalSeconds
         if (heartbeat != null && heartbeat > 0) {
@@ -323,8 +327,13 @@ internal class OpampHttpClient(
                 // Started again while this exchange ran: that start's poll was
                 // folded into this one, whose answer was dropped.
                 Next.Dropped -> scheduleLocked(0)
-                Next.Now -> scheduleLocked(0)
-                Next.Interval -> scheduleLocked(intervalMs)
+                // Once at once (a config just applied, a server that lost track of this client); a server or proxy that
+                // asks every time gets no faster than the minimum interval, not a tight loop.
+                Next.Now -> scheduleLocked(if (++pollsAtOnce <= 1) 0 else minIntervalMs)
+                Next.Interval -> {
+                    pollsAtOnce = 0
+                    scheduleLocked(intervalMs)
+                }
                 is Next.BackOff -> {
                     backoffMs = next.retryAfterMs
                         ?: if (backoffMs > 0) minOf(backoffMs * 2, MAX_BACKOFF_MS) else FIRST_BACKOFF_MS
@@ -334,14 +343,7 @@ internal class OpampHttpClient(
             done = waiters
             waiters = ArrayList()
         }
-        for (callback in done) safely(callback)
-    }
-
-    private inline fun safely(block: () -> Unit) {
-        try {
-            block()
-        } catch (_: Throwable) {
-            // A callback must never take the poll loop down.
-        }
+        // A callback must never take the poll loop down.
+        for (callback in done) guarded("opamp callback", callback)
     }
 }

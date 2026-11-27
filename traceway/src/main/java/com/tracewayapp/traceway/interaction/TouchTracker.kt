@@ -19,6 +19,7 @@ import android.view.Window
 import android.view.WindowManager
 import android.view.accessibility.AccessibilityEvent
 import androidx.annotation.RequiresApi
+import com.tracewayapp.traceway.guarded
 import java.lang.ref.WeakReference
 import java.util.WeakHashMap
 import java.util.concurrent.CopyOnWriteArrayList
@@ -195,7 +196,7 @@ internal class TouchTracker {
                         val slop = if (mouse) MOUSE_SLOP_DP * density else touchSlop(root)
                         state.downs.add(Down(id, x, y, xDp, yDp, event.eventTime, slop))
                     }
-                    for (listener in pointerListeners) safely { listener.pointerDown(id, xDp, yDp, !mouse) }
+                    for (listener in pointerListeners) guarded("touch listener") { listener.pointerDown(id, xDp, yDp, !mouse) }
                 }
                 MotionEvent.ACTION_MOVE -> {
                     for (i in 0 until event.pointerCount) {
@@ -206,7 +207,7 @@ internal class TouchTracker {
                         val xDp = (x + offsetX) / density
                         val yDp = (y + offsetY) / density
                         val touch = !isMouse(event, i)
-                        for (listener in pointerListeners) safely { listener.pointerMove(id, xDp, yDp, touch) }
+                        for (listener in pointerListeners) guarded("touch listener") { listener.pointerMove(id, xDp, yDp, touch) }
                     }
                 }
                 MotionEvent.ACTION_UP, MotionEvent.ACTION_POINTER_UP -> {
@@ -222,9 +223,9 @@ internal class TouchTracker {
                     val xDp = (x + offsetX) / density
                     val yDp = (y + offsetY) / density
                     val touch = !isMouse(event, i)
-                    for (listener in pointerListeners) safely { listener.pointerUp(id, xDp, yDp, touch, tap) }
+                    for (listener in pointerListeners) guarded("touch listener") { listener.pointerUp(id, xDp, yDp, touch, tap) }
                     if (tap && down != null) {
-                        for (listener in tapListeners) safely { listener.onTap(root, down.xPx, down.yPx, down.xDp, down.yDp) }
+                        for (listener in tapListeners) guarded("touch listener") { listener.onTap(root, down.xPx, down.yPx, down.xDp, down.yDp) }
                     }
                 }
                 MotionEvent.ACTION_CANCEL -> {
@@ -234,7 +235,7 @@ internal class TouchTracker {
                         val xDp = (event.getX(i) + offsetX) / density
                         val yDp = (event.getY(i) + offsetY) / density
                         val touch = !isMouse(event, i)
-                        for (listener in pointerListeners) safely { listener.pointerCancel(id, xDp, yDp, touch) }
+                        for (listener in pointerListeners) guarded("touch listener") { listener.pointerCancel(id, xDp, yDp, touch) }
                     }
                 }
             }
@@ -255,17 +256,9 @@ internal class TouchTracker {
             val xDp = event.rawX / density
             val yDp = event.rawY / density
             val id = event.getPointerId(0)
-            for (listener in pointerListeners) safely { listener.pointerMove(id, xDp, yDp, false) }
-            for (listener in tapListeners) safely { listener.onHover(root, x, y, xDp, yDp) }
+            for (listener in pointerListeners) guarded("touch listener") { listener.pointerMove(id, xDp, yDp, false) }
+            for (listener in tapListeners) guarded("touch listener") { listener.onHover(root, x, y, xDp, yDp) }
         } catch (_: Throwable) {
-        }
-    }
-
-    private inline fun safely(block: () -> Unit) {
-        try {
-            block()
-        } catch (_: Throwable) {
-            // A listener must never break the app's touch handling.
         }
     }
 

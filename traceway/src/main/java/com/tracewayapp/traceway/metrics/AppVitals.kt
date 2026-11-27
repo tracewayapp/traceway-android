@@ -18,6 +18,7 @@ import android.view.ViewTreeObserver
 import android.view.Window
 import androidx.annotation.RequiresApi
 import com.tracewayapp.traceway.internal.Cancellable
+import com.tracewayapp.traceway.guarded
 import com.tracewayapp.traceway.internal.TaskScheduler
 import java.io.File
 import java.lang.ref.WeakReference
@@ -148,7 +149,8 @@ internal class HangWatchdog(
     private var probe: Probe? = null
 
     private inner class Probe(val postedAt: Long) : Runnable {
-        override fun run() = ran(this)
+        // Runs in the app's main looper: nothing may escape into it.
+        override fun run() = guarded("hang probe") { ran(this) }
     }
 
     fun start() {
@@ -686,13 +688,8 @@ private class AndroidVitalsHost(
     }
 
     private fun onMain(task: () -> Unit) {
-        val guarded = {
-            try {
-                task()
-            } catch (_: Throwable) {
-            }
-        }
-        if (Looper.myLooper() == Looper.getMainLooper()) guarded() else main.post(guarded)
+        val contained = { guarded("vitals main") { task() } }
+        if (Looper.myLooper() == Looper.getMainLooper()) contained() else main.post(contained)
     }
 
     /** Waits for the next frame of the resumed activity and makes sure one comes. */
@@ -722,17 +719,18 @@ private class AndroidVitalsHost(
         return Handler(thread.looper).also { framesHandler = it }
     }
 
-    override fun onActivityCreated(activity: Activity, savedInstanceState: Bundle?) {
+    // The app's activity lifecycle dispatch runs these: nothing may escape into it.
+    override fun onActivityCreated(activity: Activity, savedInstanceState: Bundle?) = guarded("vitals created") {
         sawActivity = true
         vitals.activityCreated()
     }
 
-    override fun onActivityStarted(activity: Activity) {
+    override fun onActivityStarted(activity: Activity) = guarded("vitals started") {
         sawActivity = true
         vitals.activityStarted()
     }
 
-    override fun onActivityResumed(activity: Activity) {
+    override fun onActivityResumed(activity: Activity) = guarded("vitals resumed") {
         sawActivity = true
         resumed = WeakReference(activity)
         try {
@@ -744,7 +742,7 @@ private class AndroidVitalsHost(
         if (drawWanted) arm()
     }
 
-    override fun onActivityPaused(activity: Activity) {
+    override fun onActivityPaused(activity: Activity) = guarded("vitals paused") {
         if (resumed?.get() === activity) resumed = null
         frames?.let {
             if (it.activity === activity) {
@@ -762,7 +760,7 @@ private class AndroidVitalsHost(
         vitals.framesPaused()
     }
 
-    override fun onActivityStopped(activity: Activity) {
+    override fun onActivityStopped(activity: Activity) = guarded("vitals stopped") {
         vitals.activityStopped(activity.isChangingConfigurations)
     }
 
@@ -909,12 +907,13 @@ private class ChoreographerFrames(
         drew = true
     }
 
+    // A frame callback of the app's Choreographer: nothing may escape into it, and the next frame is still asked for.
     override fun doFrame(frameTimeNanos: Long) {
         if (!running) return
-        if (lastNs != 0L && drew) onFrame(FrameRules.classifyInterval(frameTimeNanos - lastNs, budgetNs))
+        guarded("frame") { if (lastNs != 0L && drew) onFrame(FrameRules.classifyInterval(frameTimeNanos - lastNs, budgetNs)) }
         drew = false
         lastNs = frameTimeNanos
-        Choreographer.getInstance().postFrameCallback(this)
+        guarded("frame callback") { Choreographer.getInstance().postFrameCallback(this) }
     }
 }
 

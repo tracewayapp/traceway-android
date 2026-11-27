@@ -26,6 +26,9 @@ internal class RingBuffer<T>(
 
     val length: Int get() = entries.size
 
+    /** The most bytes it holds. */
+    val limitBytes: Long get() = maxBytes
+
     fun configure(maxBytes: Long, maxAgeMs: Long) {
         this.maxBytes = maxBytes
         this.maxAgeMs = maxAgeMs

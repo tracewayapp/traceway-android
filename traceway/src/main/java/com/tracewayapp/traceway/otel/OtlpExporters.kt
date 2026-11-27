@@ -1,6 +1,7 @@
 package com.tracewayapp.traceway.otel
 
 import com.tracewayapp.traceway.core.OtlpDestination
+import com.tracewayapp.traceway.guarded
 import com.tracewayapp.traceway.internal.Cancellable
 import com.tracewayapp.traceway.internal.HttpTransport
 import com.tracewayapp.traceway.internal.SdkInfo
@@ -311,21 +312,19 @@ internal class RoutingLogExporter(
             (if (Events.isTracewayOnly(record.eventName)) own else rest).add(record)
         }
         val results = ArrayList<CompletableResultCode>(2)
-        if (own.isNotEmpty()) results.add(guard { traceway.export(own) })
-        if (rest.isNotEmpty()) results.add(guard { inner.export(rest) })
+        if (own.isNotEmpty()) results.add(guarded("routing export", FAILED) { traceway.export(own) })
+        if (rest.isNotEmpty()) results.add(guarded("routing export", FAILED) { inner.export(rest) })
         return if (results.isEmpty()) CompletableResultCode.ofSuccess() else CompletableResultCode.ofAll(results)
     }
 
     override fun flush(): CompletableResultCode =
-        CompletableResultCode.ofAll(listOf(guard { traceway.flush() }, guard { inner.flush() }))
+        CompletableResultCode.ofAll(listOf(guarded("routing flush", FAILED) { traceway.flush() }, guarded("routing flush", FAILED) { inner.flush() }))
 
     override fun shutdown(): CompletableResultCode =
-        CompletableResultCode.ofAll(listOf(guard { traceway.shutdown() }, guard { inner.shutdown() }))
+        CompletableResultCode.ofAll(listOf(guarded("routing shutdown", FAILED) { traceway.shutdown() }, guarded("routing shutdown", FAILED) { inner.shutdown() }))
 
-    private inline fun guard(call: () -> CompletableResultCode): CompletableResultCode =
-        try {
-            call()
-        } catch (_: Throwable) {
-            CompletableResultCode.ofFailure()
-        }
+    private companion object {
+        /** What an export that threw counts as. */
+        val FAILED: CompletableResultCode = CompletableResultCode.ofFailure()
+    }
 }

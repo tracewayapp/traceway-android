@@ -1,5 +1,6 @@
 package com.tracewayapp.traceway.metrics
 
+import com.tracewayapp.traceway.guarded
 import com.tracewayapp.traceway.core.ControlState
 import com.tracewayapp.traceway.core.Ids
 import com.tracewayapp.traceway.internal.Cancellable
@@ -161,10 +162,10 @@ internal class MetricsRecorder(
             running = true
             ArrayList(early).also { early.clear() }
         }
-        for (observe in observations) guarded(observe)
+        for (observe in observations) guarded("metrics", observe)
         schedule()
-        guarded { resend() }
-        guarded { user(null) }
+        guarded("metrics") { resend() }
+        guarded("metrics") { user(null) }
     }
 
     fun stop() {
@@ -198,7 +199,7 @@ internal class MetricsRecorder(
             }
             running
         }
-        drained?.let { guarded { upload(it, final = false) } }
+        drained?.let { guarded("metrics") { upload(it, final = false) } }
         if (reschedule) schedule()
     }
 
@@ -287,7 +288,7 @@ internal class MetricsRecorder(
 
     fun sessionStarted(id: String, resumed: Boolean = false) {
         if (defer { sessionStarted(id, resumed) }) return
-        guarded { user(null) }
+        guarded("metrics") { user(null) }
         lock.withLock {
             if (countedSession == id) return
             if (resumed) {
@@ -307,7 +308,7 @@ internal class MetricsRecorder(
     /** [type] is [START_COLD], [START_WARM] or [START_HOT]. */
     fun appStart(ms: Double, type: String, slow: Boolean) {
         if (defer { appStart(ms, type, slow) }) return
-        if (slow) guarded { user(UserIssue.SLOW_START) }
+        if (slow) guarded("metrics") { user(UserIssue.SLOW_START) }
         if (!active) return
         val session = exemplar(slow || ms > exemplarStartMs(type))
         lock.withLock {
@@ -330,7 +331,7 @@ internal class MetricsRecorder(
     }
 
     fun frames(screen: String?, total: Int, slow: Int, frozen: Int) {
-        if (frozen > 0) guarded { user(UserIssue.FROZEN_FRAMES) }
+        if (frozen > 0) guarded("metrics") { user(UserIssue.FROZEN_FRAMES) }
         if (total <= 0 || !active) return
         val dims = if (screen != null) mapOf("screen" to screen) else emptyMap()
         lock.withLock {
@@ -340,7 +341,7 @@ internal class MetricsRecorder(
     }
 
     fun hang(ms: Double, screen: String?) {
-        guarded { user(UserIssue.HANG) }
+        guarded("metrics") { user(UserIssue.HANG) }
         if (!active) return
         val dims = if (screen != null) mapOf("screen" to screen) else emptyMap()
         val session = exemplar(true)
@@ -357,7 +358,7 @@ internal class MetricsRecorder(
      */
     fun crash() {
         if (defer { crash() }) return
-        guarded { user(UserIssue.CRASH) }
+        guarded("metrics") { user(UserIssue.CRASH) }
         if (!active) return
         lock.withLock { aggregator.count(METRIC_CRASH) }
     }
@@ -365,7 +366,7 @@ internal class MetricsRecorder(
     /** A finished HTTP request the SDK saw. */
     fun request(url: String, ms: Double, failed: Boolean, responseBytes: Long? = null) {
         if (defer { request(url, ms, failed, responseBytes) }) return
-        if (failed) guarded { user(UserIssue.FAILED_REQUEST) }
+        if (failed) guarded("metrics") { user(UserIssue.FAILED_REQUEST) }
         if (!active) return
         val parsed = hostOf(url) ?: return
         lock.withLock {
@@ -409,7 +410,7 @@ internal class MetricsRecorder(
      */
     fun flush(final: Boolean = false) {
         val drained = lock.withLock { drainLocked() }
-        guarded { upload(drained, final) }
+        guarded("metrics") { upload(drained, final) }
     }
 
     /** Waits up to [timeoutMs] for the uploads started so far. False when some are still running. */
@@ -543,14 +544,6 @@ internal class MetricsRecorder(
         if (!lock.withLock { running }) return
         flush()
         schedule()
-    }
-
-    private fun guarded(task: () -> Unit) {
-        try {
-            task()
-        } catch (_: Throwable) {
-            // Metrics must never break the app.
-        }
     }
 
     private fun customDims(dims: Map<String, Any?>?): MetricDims {
