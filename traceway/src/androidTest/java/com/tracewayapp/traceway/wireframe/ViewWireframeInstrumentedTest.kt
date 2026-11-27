@@ -2,6 +2,7 @@ package com.tracewayapp.traceway.wireframe
 
 import android.content.Context
 import android.graphics.Bitmap
+import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.drawable.BitmapDrawable
 import android.graphics.drawable.ColorDrawable
@@ -90,6 +91,48 @@ class ViewWireframeInstrumentedTest {
     }
 
     @Test
+    fun serializedNativePhotoFallsBackToLayoutAcrossSnapshots() {
+        val capture = WireframeCapture(context)
+        capture.images.policy = com.tracewayapp.traceway.TracewayImagePolicy.ALWAYS
+        lateinit var root: LinearLayout
+        try {
+            onMain {
+                val random = java.util.Random(17)
+                val pixels = IntArray(240 * 180) { random.nextInt() or 0xff000000.toInt() }
+                val bitmap = Bitmap.createBitmap(pixels, 240, 180, Bitmap.Config.ARGB_8888).apply { setHasAlpha(false) }
+                root = LinearLayout(context).apply {
+                    orientation = LinearLayout.VERTICAL
+                    addView(TextView(context).apply { text = "Checkout" })
+                    addView(ImageView(context).apply { setImageBitmap(bitmap) }, LinearLayout.LayoutParams(px(240f), px(180f)))
+                }
+                layout(root)
+                capture(capture, root)
+            }
+            val deadline = System.currentTimeMillis() + 5000
+            var css: String? = null
+            lateinit var screen: VNode
+            do {
+                onMain {
+                    screen = capture(capture, root)
+                    css = screen.children.mapNotNull { it.attributes["_cssText"] }.firstOrNull { "data:image/jpeg;" in it }
+                }
+                if (css == null) Thread.sleep(20)
+            } while (css == null && System.currentTimeMillis() < deadline)
+            val rule = requireNotNull(css) { "The native encoder did not produce the JPEG" }
+            val length = rule.substringAfter("url(").substringBefore(')').length
+            assertTrue(length in 1000..(128 * 1024))
+            val images = ClipImageBudget()
+            val snapshots = List(128 * 1024 / length + 1) { serializeDocument(screen, images) }
+            val layoutOnly = Json.stringify(snapshots)
+            assertFalse(layoutOnly.contains("data:image/"))
+            assertTrue(layoutOnly.contains("Checkout"))
+            assertTrue(Json.stringify(serializeDocument(screen, ClipImageBudget())).contains(rule))
+        } finally {
+            capture.images.dispose()
+        }
+    }
+
+    @Test
     fun drawsBoxesTextAndTheirPositions() {
         lateinit var screen: VNode
         onMain {
@@ -114,10 +157,19 @@ class ViewWireframeInstrumentedTest {
             })
             root.addView(column, FrameLayout.LayoutParams(px(400f), px(800f)).apply { topMargin = px(10f) })
             layout(root)
-            screen = capture(WireframeCapture(context), root)
+            // Android sets background drawable bounds during the first draw.
+            val rendered = Bitmap.createBitmap(root.width, root.height, Bitmap.Config.ARGB_8888)
+            try {
+                root.draw(Canvas(rendered))
+                screen = capture(WireframeCapture(context), root)
+            } finally {
+                rendered.recycle()
+            }
         }
-        val styles = all(screen).map(::style)
-        assertTrue(styles.any { it.contains("background-color:#ff0000") && it.contains("width:50px") })
+        val red = all(screen).first { style(it).contains("background-color:#ff0000") }
+        // LayoutParams round to a whole device pixel before recording in dp.
+        val expectedWidth = num1(px(50f) / density)
+        assertTrue(style(red), style(red).contains("width:${expectedWidth}px"))
         val green = all(screen).first { style(it).contains("background-color:#00ff00") }
         assertTrue(style(green), style(green).contains("border-radius:8px"))
         assertTrue(style(green), style(green).contains("inset 0 0 0"))

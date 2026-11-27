@@ -48,17 +48,19 @@ class LegacyReportsTest {
     @Test
     fun exceptionsAndMessagesAreReadOnceAndEveryFileIsDeleted() {
         val pending = tmp.newFolder("traceway_pending")
-        File(pending, "a.json").writeText(Json.stringify(entry()))
-        File(pending, "b.json").writeText(Json.stringify(entry(createdAtMs = now - 5000, stackTrace = "User opened support chat", isMessage = true)))
-        // A 2.0 beta moved reports into a folder of the project it meant to send them to.
-        val project = File(pending, "0123abcd").apply { mkdirs() }
+        val project = File(pending, "mine").apply { mkdir() }
+        val other = File(pending, "theirs").apply { mkdir() }
+        File(other, "untouched.json").writeText(Json.stringify(entry()))
+        File(pending, "unowned.json").writeText(Json.stringify(entry()))
+        File(project, "a.json").writeText(Json.stringify(entry()))
+        File(project, "b.json").writeText(Json.stringify(entry(createdAtMs = now - 5000, stackTrace = "User opened support chat", isMessage = true)))
         File(project, "c.json").writeText(Json.stringify(entry(stackTrace = "java.io.IOException\n    at com.example.Net.call(Net.kt:3)")))
         // Too old for 1.x, unreadable, not a report: deleted unread.
         File(pending, "old.json").writeText(Json.stringify(entry(createdAtMs = now - 13 * 3600_000L)))
         File(pending, "broken.json").writeText("{not json")
         File(pending, "notes.txt").writeText("x")
 
-        val reports = LegacyReports.takeAll(pending, now)
+        val reports = LegacyReports.pending(pending, setOf("mine"), now)
         assertEquals(3, reports.size)
         val message = reports.first()
         assertTrue("oldest first", message.isMessage)
@@ -75,25 +77,29 @@ class LegacyReportsTest {
         val bare = reports.first { it.type == "java.io.IOException" }
         assertEquals("", bare.message)
 
-        assertFalse("the 1.x directory is gone", pending.exists())
-        assertTrue("and there is nothing to read again", LegacyReports.takeAll(pending, now).isEmpty())
+        assertTrue(reports.all { it.file.exists() })
+        assertTrue(File(other, "untouched.json").exists())
+        assertFalse(File(pending, "unowned.json").exists())
+        reports.forEach { it.file.delete() }
+        assertTrue("and there is nothing to read again", LegacyReports.pending(pending, setOf("mine"), now).isEmpty())
     }
 
     @Test
     fun atMostTheNewestReportsAreKept() {
         val pending = tmp.newFolder("traceway_pending")
+        val project = File(pending, "mine").apply { mkdir() }
         for (i in 0 until LegacyReports.MAX_REPORTS + 5) {
-            File(pending, "r$i.json").writeText(Json.stringify(entry(createdAtMs = now - (100 - i) * 1000L, stackTrace = "java.lang.Error: $i")))
+            File(project, "r$i.json").writeText(Json.stringify(entry(createdAtMs = now - (100 - i) * 1000L, stackTrace = "java.lang.Error: $i")))
         }
-        val reports = LegacyReports.takeAll(pending, now)
+        val reports = LegacyReports.pending(pending, setOf("mine"), now)
         assertEquals(LegacyReports.MAX_REPORTS, reports.size)
         assertEquals("java.lang.Error: ${LegacyReports.MAX_REPORTS + 4}", reports.last().stackTrace)
-        assertFalse(pending.exists())
+        assertEquals(reports.size, project.listFiles()!!.size)
     }
 
     @Test
     fun noDirectoryIsNoReport() {
-        assertTrue(LegacyReports.takeAll(File(tmp.root, "missing"), now).isEmpty())
+        assertTrue(LegacyReports.pending(File(tmp.root, "missing"), setOf("mine"), now).isEmpty())
         assertEquals("traceway_pending", LegacyReports.directoryIn(tmp.root).name)
     }
 }

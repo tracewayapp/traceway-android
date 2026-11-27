@@ -50,7 +50,9 @@ class StartApiTest {
     private class Logs : LogRecordExporter {
         val items = java.util.Collections.synchronizedList(ArrayList<LogRecordData>())
         val all: List<LogRecordData> get() = synchronized(items) { ArrayList(items) }
+        var failing = false
         override fun export(logs: Collection<LogRecordData>): CompletableResultCode {
+            if (failing) return CompletableResultCode.ofFailure()
             items.addAll(logs)
             return CompletableResultCode.ofSuccess()
         }
@@ -214,9 +216,18 @@ class StartApiTest {
     @Test
     fun oneXReportsBecomeRecordsOfThisSdkAndNothingEverRequestsApiReport() {
         val pending = tmp.newFolder("traceway_pending")
-        oneXReport(pending, "a.json", "java.lang.IllegalStateException: legacy error\n\tat com.example.Main.run(Main.kt:10)")
-        oneXReport(pending, "b.json", "Support chat opened", isMessage = true)
-        val client = TracewayClient.initializeForTest("tok@https://traceway.test/api/report", TracewayOptions(), overrides(legacy = pending))
+        val betaKey = com.tracewayapp.traceway.core.OtlpDestination("https://TRACEWAY.test:443/api/report", mapOf("Authorization" to "Bearer tok")).key
+        val mine = File(pending, betaKey).apply { mkdir() }
+        oneXReport(mine, "a.json", "java.lang.IllegalStateException: legacy error\n\tat com.example.Main.run(Main.kt:10)")
+        oneXReport(mine, "b.json", "Support chat opened", isMessage = true)
+        TracewayClient.initializeForTest("other@https://traceway.test", TracewayOptions(), overrides(legacy = pending)).shutdown(2000)
+        assertTrue(logs.all.none { it.eventName == "exception" })
+        assertEquals(2, mine.listFiles()!!.size)
+        logs.failing = true
+        TracewayClient.initializeForTest("tok@https://TRACEWAY.test:443/api/report", TracewayOptions(), overrides(legacy = pending)).shutdown(2000)
+        assertEquals("a failed handoff retains both source files", 2, mine.listFiles()!!.size)
+        logs.failing = false
+        val client = TracewayClient.initializeForTest("tok@https://TRACEWAY.test:443/api/report", TracewayOptions(), overrides(legacy = pending))
         client.flush(2000)
         val exception = logs.all.single { it.eventName == "exception" }
         assertEquals("java.lang.IllegalStateException", exception.attr("exception.type"))
@@ -226,7 +237,7 @@ class StartApiTest {
         assertEquals("u-1", exception.attr("user.id"))
         val message = logs.all.single { it.eventName == "traceway.message" }
         assertEquals("Support chat opened", message.bodyValue?.asString())
-        assertFalse("the 1.x files are gone", pending.exists())
+        assertFalse("the 1.x files are gone", pending.walk().any { it.isFile })
 
         // A whole life of the client, with its real exporters: issues, a flush, a restart, a shutdown.
         val restarted = TracewayClient.initializeForTest("tok@https://traceway.test/api/report", TracewayOptions(), overrides(inMemory = false))

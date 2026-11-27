@@ -366,6 +366,7 @@ internal class WireframeRecorder(
             start = frames[index].timestampMs
         }
 
+        val images = ClipImageBudget()
         val screenEvents = ArrayList<Map<String, Any?>>()
         fun snapshot(frame: WireframeFrame, at: Long) {
             screenEvents.add(
@@ -383,7 +384,7 @@ internal class WireframeRecorder(
                 event(
                     2,
                     linkedMapOf(
-                        "node" to serializeDocument(frame.screen ?: awayScreen(frame.width, frame.height)),
+                        "node" to serializeDocument(frame.screen ?: awayScreen(frame.width, frame.height), images),
                         "initialOffset" to linkedMapOf("left" to 0, "top" to 0),
                     ),
                     at,
@@ -401,7 +402,7 @@ internal class WireframeRecorder(
             if (before == null || after == null || !previous.sameSize(frame)) {
                 snapshot(frame, frame.timestampMs)
             } else {
-                val mutation = diffScreens(before, after)
+                val mutation = diffScreens(before, after, images)
                 if (mutation != null) screenEvents.add(event(3, mutation, frame.timestampMs))
             }
             previous = frame

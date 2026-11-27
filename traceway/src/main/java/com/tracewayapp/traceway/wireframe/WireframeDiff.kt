@@ -12,9 +12,9 @@ package com.tracewayapp.traceway.wireframe
  * that is already on the page. A node that moved, to another parent or
  * among its siblings, is removed and added again with its whole subtree.
  */
-internal fun diffScreens(before: VNode, after: VNode): Map<String, Any?>? {
+internal fun diffScreens(before: VNode, after: VNode, images: ClipImageBudget? = null): Map<String, Any?>? {
     if (before === after) return null
-    val diff = ScreenDiff()
+    val diff = ScreenDiff(images)
     diff.node(before, after)
     if (diff.isEmpty) return null
     return linkedMapOf(
@@ -26,7 +26,7 @@ internal fun diffScreens(before: VNode, after: VNode): Map<String, Any?>? {
     )
 }
 
-private class ScreenDiff {
+private class ScreenDiff(private val images: ClipImageBudget?) {
     val texts = ArrayList<Map<String, Any?>>()
     val attributes = ArrayList<Map<String, Any?>>()
     val removes = ArrayList<Map<String, Any?>>()
@@ -60,7 +60,7 @@ private class ScreenDiff {
                 changed[key] = null
             }
         }
-        if (changed != null) attributes.add(linkedMapOf("id" to after.id, "attributes" to changed))
+        if (changed != null) attributes.add(linkedMapOf("id" to after.id, "attributes" to (images?.attributes(changed) ?: changed)))
     }
 
     private fun children(before: VNode, after: VNode) {
@@ -99,7 +99,7 @@ private class ScreenDiff {
     }
 
     private fun add(node: VNode, parentId: Int, nextId: Int?) {
-        adds.add(linkedMapOf("parentId" to parentId, "nextId" to nextId, "node" to node.serialize(withChildren = false)))
+        adds.add(linkedMapOf("parentId" to parentId, "nextId" to nextId, "node" to node.serialize(withChildren = false, images = images)))
         val children = node.children
         for (i in children.indices.reversed()) {
             add(children[i], node.id, if (i + 1 < children.size) children[i + 1].id else null)

@@ -19,11 +19,17 @@ import com.google.android.material.button.MaterialButton
 import com.tracewayapp.traceway.network.TracewayOkHttpInterceptor
 import com.tracewayapp.traceway.wireframe.RealScreen
 import com.tracewayapp.traceway.wireframe.TestActivity
+import okhttp3.Call
+import okhttp3.Callback
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import okhttp3.Response
+import okhttp3.mockwebserver.Dispatcher
 import okhttp3.mockwebserver.MockResponse
 import okhttp3.mockwebserver.MockWebServer
+import okhttp3.mockwebserver.RecordedRequest
 import org.junit.After
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Assume.assumeTrue
@@ -35,7 +41,10 @@ import org.robolectric.RuntimeEnvironment
 import org.robolectric.Shadows.shadowOf
 import org.robolectric.annotation.Config
 import org.robolectric.annotation.GraphicsMode
+import java.io.IOException
 import java.time.Duration
+import java.util.concurrent.CompletableFuture
+import java.util.concurrent.TimeUnit
 
 /**
  * The whole SDK, started with `Traceway.init` the way an app starts it,
@@ -60,8 +69,10 @@ class LiveDeviceTest {
         lateinit var remember: CheckBox
         lateinit var pay: MaterialButton
         var dialog: AlertDialog? = null
-        var http: OkHttpClient? = null
+        lateinit var http: OkHttpClient
         var paymentUrl = ""
+        var paymentStatus: Int? = null
+        var paymentFailure: IOException? = null
 
         override fun onCreate(savedInstanceState: Bundle?) {
             super.onCreate(savedInstanceState)
@@ -98,9 +109,22 @@ class LiveDeviceTest {
             Traceway.recordAction("checkout", "pay", mapOf("items" to 2))
             Traceway.track("checkout_started", mapOf("total" to "30.59"))
             println("Paying for 2 items")
-            val code = http?.newCall(Request.Builder().url(paymentUrl).post(okhttp3.RequestBody.create(null, "{}")).build())?.execute()?.use { it.code } ?: 0
-            Traceway.captureException(IllegalStateException("Payment provider returned $code"), mapOf("checkout.step" to "pay"))
-            dialog = AlertDialog.Builder(this).setTitle("Payment failed").setMessage("The card was declined.").setPositiveButton("Retry", null).show()
+            val request = Request.Builder().url(paymentUrl).post(okhttp3.RequestBody.create(null, "{}")).build()
+            http.newCall(request).enqueue(object : Callback {
+                override fun onFailure(call: Call, e: IOException) {
+                    runOnUiThread { paymentFailure = e }
+                }
+
+                override fun onResponse(call: Call, response: Response) {
+                    val code = response.use { it.code }
+                    runOnUiThread {
+                        paymentStatus = code
+                        Traceway.captureException(IllegalStateException("Payment provider returned $code"), mapOf("checkout.step" to "pay"))
+                        dialog = AlertDialog.Builder(this@CheckoutActivity).setTitle("Payment failed")
+                            .setMessage("The card was declined.").setPositiveButton("Retry", null).show()
+                    }
+                }
+            })
         }
     }
 
@@ -147,10 +171,28 @@ class LiveDeviceTest {
         val connection = System.getenv("TRACEWAY_E2E_CONNECTION")
         assumeTrue("set TRACEWAY_E2E_CONNECTION to run against a server", !connection.isNullOrEmpty())
         RealScreen.framesAt60Hz()
-        val payments = MockWebServer().apply {
-            enqueue(MockResponse().setResponseCode(502).setBody("{\"error\":\"declined\"}"))
-            start()
+        MockWebServer().use { payments ->
+            val receivedPayment = CompletableFuture<RecordedRequest>()
+            payments.dispatcher = object : Dispatcher() {
+                override fun dispatch(request: RecordedRequest): MockResponse =
+                    if (request.method == "POST" && request.path == "/pay") {
+                        receivedPayment.complete(request)
+                        MockResponse().setResponseCode(502).setBody("{\"error\":\"declined\"}")
+                    } else {
+                        MockResponse().setResponseCode(404)
+                    }
+            }
+            payments.start()
+            // Local development tools can probe a newly opened port before the checkout tap.
+            val probe = Request.Builder().url(payments.url("/")).build()
+            OkHttpClient().newCall(probe).execute().use { assertEquals(404, it.code) }
+            checkoutSession(requireNotNull(connection), payments)
+            val payment = receivedPayment.get(5, TimeUnit.SECONDS)
+            assertTrue(payment.getHeader("traceparent")?.startsWith("00-") == true)
         }
+    }
+
+    private fun checkoutSession(connection: String, payments: MockWebServer) {
         val app = RuntimeEnvironment.getApplication()
         val client = Traceway.init(
             app,
@@ -186,11 +228,14 @@ class LiveDeviceTest {
         assertTrue("the tap reached the checkbox", activity.remember.isChecked)
         frames(500)
         tap(activity.window, activity.pay)
-        val dialog = activity.dialog!!
+        val paymentDeadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(15)
+        while (activity.dialog == null && activity.paymentFailure == null && System.nanoTime() < paymentDeadline) frames(50)
+        activity.paymentFailure?.let { throw AssertionError("Local checkout request failed", it) }
+        assertEquals("the payment mock returned its decline", 502, activity.paymentStatus)
+        val dialog = requireNotNull(activity.dialog)
         frames(1500)
         tap(dialog.window!!, dialog.getButton(AlertDialog.BUTTON_POSITIVE))
         frames(1000)
-        assertTrue(payments.takeRequest().getHeader("traceparent")?.startsWith("00-") == true)
 
         Traceway.captureMessage("User opened support chat")
         frames(500)
@@ -205,7 +250,6 @@ class LiveDeviceTest {
         frames(1500)
         flushOffMain(15_000)
         println("E2E-DEVICE session=${client.currentSessionId} instance=${client.getInstanceId()} console=${client.settings.signal("console").mode}")
-        payments.shutdown()
         client.shutdown(10_000)
     }
 

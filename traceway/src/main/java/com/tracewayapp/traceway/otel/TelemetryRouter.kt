@@ -52,6 +52,7 @@ private val SPAN_STATUS = mapOf(StatusCode.UNSET to "unset", StatusCode.OK to "o
 private const val FLUSH_BATCH_SIZE = 512
 private val BASELINE_SIGNALS = setOf("network", "console", "navigation", "userActions", "custom")
 
+private val ATTR_PREVIOUS_RUN = AttributeKey.booleanKey("traceway.previous_run")
 private val ATTR_SESSION_ID = AttributeKey.stringKey(Events.ATTR_SESSION_ID)
 private val ATTR_CAPTURE_IDS = AttributeKey.stringKey(Events.ATTR_CAPTURE_IDS)
 private val ATTR_INTERACTION = AttributeKey.booleanKey("traceway.interaction")
@@ -121,10 +122,11 @@ internal class TelemetryRouter(
     fun routeLog(record: ReadWriteLogRecord) {
         val signal = Events.classifyLog(record.eventName)
         val sessionId = hooks.sessionId
-        if (sessionId != null && record.getAttribute(ATTR_SESSION_ID) == null) {
+        val previousRun = record.getAttribute(ATTR_PREVIOUS_RUN) == true
+        if (!previousRun && sessionId != null && record.getAttribute(ATTR_SESSION_ID) == null) {
             record.setAttribute(ATTR_SESSION_ID, sessionId)
         }
-        if (signal != Events.SIGNAL_CONTROL) {
+        if (!previousRun && signal != Events.SIGNAL_CONTROL) {
             val captureIds = activeCaptureIds()
             if (captureIds.isNotEmpty()) record.setAttribute(ATTR_CAPTURE_IDS, Json.stringify(captureIds))
         }

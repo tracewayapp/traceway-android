@@ -7,6 +7,8 @@ internal data class ParsedConnectionString(
     val token: String,
     /** The server, `https://host` (any `/api` or `/api/report` dropped, `https://` added when it had no scheme). */
     val baseUrl: String,
+    /** The beta migration directory was hashed from the original report URL. */
+    val originalUrl: String,
 )
 
 /**
@@ -23,5 +25,6 @@ internal fun parseConnectionString(connectionString: String): ParsedConnectionSt
     require(token.isNotEmpty()) {
         "Invalid connection string: expected YOUR_TOKEN@https://host; better, pass TracewayOptions(token = \"YOUR_TOKEN\")"
     }
-    return ParsedConnectionString(token = token, baseUrl = normalizeBaseUrl(trimmed.substring(atIndex + 1)))
+    val url = trimmed.substring(atIndex + 1)
+    return ParsedConnectionString(token, normalizeBaseUrl(url), url)
 }

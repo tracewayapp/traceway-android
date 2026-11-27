@@ -23,6 +23,83 @@ class WireframeRecorderTest {
     private fun frame(screen: VNode?, width: Float = 400f, height: Float = 800f, href: String? = "/home") =
         WireframeFrame(screen, width, height, scheduler.now(), href)
 
+    private fun imageCss(i: Int, base64Chars: Int) =
+        ".im.p$i{background:url(data:image/png;base64," + "A".repeat(base64Chars) + ") center/cover no-repeat}"
+
+    private fun gallery(vararg styles: String): VNode {
+        val children = styles.mapIndexed { i, css ->
+            VNode.element(300 + i, "style", mapOf("_cssText" to css), emptyList())
+        } + VNode.element(200, "div", mapOf("class" to "im p0", "style" to "width:140px;height:90px"), emptyList()) +
+            VNode.element(201, "div", mapOf("class" to "mk"), listOf(VNode.text(202, "***"))) +
+            VNode.text(203, "Checkout")
+        return VNode.element(screenNodeId, "div", mapOf("id" to "tw"), children)
+    }
+
+    @Test
+    fun `the inline image limit counts repeated URLs across full snapshots and resets each clip`() {
+        val recorder = recorder()
+        val css = imageCss(0, 65_516)
+        val screen = gallery(css)
+        val first = scheduler.now()
+        recorder.push(frame(screen))
+        scheduler.advance(100)
+        val second = scheduler.now()
+        recorder.push(frame(screen, width = 240f))
+        scheduler.advance(100)
+        val over = recorder.captureRecording("over", first, scheduler.now())!!
+        val encoded = Json.stringify(over.events)
+        assertFalse(encoded.contains("data:image/"))
+        assertEquals(2, over.events.count { it["type"] == 2 })
+        val mirror = Mirror().apply { play(over.events) }
+        assertEquals("width:140px;height:90px", mirror.byId.getValue(200).attributes["style"])
+        assertEquals("mk", mirror.byId.getValue(201).attributes["class"])
+        assertEquals(listOf("***", "Checkout"), mirror.texts())
+        assertEquals(encoded.length, over.approxBytes)
+        val small = recorder.captureRecording("next", second, scheduler.now())!!
+        assertTrue(Json.stringify(small.events).contains(css))
+    }
+
+    @Test
+    fun `the final mutation at exactly the inline limit keeps every image and one byte more falls back`() {
+        val firstCss = imageCss(0, 65_512)
+        val secondSize = 128 * 1024 - 2 * "data:image/png;base64,".length - 65_512
+        fun record(secondCss: String): String {
+            val recorder = recorder()
+            val start = scheduler.now()
+            recorder.push(frame(gallery(firstCss)))
+            scheduler.advance(100)
+            recorder.push(frame(gallery(secondCss)))
+            scheduler.advance(100)
+            val clip = recorder.captureRecording("clip", start, scheduler.now())!!
+            assertEquals(listOf("***", "Checkout"), Mirror().apply { play(clip.events) }.texts())
+            val segment = com.tracewayapp.traceway.replay.RecordingSegment(events = clip.events)
+            val encoded = com.tracewayapp.traceway.replay.RecordingsTransport.encode(listOf(segment))
+            return com.tracewayapp.traceway.internal.gunzip(encoded).toString(Charsets.UTF_8)
+        }
+        val exact = record(imageCss(0, secondSize))
+        assertTrue(exact.contains(firstCss))
+        assertTrue(exact.contains(imageCss(0, secondSize)))
+        // The JPEG data URL header is exactly one character longer than the PNG header.
+        val oneOver = imageCss(0, secondSize).replace("image/png", "image/jpeg")
+        assertFalse(record(oneOver).contains("data:image/"))
+    }
+
+    @Test
+    fun `a gallery of many small added pictures falls back without losing user events`() {
+        val recorder = recorder()
+        recorder.start()
+        val start = scheduler.now()
+        recorder.push(frame(gallery()))
+        scheduler.advance(100)
+        recorder.push(frame(gallery(*Array(100) { imageCss(it, 1400) })))
+        recorder.pointerDown(1, 10f, 20f, true)
+        scheduler.advance(100)
+        val clip = recorder.captureRecording("gallery", start, scheduler.now())!!
+        assertFalse(Json.stringify(clip.events).contains("data:image/"))
+        assertTrue(clip.events.any { it["type"] == 3 && data(it)["source"] == 2 })
+        assertEquals(listOf("***", "Checkout"), Mirror().apply { play(clip.events) }.texts())
+    }
+
     @Test
     fun `a clip replays to the last screen, touches included`() {
         source.screen = rows.screen(0)

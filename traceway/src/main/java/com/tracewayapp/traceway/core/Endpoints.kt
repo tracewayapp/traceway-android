@@ -90,17 +90,17 @@ internal fun normalizeBaseUrl(raw: String): String {
         url = (if (host.lowercase(Locale.US) in LOCAL_HOSTS) "http://" else "https://") + url
     }
     url = url.substringBefore('#').substringBefore('?').trimEnd('/')
-    url = when {
-        url.endsWith("/api/report") -> url.removeSuffix("/api/report")
-        url.endsWith("/api") -> url.removeSuffix("/api")
-        else -> url
-    }.trimEnd('/')
     val parts = UrlParts.parse(url)
     val scheme = parts?.scheme?.lowercase(Locale.US)
     require(parts != null && (scheme == "http" || scheme == "https") && parts.host.isNotEmpty()) {
         "Invalid Traceway server URL \"${raw.trim()}\": expected https://host, e.g. https://cloud.tracewayapp.com"
     }
-    return parts.normalized()
+    val path = if (parts.path.endsWith("/api/report")) {
+        parts.path.removeSuffix("/api/report")
+    } else {
+        parts.path.removeSuffix("/api")
+    }
+    return parts.normalized(path.trimEnd('/'))
 }
 
 /**
@@ -118,7 +118,7 @@ private class UrlParts(
     val fragment: String?,
 ) {
     /** As Dart's `Uri.toString()` writes it, which is the form request URLs take: lowercase scheme and host, no default port. */
-    fun normalized(): String {
+    fun normalized(path: String = this.path): String {
         val out = StringBuilder()
         out.append(scheme.lowercase(Locale.US)).append("://")
         if (!userInfo.isNullOrEmpty()) out.append(userInfo).append('@')

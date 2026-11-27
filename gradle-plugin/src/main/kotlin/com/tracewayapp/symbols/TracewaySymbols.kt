@@ -44,10 +44,23 @@ object TracewaySymbols {
     fun resolveUrl(configured: String?): String = configured?.trim()?.takeIf { it.isNotEmpty() } ?: DEFAULT_URL
 
     fun uploadEndpoint(url: String): String {
-        var base = url.trim().removeSuffix("/")
-        base = base.removeSuffix("/api/report")
-        if (base.endsWith("/api/symbols/upload")) return base
-        return "$base/api/symbols/upload"
+        val raw = url.trim().substringBefore('#').substringBefore('?')
+        val absolute = if ("://" in raw) raw else {
+            val authority = raw.substringBefore('/')
+            val host = if (authority.startsWith("[")) authority.substringBefore(']') + "]" else authority.substringBefore(':')
+            val local = host.lowercase() in setOf("localhost", "127.0.0.1", "10.0.2.2", "[::1]")
+            (if (local) "http://" else "https://") + raw
+        }
+        val uri = URI(absolute)
+        require(uri.scheme.lowercase() in setOf("http", "https") && !uri.rawAuthority.isNullOrEmpty() && uri.toURL().host.isNotEmpty()) {
+            "Traceway symbol upload requires an HTTP(S) server URL"
+        }
+        val origin = "${uri.scheme}://${uri.rawAuthority}"
+        val path = uri.rawPath.trimEnd('/')
+        val endpoint = "/api/symbols/upload"
+        if (path.endsWith(endpoint)) return origin + path
+        val prefix = if (path.endsWith("/api/report")) path.removeSuffix("/api/report") else path.removeSuffix("/api")
+        return origin + prefix.trimEnd('/') + endpoint
     }
 
     data class UploadResult(val status: Int, val body: String)

@@ -74,27 +74,26 @@ object Traceway {
         options: TracewayOptions? = TracewayOptions(),
     ): TracewayClient? = try {
         val base = options ?: TracewayOptions()
-        val resolved = if (connectionString == null) {
-            base
+        if (connectionString == null) {
+            start(application, base)
         } else {
             val parsed = parseConnectionString(connectionString)
             warnConnectionString(parsed.baseUrl)
-            base.copy(token = parsed.token, baseUrl = parsed.baseUrl)
+            start(application, base.copy(token = parsed.token, baseUrl = parsed.baseUrl), parsed.originalUrl)
         }
-        start(application, resolved)
     } catch (e: Throwable) {
         if (e is InterruptedException) Thread.currentThread().interrupt()
         logNotRunning(e)
         null
     }
 
-    private fun start(application: Application?, options: TracewayOptions): TracewayClient? = try {
+    private fun start(application: Application?, options: TracewayOptions, legacyReportUrl: String? = options.baseUrl): TracewayClient? = try {
         if (application == null) throw IllegalArgumentException("application is null")
         if (!options.allProcesses && !isMainProcess(application)) {
             if (options.debug) logDebug("Traceway runs in the app's main process only (this is ${processName(application)}); set allProcesses to run here")
             null
         } else {
-            TracewayClient.initialize(application, options)
+            TracewayClient.initialize(application, options, legacyReportUrl = legacyReportUrl)
         }
     } catch (e: Throwable) {
         if (e is InterruptedException) Thread.currentThread().interrupt()

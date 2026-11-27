@@ -14,6 +14,13 @@ import org.junit.Test
 class EndpointsTest {
 
     @Test
+    fun aSingleLabelHostNamedApiSurvivesLegacyPathRemoval() {
+        for (raw in listOf("http://api", "http://api/", "http://api/api", "http://api/api/report?x=1")) {
+            assertEquals(raw, "http://api", normalizeBaseUrl(raw))
+        }
+    }
+
+    @Test
     fun `accepts the bare url and the 1_x report url`() {
         for (url in listOf(
             "https://host",

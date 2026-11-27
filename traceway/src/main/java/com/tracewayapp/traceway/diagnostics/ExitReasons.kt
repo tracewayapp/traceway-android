@@ -30,18 +30,16 @@ internal fun interface ExitSource {
 
 /**
  * The exits of this app's process (the one named [processName]: another
- * process of the app reports its own) that Android keeps, newest first, at
- * most [max]. API 30+; a binder call, so off the main thread.
+ * process of the app reports its own) that Android keeps, newest first. API 30+; a binder call, so off the main thread.
  */
 @RequiresApi(30)
 internal class AndroidExitSource(
     private val context: Context,
     private val processName: String?,
-    private val max: Int = 16,
 ) : ExitSource {
     override fun read(): List<ExitRecord> {
         val am = context.getSystemService(Context.ACTIVITY_SERVICE) as? ActivityManager ?: return emptyList()
-        val infos = am.getHistoricalProcessExitReasons(context.packageName, 0, max) ?: return emptyList()
+        val infos = am.getHistoricalProcessExitReasons(context.packageName, 0, 0) ?: return emptyList()
         val out = ArrayList<ExitRecord>(infos.size)
         for (info in infos) {
             if (processName != null && info.processName != null && info.processName != processName) continue
@@ -76,6 +74,8 @@ internal object ExitReasons {
     const val REASON_CRASH = 4
     const val REASON_CRASH_NATIVE = 5
     const val REASON_ANR = 6
+
+    fun isReportable(reason: Int) = reason == REASON_LOW_MEMORY || reason == REASON_CRASH_NATIVE || reason == REASON_ANR
 
     const val TYPE_NATIVE_CRASH = "NativeCrash"
     const val TYPE_ANR = "ApplicationNotResponding"

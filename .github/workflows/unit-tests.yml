@@ -28,6 +28,9 @@ jobs:
       # Never invoke the runner's system `gradle`: configuring this build applies
       # the com.tracewayapp.symbols plugin from the included gradle-plugin build,
       # compiled with Kotlin 1.9, which can't read newer stdlib metadata.
+      - name: Test release and device workflows offline
+        run: python3 scripts/tests/test_workflows.py
+
       - name: Run unit tests
         run: ./gradlew :traceway:testDebugUnitTest --stacktrace
 

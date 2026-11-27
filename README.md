@@ -480,6 +480,7 @@ The pictures image views show can be recorded into the wireframe instead of plac
 - The connection is checked when a frame is captured, following the default network as it changes (Android 7+): a picture recorded on Wi-Fi stays in its clip.
 - What is recorded: the bitmap of an `ImageView`'s `BitmapDrawable` (the top bitmap of a layer drawable, as a Glide crossfade shows it) and bitmap backgrounds. Never a screenshot of the window, never anything under a mask. Vector drawables, shapes and animated images keep their usual look, and Jetpack Compose images stay placeholders: the semantics tree holds no pixels.
 - Each picture is copied at the size it shows (one pixel per dp, at most 384 pixels on its longest side) and encoded off the main thread as JPEG at quality 0.45; a picture with transparency is always PNG, at most 192 pixels on its longest side, so it never replays as a black box. One larger than 48 KiB at half that size is left out. The first frame shows the placeholder, a later one the picture.
+- Each replay segment or exception clip allows 128 KiB of inline raster data URLs. Repeated URLs in snapshots and mutations count each time they are exported. When a segment exceeds the limit, its pictures and raster icons use layout placeholders throughout. Text, dimensions, masks and interaction events remain available. The next segment gets a fresh allowance.
 - The same bitmap at the same size is one picture however many views show it. At most 128 pictures are kept per recorder: past that, the one shown longest ago makes room (shown again, it is recorded again). At most 4 MiB of encoded pictures per session; past it, new pictures are placeholders. A picture's style stays in the recording 30 seconds after its view left the screen.
 
 ### Privacy masks
@@ -754,7 +755,7 @@ Android keeps a record of how each process of the app ended (`ApplicationExitInf
 | `REASON_LOW_MEMORY` | an `app.oom` count, no issue |
 | `REASON_CRASH` | nothing: the uncaught-exception handler already reported it |
 
-These issues carry `exception.unhandled = true`, `app.exit.reason` (`crash_native`, `anr`), the time the process died and the session it was in (`session.id`, kept per process id). `traceway.previous_run = true` marks them: this run's breadcrumbs and replay are not their context. They need `persistToDisk`.
+These issues carry `exception.unhandled = true`, `app.exit.reason` (`crash_native`, `anr`), the time the process died and its previous session when known (`session.id`, kept per process id). `traceway.previous_run = true` marks them: this run's breadcrumbs and replay are not their context. They need `persistToDisk`.
 
 **Hangs.** The watchdog behind `app.hang` posts a probe to the main thread every 500 ms. When one has waited `appHangThresholdMs` (2 s) in the foreground, not under a debugger, the watchdog's thread takes the main thread's stack (`Looper.getMainLooper().thread.stackTrace`) while it is still blocked, and keeps the hang on disk. When the main thread runs again the hang is an issue of type `AppHang`, message `Main thread blocked for 3.2 s`, with that stack, the screen it happened on, `app.hang.duration_ms` and `app.hang.fatal = false`; `ignoreErrors` and `beforeCapture` see it like an exception. A hang the process does not survive (the system or the user kills it) is reported at the next start with `app.hang.fatal = true`, unless Android recorded that run's end as an ANR: then the ANR is the issue, with the hang's stack when its dump has none. `captureAppHangs = false` turns hang issues off (the metric stays).
 
@@ -803,7 +804,7 @@ The API has the names of the browser, Flutter and iOS SDKs. Where Android differ
 
 - **Server**: 2.x sends OTLP to `/api/otel/v1/logs`, `/api/otel/v1/traces` and `/api/otel/v1/metrics`, polls `/api/otel/v1/opamp` and uploads replays to `/api/recordings`. It never uses the 1.x report protocol.
 - **Start**: pass the project token, and a self-hosted server's URL, in the options: `Traceway.init(this, TracewayOptions(token = "YOUR_TOKEN"))`, `baseUrl = "https://traceway.mycompany.com"` for a self-hosted server. The 1.x `Traceway.init(application, connectionString, options)` still works and is deprecated: it logs one warning naming the new form. Without a token the SDK runs [standalone](#standalone-without-traceway).
-- **Unsent 1.x reports**: exceptions and messages 1.x left on the device (at most 12 hours old, the 1.x limit) are reported once, at the first start of 2.x, to the token's project, with `traceway.previous_run = true`, and deleted.
+- **Unsent 1.x reports**: 2.x recovers exceptions and messages that a beta SDK associated with the same server and project token. Files expire after 12 hours. Recovered issues carry `traceway.previous_run = true`. The SDK discards older, unscoped files because they have no project identity.
 - **Desugaring**: apps with `minSdk` below 26 must enable core library desugaring (OpenTelemetry Java).
 - **Behaviour**: logs and actions are no longer limited to the last 10 seconds and no longer travel inside the report. They are buffered for up to 10 minutes and sent as their own records with an exception. `screenCapture = true` now records a wireframe replay. Network errors (`UnknownHostException`, timeouts, 4xx) are no longer reported unless `ignoreErrors` says so.
 - **Removed options**: `debounceMs`, `retryDelayMs`, `maxPendingExceptions`, `maxLocalFiles`, `localFileMaxAgeHours`, `eventsWindowMs`, `eventsMaxCount`, `capturePixelRatio`. `fps` and `maxBufferFrames` now apply to the wireframe recording.
@@ -893,7 +894,7 @@ To build a minified release and upload its mapping in one go:
 
 ### Publishing
 
-Two artifacts are published to Maven Central, each with its own workflow, and they share one version: release them together. Both bump the version (the SDK's is `val sdkVersion` in `traceway/build.gradle.kts`, the plugin's the `coordinates` in `gradle-plugin/build.gradle.kts`), sign and upload to Sonatype Central, then commit + tag. If publish fails, no commit or tag is created: fix the issue and re-run.
+Two artifacts are published to Maven Central, each with its own workflow, and they share one version: release them together. Both bump the version (the SDK's is `val sdkVersion` in `traceway/build.gradle.kts`, the plugin's the `coordinates` in `gradle-plugin/build.gradle.kts`), sign and upload to Sonatype Central, then commit + tag. If Central accepted the upload but the Git push failed, rerun from the original source revision and supply its full SHA as `published_sha`. The workflow verifies the release coordinates and resumes tagging.
 
 **SDK** (`com.tracewayapp:traceway`) — trigger the **Publish to Maven Central** workflow:
 
@@ -913,7 +914,7 @@ gh workflow run "Publish Gradle Plugin to Maven Central" -f version=2.1.0 -f dry
 gh run watch
 ```
 
-Both workflows are thin wrappers. The plugin publish logic lives in [`scripts/publish-plugin.sh`](scripts/publish-plugin.sh), which you can also run locally: `scripts/publish-plugin.sh 2.1.0` publishes to `~/.m2` for a smoke test, `--release` pushes to Central, and `-- --dry-run` validates the task graph without credentials.
+Both workflows run `scripts/release-maven.sh` to release on Central and tag the same revision. Run `scripts/publish-plugin.sh 2.1.0` to publish the plugin to `~/.m2` for a local smoke test. Pass `-- --dry-run` to validate the task graph without credentials.
 
 Both share the same Sonatype Central account and signing key (`MAVEN_CENTRAL_USERNAME`/`MAVEN_CENTRAL_PASSWORD` and `SIGNING_KEY`/`SIGNING_PASSWORD` repo secrets); the `com.tracewayapp` namespace is already verified, which also covers the plugin's `com.tracewayapp.symbols` marker.
 

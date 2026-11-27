@@ -1,6 +1,43 @@
 package com.tracewayapp.traceway.wireframe
 
 /**
+ * Limit the raster data actually emitted in one independently playable clip. Each picture or
+ * glyph has its own rrweb style node. Removing its rule exposes the normal layout placeholder.
+ */
+internal class ClipImageBudget {
+    private var remaining = 128 * 1024
+    private val included = ArrayList<MutableMap<String, String?>>()
+
+    fun attributes(attributes: Map<String, String?>): Map<String, String?> {
+        val css = attributes["_cssText"] ?: return attributes
+        val first = rasterUrl.find(css) ?: return attributes
+        val encoded = LinkedHashMap(attributes)
+        if (remaining >= 0) {
+            var match: MatchResult? = first
+            while (match != null) {
+                // Only the data URL characters count. CSS url(…) is outside the URL.
+                remaining -= match.groups[1]!!.range.count()
+                if (remaining < 0) break
+                match = match.next()
+            }
+            if (remaining >= 0) {
+                // Keep only the emitted attribute copies, never mutate the recorder's frames.
+                included.add(encoded)
+                return encoded
+            }
+            for (previous in included) previous["_cssText"] = ""
+            included.clear()
+        }
+        encoded["_cssText"] = ""
+        return encoded
+    }
+
+    private companion object {
+        val rasterUrl = Regex("""url\((data:image/(?:jpeg|png);base64,[A-Za-z0-9+/=]*)\)""")
+    }
+}
+
+/**
  * One node of the wireframe DOM: an element or a text node.
  *
  * Nodes are immutable. A capture reuses the previous frame's node when
@@ -41,7 +78,7 @@ internal class VNode private constructor(
      * subtree; a mutation adds every node on its own, so it leaves the
      * children out.
      */
-    fun serialize(withChildren: Boolean = true): Map<String, Any?> {
+    fun serialize(withChildren: Boolean = true, images: ClipImageBudget? = null): Map<String, Any?> {
         val out = LinkedHashMap<String, Any?>(8)
         if (isText) {
             out["type"] = 3
@@ -51,8 +88,8 @@ internal class VNode private constructor(
         }
         out["type"] = 2
         out["tagName"] = tag
-        out["attributes"] = attributes
-        out["childNodes"] = if (withChildren) children.map { it.serialize() } else emptyList<Any?>()
+        out["attributes"] = images?.attributes(attributes) ?: attributes
+        out["childNodes"] = if (withChildren) children.map { it.serialize(images = images) } else emptyList<Any?>()
         out["id"] = id
         return out
     }
@@ -111,7 +148,7 @@ internal const val keyboardLabelTextId = 14
 internal const val firstCapturedNodeId = 16
 
 /** The rrweb document of a full snapshot, with [screen] inside its body. */
-internal fun serializeDocument(screen: VNode): Map<String, Any?> = linkedMapOf(
+internal fun serializeDocument(screen: VNode, images: ClipImageBudget? = null): Map<String, Any?> = linkedMapOf(
     "type" to 0,
     "id" to documentNodeId,
     "childNodes" to listOf(
@@ -155,7 +192,7 @@ internal fun serializeDocument(screen: VNode): Map<String, Any?> = linkedMapOf(
                     "tagName" to "body",
                     "attributes" to emptyMap<String, String>(),
                     "id" to bodyNodeId,
-                    "childNodes" to listOf(screen.serialize()),
+                    "childNodes" to listOf(screen.serialize(images = images)),
                 ),
             ),
         ),

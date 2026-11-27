@@ -254,6 +254,22 @@ class RequestHandle internal constructor(
     val traceparent: String?,
 )
 
+/** A concurrent OTel forceFlush can return the previous drain even after it completed. Wait for a fresh queue snapshot. */
+internal fun flushBatchQueue(timeoutMs: Long, request: () -> CompletableResultCode) {
+    val deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(timeoutMs)
+    fun remaining() = (deadline - System.nanoTime()).coerceAtLeast(0L)
+    val first = request()
+    first.join(remaining(), TimeUnit.NANOSECONDS)
+    while (remaining() > 0 && !Thread.currentThread().isInterrupted) {
+        val next = request()
+        if (next !== first) {
+            next.join(remaining(), TimeUnit.NANOSECONDS)
+            return
+        }
+        java.util.concurrent.locks.LockSupport.parkNanos(minOf(remaining(), 100_000L))
+    }
+}
+
 /**
  * The Traceway client. Records are OpenTelemetry log records and spans of
  * the SDK's own providers; a router decides per record whether it streams,
@@ -269,6 +285,7 @@ class TracewayClient private constructor(
     private val application: Application?,
     val options: TracewayOptions,
     private val overrides: TracewayTestOverrides?,
+    private val legacyReportUrl: String?,
 ) {
 
     private val lock = Any()
@@ -296,12 +313,11 @@ class TracewayClient private constructor(
     private val pid: Int = overrides?.pid ?: guarded("pid", 0) { android.os.Process.myPid() }
 
     /** Main-thread hangs as `AppHang` issues, fed by the hang watchdog; null with `captureAppHangs` off. */
-    private val appHangs: AppHangs? = if (!options.captureAppHangs) {
-        null
-    } else {
+    private val appHangs: AppHangs? by lazy {
+        if (!options.captureAppHangs) return@lazy null
         AppHangs(
             thresholdMs = maxOf(MIN_HANG_THRESHOLD_MS, options.appHangThresholdMs),
-            directory = stateDir?.let { File(it, "hangs") },
+            directory = recoveryDirectory?.let { File(it, "hangs") },
             pid = pid,
             mainStack = overrides?.mainThreadStack ?: { Looper.getMainLooper()?.thread?.stackTrace },
             screen = { screenContext() },
@@ -488,7 +504,7 @@ class TracewayClient private constructor(
             token = token ?: "",
             http = http,
             scheduler = scheduler,
-            spoolDirectory = stateDir?.let { File(it, "recordings") },
+            spoolDirectory = recoveryDirectory?.let { File(it, "recordings") },
         )
         // A streamed segment must leave before the frame ring wraps.
         val fps = options.fps.coerceIn(1, 30)
@@ -698,10 +714,18 @@ class TracewayClient private constructor(
             }
             readyLatch.countDown()
             reportCrashBeforeStart()
-            // What a 1.x build left unsent becomes records of this SDK, once; nothing goes to 1.x's /api/report.
+            // Recover beta migration files that identify this project.
             scheduler.io { guarded("1.x reports") { reportLegacyReports() } }
             // Clips a crash spooled last run go now, off the start path: reading them can take a while.
-            scheduler.io { recordings.loadSpooled() }
+            scheduler.io {
+                // Files from older SDKs carry no destination or consent information.
+                stateDir?.let {
+                    File(it, "recordings").deleteRecursively()
+                    File(it, "crash.json").delete()
+                    File(it, "hangs").deleteRecursively()
+                }
+                if (!isShutdown) recordings.loadSpooled { synchronized(lock) { recordsScreen && control.replayMode != Mode.OFF } }
+            }
             // How the earlier runs ended: a binder call and trace files, so off the start path too.
             scheduler.io { guarded("previous runs") { reportPreviousRuns() } }
         }
@@ -891,6 +915,12 @@ class TracewayClient private constructor(
     private val tracewayAuth: Map<String, String>
         get() = token?.let { mapOf("Authorization" to "Bearer $it") } ?: emptyMap()
 
+    private val recoveryDirectory: File?
+        get() = stateDir?.let { File(it, "recovery/${routes.traceway?.key ?: routes.logs.key}") }
+
+    // Accessed under the client lock, only while emitting a disk-backed previous-run issue.
+    private val recoveringIssues = HashMap<String, File>()
+
     private val bufferDestination: String
         get() = destinationDigest(listOf(routes.traceway?.key ?: "", routes.logs.key, routes.traces.key, routes.metrics.key))
 
@@ -975,13 +1005,23 @@ class TracewayClient private constructor(
             logExporter = lx,
             spanExporter = sx,
             hooks = hooks,
-            persistIssue = if (stateDir == null || overrides?.logExporter != null) {
-                null
-            } else {
-                { data ->
-                    if (crashing) {
-                        issueBox.persistLog(data)
-                    } else {
+            persistIssue = { data ->
+                val id = data.attributes.get(AttributeKey.stringKey(Events.ATTR_EXCEPTION_ID))
+                val source = recoveringIssues[id]
+                when {
+                    source != null -> {
+                        if (overrides?.logExporter != null) {
+                            val sent = lx.export(listOf(data))
+                            sent.whenComplete { if (sent.isSuccess) source.delete() }
+                        } else if (issueBox.persistLog(data)) {
+                            source.delete()
+                            issueBox.drain()
+                        }
+                        true // On failure the source file remains available for the next start.
+                    }
+                    stateDir == null || overrides?.logExporter != null -> false
+                    crashing -> issueBox.persistLog(data)
+                    else -> {
                         // Off the caller's thread and the lock: the caller may be the main thread.
                         scheduler.disk { if (issueBox.persistLog(data)) issueBox.drain() else lx.export(listOf(data)) }
                         true
@@ -1666,14 +1706,14 @@ class TracewayClient private constructor(
             flushTimer = null
         }
         try {
-            logSink?.forceFlush()?.join(left(), TimeUnit.MILLISECONDS)
-            spanSink?.forceFlush()?.join(left(), TimeUnit.MILLISECONDS)
+            logSink?.let { flushBatchQueue(left(), it::forceFlush) }
+            spanSink?.let { flushBatchQueue(left(), it::forceFlush) }
             router?.settle(left())
-            logExporter?.flush()?.join(left(), TimeUnit.MILLISECONDS)
-            spanExporter?.flush()?.join(left(), TimeUnit.MILLISECONDS)
+            guarded("flush logs") { logExporter?.flush()?.join(left(), TimeUnit.MILLISECONDS) }
+            guarded("flush spans") { spanExporter?.flush()?.join(left(), TimeUnit.MILLISECONDS) }
             replay.drainBlocking(left())
-            logSink?.forceFlush()?.join(left(), TimeUnit.MILLISECONDS)
-            logExporter?.flush()?.join(left(), TimeUnit.MILLISECONDS)
+            logSink?.let { flushBatchQueue(left(), it::forceFlush) }
+            guarded("flush logs") { logExporter?.flush()?.join(left(), TimeUnit.MILLISECONDS) }
             metrics.flush()
             metrics.awaitUploads(left())
             outbox?.drainBlocking(left())
@@ -1833,7 +1873,7 @@ class TracewayClient private constructor(
         false
     }
 
-    private val crashFile: File? get() = stateDir?.let { File(it, "crash.json") }
+    private val crashFile: File? get() = recoveryDirectory?.let { File(it, "crash.json") }
 
     /** A crash before the SDK started: kept as JSON and reported as an exception at the next start. */
     private fun saveCrashBeforeStart(thread: Thread, error: Throwable) {
@@ -1859,8 +1899,10 @@ class TracewayClient private constructor(
         try {
             if (!file.exists()) return
             val record = Json.parse(file.readText(Charsets.UTF_8)).asJsonObject()
-            file.delete()
-            if (record == null) return
+            if (record == null) {
+                file.delete()
+                return
+            }
             val attrs = LinkedHashMap<String, Any>()
             attrs["exception.type"] = record["type"] as? String ?: "java.lang.Throwable"
             attrs["exception.message"] = record["message"] as? String ?: ""
@@ -1868,13 +1910,12 @@ class TracewayClient private constructor(
             attrs["exception.unhandled"] = true
             attrs["thread.name"] = record["thread"] as? String ?: ""
             attrs["traceway.crash.before_start"] = true
-            attrs[Events.ATTR_EXCEPTION_ID] = Ids.uuidv4()
-            emit(
+            emitRecovered(
+                file, attrs,
                 eventName = Events.EXCEPTION,
                 severity = Severity.FATAL,
                 severityText = "FATAL",
                 timeMs = record["timeMs"].asLongExact(),
-                attributes = attrs,
             )
             if (options.captureMetrics) metrics.crash()
         } catch (_: Throwable) {
@@ -1882,33 +1923,60 @@ class TracewayClient private constructor(
     }
 
     /**
-     * The reports a 1.x build of the app left unsent, as exceptions and
-     * messages of this run (`traceway.previous_run = true`), filtered like
-     * any other; the 1.x files are deleted. On the I/O pool, once per start.
+     * Migrate the old reports claimed by this project after a durable handoff.
+     * Runs on the I/O pool once per start.
      */
     private fun reportLegacyReports() {
         val directory = overrides?.legacyDirectory
             ?: application?.let { LegacyReports.directoryIn(it.noBackupFilesDir ?: it.filesDir) }
         if (directory == null || isShutdown) return
-        for (report in LegacyReports.takeAll(directory, scheduler.now())) {
+        val reportUrl = endpoints?.base
+        val keys = if (reportUrl == null || token == null) emptySet() else {
+            val urls = listOf("", "/", "/api", "/api/", "/api/report", "/api/report/").map { reportUrl + it }
+            (urls + listOfNotNull(legacyReportUrl)).map { OtlpDestination(it, tracewayAuth).key }.toSet()
+        }
+        for (report in LegacyReports.pending(directory, keys, scheduler.now())) {
             guarded("1.x report") {
                 val attrs = LinkedHashMap<String, Any>()
                 for ((k, v) in report.attributes) attrs[k] = v
-                attrs[ATTR_PREVIOUS_RUN] = true
                 if (report.isMessage) {
                     val captured = TracewayCapturedError(null, null, report.message, true, readOnly(attrs), null)
-                    if (!reports(captured)) return@guarded
-                    attrs[Events.ATTR_EXCEPTION_ID] = Ids.uuidv4()
-                    emit(eventName = Events.MESSAGE, severity = Severity.INFO, severityText = "INFO", body = report.message, timeMs = report.timeMs, attributes = attrs)
+                    if (!reports(captured)) {
+                        report.file.delete()
+                        return@guarded
+                    }
+                    emitRecovered(report.file, attrs, eventName = Events.MESSAGE, severity = Severity.INFO, severityText = "INFO", body = report.message, timeMs = report.timeMs)
                 } else {
                     attrs["exception.type"] = report.type
                     attrs["exception.message"] = report.message
                     attrs["exception.stacktrace"] = report.stackTrace
                     val captured = TracewayCapturedError(null, report.type, report.message, false, readOnly(attrs), report.stackTrace)
-                    if (!reports(captured)) return@guarded
-                    attrs[Events.ATTR_EXCEPTION_ID] = Ids.uuidv4()
-                    emit(eventName = Events.EXCEPTION, severity = Severity.ERROR, severityText = "ERROR", timeMs = report.timeMs, attributes = attrs)
+                    if (!reports(captured)) {
+                        report.file.delete()
+                        return@guarded
+                    }
+                    emitRecovered(report.file, attrs, eventName = Events.EXCEPTION, severity = Severity.ERROR, severityText = "ERROR", timeMs = report.timeMs)
                 }
+            }
+        }
+    }
+
+    private fun emitRecovered(
+        file: File, attrs: MutableMap<String, Any>, eventName: String, severity: Severity,
+        severityText: String, timeMs: Long?, body: String? = null,
+    ) {
+        synchronized(lock) {
+            if (isShutdown || logger == null) return
+            val signal = Events.classifyLog(eventName)
+            if (control.modeFor(signal) == Mode.BUFFER) return // The source file already holds this issue.
+            val id = java.util.UUID.nameUUIDFromBytes((file.absolutePath + ":" + timeMs).toByteArray()).toString()
+            attrs[ATTR_PREVIOUS_RUN] = true
+            attrs[Events.ATTR_EXCEPTION_ID] = id
+            recoveringIssues[id] = file
+            try {
+                emit(eventName, severity, severityText, body, attrs, timeMs, Context.root())
+            } finally {
+                recoveringIssues.remove(id)
             }
         }
     }
@@ -2017,7 +2085,7 @@ class TracewayClient private constructor(
         if (seen == null || newest > seen) synchronized(lock) { store.set(KEY_EXITS_SEEN, maxOf(newest, seen ?: 0L)) }
         // The first start keeps no state yet: what Android kept is from before the SDK, or from an earlier install.
         if (seen == null) return emptyList()
-        return all.filter { it.timestampMs > seen && it.reason != ExitReasons.REASON_CRASH }
+        return all.filter { it.timestampMs > seen && ExitReasons.isReportable(it.reason) }
             .sortedByDescending { it.timestampMs }
             .take(ExitReasons.MAX_REPORTS)
             .sortedBy { it.timestampMs }
@@ -2029,7 +2097,7 @@ class TracewayClient private constructor(
         attrs[ATTR_PREVIOUS_RUN] = true
         if (sessionId != null) attrs[Events.ATTR_SESSION_ID] = sessionId
         attrs[Events.ATTR_EXCEPTION_ID] = Ids.uuidv4()
-        emit(eventName = Events.EXCEPTION, severity = Severity.FATAL, severityText = "FATAL", timeMs = timeMs, attributes = attrs)
+        emit(eventName = Events.EXCEPTION, severity = Severity.FATAL, severityText = "FATAL", timeMs = timeMs, attributes = attrs, context = Context.root())
     }
 
     private fun awaitQuietly(latch: CountDownLatch, timeoutMs: Long): Boolean = try {
@@ -2201,7 +2269,7 @@ class TracewayClient private constructor(
             if (record.getAttribute(k) == null) record.setAttribute(k, value)
         }
         // A crash is never collapsed into an earlier report of the same error: it is the one that matters.
-        if (signal == "errors" && record.getAttribute(ATTR_UNHANDLED) != true) {
+        if (signal == "errors" && record.getAttribute(ATTR_UNHANDLED) != true && record.getAttribute(ATTR_PREVIOUS_RUN_KEY) != true) {
             val key = "${record.getAttribute(ATTR_EXCEPTION_TYPE)}:${record.getAttribute(ATTR_EXCEPTION_MESSAGE)}"
             if (!admitError(key)) return false
             if (suppressedErrors > 0) {
@@ -2277,6 +2345,11 @@ class TracewayClient private constructor(
     }
 
     private fun observe(record: ObservedRecord) {
+        if (record.routed == Routed.FILTERED || record.routed == Routed.OFF) {
+            val log = (record.item as? TelemetryItem.Log)?.mutable
+            val id = log?.getAttribute(AttributeKey.stringKey(Events.ATTR_EXCEPTION_ID))
+            recoveringIssues[id]?.delete()
+        }
         if (record.signal == Events.SIGNAL_CONTROL || !control.enabled) return
         // An error or message left out by its sample rate is as if it never happened.
         if (record.routed == Routed.FILTERED && (record.signal == "errors" || record.signal == "messages")) return
@@ -2877,6 +2950,7 @@ class TracewayClient private constructor(
             application: Application,
             options: TracewayOptions,
             overrides: TracewayTestOverrides? = null,
+            legacyReportUrl: String? = options.baseUrl,
         ): TracewayClient {
             synchronized(this) {
                 current?.let { if (!it.isShutdown) return it }
@@ -2885,7 +2959,7 @@ class TracewayClient private constructor(
                 } catch (e: LinkageError) {
                     throw IllegalStateException("this device lacks java.util.function; enable core library desugaring ($e)")
                 }
-                val client = TracewayClient(application, options, overrides)
+                val client = TracewayClient(application, options, overrides, legacyReportUrl)
                 try {
                     client.instrument(application)
                     val work = Runnable { client.start() }
@@ -2915,7 +2989,7 @@ class TracewayClient private constructor(
             resetForTest()
             val resolved = connectionString?.let { parseConnectionString(it) }
             val o = if (resolved == null) options else options.copy(token = resolved.token, baseUrl = resolved.baseUrl)
-            val client = TracewayClient(null, o, overrides)
+            val client = TracewayClient(null, o, overrides, resolved?.originalUrl ?: options.baseUrl)
             synchronized(this) {
                 current = client
                 everStarted = true

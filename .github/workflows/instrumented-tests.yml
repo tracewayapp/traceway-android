@@ -50,8 +50,13 @@ jobs:
       - name: Assemble androidTest APK
         run: ./gradlew :traceway:assembleDebugAndroidTest --stacktrace
 
-      - name: Show built APK paths
-        run: find traceway/build/outputs/apk -type f -name "*.apk"
+      - name: Verify the instrumentation APK can install on Android 14
+        shell: bash
+        run: |
+          apk=(traceway/build/outputs/apk/androidTest/debug/*.apk)
+          aapt=$(find "$ANDROID_HOME/build-tools" -name aapt -type f | sort -V | tail -1)
+          target=$("$aapt" dump badging "${apk[0]}" | sed -n "s/^targetSdkVersion:'\([0-9]*\)'/\1/p")
+          [[ "$target" =~ ^[0-9]+$ && "$target" -ge 23 ]] || { echo "Uninstallable instrumentation APK target SDK: $target"; exit 1; }
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
@@ -107,29 +112,21 @@ jobs:
             --use-orchestrator \
             --environment-variables clearPackageData=true \
             --timeout 15m \
-            --results-dir=instrumented-${{ github.run_id }} \
+            --results-dir=instrumented-${{ github.run_id }}-${{ github.run_attempt }} \
             --results-bucket=${{ secrets.GCS_BUCKET }} \
-            --record-video \
-            2>&1 | tee ftl_output.txt
+            --record-video
 
       - name: Download results from GCS
         if: always()
         run: |
-          GCS_PATH="gs://${{ secrets.GCS_BUCKET }}/instrumented-${{ github.run_id }}"
+          GCS_PATH="gs://${{ secrets.GCS_BUCKET }}/instrumented-${{ github.run_id }}-${{ github.run_attempt }}"
           mkdir -p ./results
-          gsutil -m cp -r "$GCS_PATH/" ./results/ 2>&1 || echo "WARNING: gsutil download failed"
+          gsutil -m cp -r "$GCS_PATH/" ./results/
 
       - name: Surface test results
         if: always()
         run: |
-          echo "=== JUnit XML test summaries ==="
-          find ./results -name "test_result_*.xml" -exec sh -c 'echo "--- $1 ---"; cat "$1"' _ {} \; 2>/dev/null | head -300
-          echo ""
-          echo "=== Traceway logs from logcat ==="
-          grep -rh "Traceway" ./results/ 2>/dev/null | head -80 || echo "no Traceway log lines"
-          echo ""
-          echo "=== Errors / failures from logcat ==="
-          grep -rh "FAILURES\!\|AssertionError\|java.lang.AssertionError\|expected:\|but was:" ./results/ 2>/dev/null | head -80 || echo "no test failures in logcat"
+          python3 scripts/check-device-results.py ./results
 
       - name: Upload FTL artifacts
         if: always()
@@ -137,3 +134,4 @@ jobs:
         with:
           name: ftl-results-${{ github.run_id }}
           path: ./results/
+          if-no-files-found: error

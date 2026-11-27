@@ -850,10 +850,43 @@ class TracewayClientTest {
         assertEquals(true, errors[1].attr("exception.unhandled"))
     }
 
+    private fun recoveryDirectory(root: File, token: String = "tok"): File {
+        val key = com.tracewayapp.traceway.core.OtlpDestination(
+            "https://traceway.test/api/otel/v1/logs", mapOf("Authorization" to "Bearer $token"),
+        ).key
+        return File(root, "recovery/$key").apply { mkdirs() }
+    }
+
+    @Test
+    fun replaySpoolsRequireTheOriginalDestinationAndCurrentConsent() {
+        val state = tmp.newFolder("replay")
+        val dir = File(recoveryDirectory(state), "recordings").apply { mkdirs() }
+        fun spool(parent: File) = File(parent, "${scheduler.now()}-0-1.json.gz").apply { writeBytes(byteArrayOf(1)) }
+        val saved = spool(dir)
+        val unscoped = spool(File(state, "recordings").apply { mkdir() })
+        fun restart(token: String, server: String, enabled: Boolean) {
+            start(TracewayOptions(screenCapture = enabled), stateDir = state, connectionString = "$token@$server").shutdown(2000)
+        }
+        restart("other", "https://traceway.test", true)
+        restart("tok", "https://elsewhere.test", true)
+        assertTrue(saved.exists())
+        assertFalse(unscoped.exists())
+        assertFalse(http.requests.any { it.url.endsWith("/api/recordings") })
+        restart("tok", "https://traceway.test", true)
+        assertFalse(saved.exists())
+        assertEquals("Bearer tok", http.requests.single { it.url.endsWith("/api/recordings") }.headers["Authorization"])
+        spool(dir)
+        restart("tok", "https://traceway.test", false)
+        restart("tok", "https://traceway.test", true)
+        assertFalse(saved.exists())
+        assertEquals(1, http.requests.count { it.url.endsWith("/api/recordings") })
+    }
+
     @Test
     fun aCrashFromBeforeTheStartIsReportedAtTheNextOne() {
         val dir = tmp.newFolder("state")
-        File(dir, "crash.json").writeText(
+        val crashFile = File(recoveryDirectory(dir), "crash.json")
+        crashFile.writeText(
             Json.stringify(
                 mapOf(
                     "timeMs" to scheduler.now() - 5000,
@@ -864,12 +897,18 @@ class TracewayClientTest {
                 ),
             ),
         )
+        start(stateDir = dir, connectionString = "another@https://traceway.test").shutdown(2000)
+        assertTrue(crashFile.exists())
+        assertTrue(named("exception").isEmpty())
         val client = start(stateDir = dir)
         client.flush(2000)
         val crash = named("exception").single()
         assertEquals("early", crash.attr("exception.message"))
         assertEquals(true, crash.attr("traceway.crash.before_start"))
-        assertFalse(File(dir, "crash.json").exists())
+        assertFalse(crashFile.exists())
+        assertEquals(true, crash.attr("traceway.previous_run"))
+        assertNull(crash.attr("session.id"))
+        assertEquals("buffer_unavailable", crash.attr("traceway.replay.status"))
     }
 
     // ------------------------------------------- §14: exits, hangs, logcat, the tracer
@@ -899,6 +938,9 @@ class TracewayClientTest {
         exits.add(ExitRecord(ExitReasons.REASON_ANR, scheduler.nowMs - 20_000, 5555, "shop", "Input dispatching timed out") { java.io.ByteArrayInputStream(fixture("anr_blocked.txt")) })
         exits.add(ExitRecord(ExitReasons.REASON_LOW_MEMORY, scheduler.nowMs - 10_000, 6000, "shop", null))
         exits.add(ExitRecord(ExitReasons.REASON_CRASH, scheduler.nowMs - 5_000, 7000, "shop", "its handler reported it"))
+        repeat(ExitReasons.MAX_REPORTS + 1) {
+            exits.add(ExitRecord(1, scheduler.nowMs - it, 8000 + it, "shop", "routine exit"))
+        }
         logs.reset()
         http.clear()
         val second = start(TracewayOptions(), stateDir = dir, exitSource = source, pid = 9999)
@@ -925,7 +967,7 @@ class TracewayClientTest {
         assertTrue((anr.attr("exception.message") as String).startsWith("Input dispatching timed out (8d3c1a2"))
         assertTrue((anr.attr("exception.stacktrace") as String).contains("\n\tat com.example.shop.cart.CartRepository.total(CartRepository.kt:88)\n"))
         assertEquals("anr", anr.attr("app.exit.reason"))
-        assertEquals("an unknown process's issue goes in the current session", now, anr.attr("session.id"))
+        assertNull("an unknown prior session stays unknown", anr.attr("session.id"))
 
         val sums = metricSums()
         assertEquals(1.0, sums["app.anr"])
@@ -952,6 +994,21 @@ class TracewayClientTest {
     }
 
     @Test
+    fun aFatalHangWaitsForTheProjectThatCapturedIt() {
+        val dir = tmp.newFolder("hang-state")
+        val first = start(stateDir = dir, pid = 123)
+        first.hangsForTest!!.stalled(4000)
+        first.shutdown(2000)
+        val files = File(recoveryDirectory(dir), "hangs")
+        assertEquals(1, files.listFiles()!!.size)
+        start(stateDir = dir, connectionString = "other@https://traceway.test").shutdown(2000)
+        assertTrue(named("exception").isEmpty())
+        assertEquals(1, files.listFiles()!!.size)
+        start(stateDir = dir).flush(2000)
+        assertEquals("AppHang", named("exception").single().attr("exception.type"))
+    }
+
+    @Test
     fun aHangTheProcessDidNotSurviveIsReportedAtTheNextStartUnlessAndroidRecordedItsAnr() {
         val dir = tmp.newFolder("state")
         val exits = ArrayList<ExitRecord>()
@@ -960,7 +1017,7 @@ class TracewayClientTest {
         // Two runs hung and died: Android recorded one as an ANR, not the other (swiped away while frozen).
         fun leftBehind(pid: Int, blockedMs: Long) = AppHangs(
             thresholdMs = 2000,
-            directory = File(dir, "hangs"),
+            directory = File(recoveryDirectory(dir), "hangs"),
             pid = pid,
             mainStack = { arrayOf(StackTraceElement("com.example.shop.Cart", "total", "Cart.kt", 88)) },
             screen = { mapOf("app.screen.name" to "/cart") },
@@ -994,7 +1051,7 @@ class TracewayClientTest {
         assertEquals("session-4321", hang.attr("session.id"))
         assertEquals(true, hang.attr("exception.unhandled"))
         assertEquals(Severity.FATAL, hang.severity)
-        assertEquals("taken once", 0, File(dir, "hangs").listFiles()?.size ?: 0)
+        assertEquals("taken once", 0, File(recoveryDirectory(dir), "hangs").listFiles()?.size ?: 0)
     }
 
     @Test

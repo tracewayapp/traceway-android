@@ -133,9 +133,13 @@ internal class RecordingsTransport(
         kick()
     }
 
-    private fun enqueue(batch: Batch) {
+    private fun enqueue(batch: Batch, fromGeneration: Int? = null) {
         val evicted = ArrayList<Batch>()
         synchronized(lock) {
+            if (fromGeneration != null && fromGeneration != generation) {
+                batch.spoolFile?.delete()
+                return
+            }
             queue.addLast(batch)
             queuedBytes += batch.bytes
             while (queuedBytes > maxQueuedBytes && queue.size > 1) {
@@ -329,11 +333,12 @@ internal class RecordingsTransport(
      * half-written files are removed. Blocks on disk; runs once per
      * transport.
      */
-    fun loadSpooled() {
+    fun loadSpooled(allowed: () -> Boolean = { true }) {
         val dir = spoolDirectory ?: return
-        synchronized(lock) {
+        val fromGeneration = synchronized(lock) {
             if (spoolLoaded) return
             spoolLoaded = true
+            generation
         }
         val files = try {
             dir.listFiles()
@@ -365,6 +370,10 @@ internal class RecordingsTransport(
         }
         found.sortWith(compareBy<Spooled>({ it.timeMs }, { it.seq }))
         for (s in found) {
+            if (!allowed()) {
+                s.file.delete()
+                continue
+            }
             val body = try {
                 s.file.readBytes()
             } catch (_: Throwable) {
@@ -374,7 +383,7 @@ internal class RecordingsTransport(
                 s.file.delete()
                 continue
             }
-            enqueue(Batch(null, body, s.count, body.size.toLong(), s.file))
+            enqueue(Batch(null, body, s.count, body.size.toLong(), s.file), fromGeneration)
         }
         if (found.isNotEmpty()) kick()
     }

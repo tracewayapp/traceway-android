@@ -46,6 +46,8 @@ android {
     }
 
     testOptions {
+        // The self-instrumenting APK must target a version that current Android devices can install.
+        targetSdk = 35
         unitTests {
             isIncludeAndroidResources = true
             isReturnDefaultValues = true

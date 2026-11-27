@@ -88,14 +88,14 @@ internal class ReplayController(
     private fun sync() {
         val source = source
         if (mode != Mode.STREAM) stopTimer()
-        if (source == null) return
         if (mode == Mode.OFF) {
-            if (source.isRunning) source.stop()
-            source.clearBuffer()
+            if (source?.isRunning == true) source.stop()
+            source?.clearBuffer()
             transport.discard()
             sessionCursor = null
             return
         }
+        if (source == null) return
         if (!source.isRunning) source.start()
         if (mode == Mode.STREAM) startTimer()
     }

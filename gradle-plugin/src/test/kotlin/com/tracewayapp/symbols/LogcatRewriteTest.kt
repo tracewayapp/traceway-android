@@ -219,6 +219,19 @@ class LogcatRewriteTest {
         assertFalse(TracewaySdk.atLeast("latest.release", "2.1.0"))
     }
 
+    @Test
+    fun stripRulesPreserveTheOriginalOverloadAndPrintlnBridgePriority() {
+        val rules = """-assumenosideeffects class android.util.Log {
+            public static int d(java.lang.String,java.lang.String);
+            public static int println(int,java.lang.String,java.lang.String);
+        }"""
+        val mirrored = LogcatRewrite.mirrorStripRules(listOf(rules))!!.replace(" ", "")
+        assertTrue(mirrored.contains("d(java.lang.String,java.lang.String);"))
+        assertTrue(mirrored.contains("println(int,java.lang.String,java.lang.String,int);"))
+        assertFalse(mirrored.contains("d(...);"))
+        assertFalse(mirrored.contains("println(...);"))
+    }
+
     /** AND2-9: an app that strips `Log` from release builds gets the rewritten calls stripped the same way. */
     @Test
     fun logStrippingRulesAreMirroredForTheBridge() {

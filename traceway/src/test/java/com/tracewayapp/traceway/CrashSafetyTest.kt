@@ -85,11 +85,15 @@ private const val CONNECTION = "tok@https://traceway.test"
 private class Logs : LogRecordExporter {
     @Volatile
     var failing = false
+    val failedExport = CountDownLatch(1)
     private val items = Collections.synchronizedList(ArrayList<LogRecordData>())
     val all: List<LogRecordData> get() = synchronized(items) { ArrayList(items) }
 
     override fun export(logs: Collection<LogRecordData>): CompletableResultCode {
-        if (failing) throw IllegalStateException("exporter")
+        if (failing) {
+            failedExport.countDown()
+            throw IllegalStateException("exporter")
+        }
         items.addAll(logs)
         return CompletableResultCode.ofSuccess()
     }
@@ -346,6 +350,19 @@ class CrashSafetyTest {
     // ---- fault injection ----------------------------------------------------------
 
     @Test
+    fun explicitFlushWaitsForANewDrainAfterACoalescedRequest() {
+        val previous = CompletableResultCode().succeed()
+        val fresh = CompletableResultCode()
+        var requests = 0
+        flushBatchQueue(2000) {
+            requests++
+            if (requests < 3) previous else fresh.succeed()
+        }
+        assertEquals(3, requests)
+        assertTrue(fresh.isSuccess)
+    }
+
+    @Test
     fun aThrowingExporterNeverReachesTheApp() {
         val c = start()
         logs.failing = true
@@ -354,6 +371,7 @@ class CrashSafetyTest {
         c.log("l")
         Traceway.startInteraction("i").apply { run { } ; end() }
         c.flush(2000)
+        assertTrue("the exporter actually failed before recovery", logs.failedExport.await(10, TimeUnit.SECONDS))
         logs.failing = false
         spans.failing = false
         c.captureException(RuntimeException("after"))

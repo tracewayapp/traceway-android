@@ -32,6 +32,16 @@ class TracewaySymbolsTest {
     }
 
     @Test
+    fun uploadEndpointSeparatesAuthorityFromLegacyAndUploadPaths() {
+        assertEquals("http://api/api/symbols/upload", TracewaySymbols.uploadEndpoint("http://api"))
+        assertEquals("http://api/api/symbols/upload", TracewaySymbols.uploadEndpoint("http://api/api"))
+        assertEquals("http://api/report/api/symbols/upload", TracewaySymbols.uploadEndpoint("http://api/report"))
+        assertEquals("http://api/symbols/upload/api/symbols/upload", TracewaySymbols.uploadEndpoint("http://api/symbols/upload"))
+        assertEquals("http://api/prefix/api/symbols/upload", TracewaySymbols.uploadEndpoint("http://api/prefix/api/report/?q=1#frag"))
+        assertEquals("http://localhost:8080/api/symbols/upload", TracewaySymbols.uploadEndpoint("localhost:8080/api"))
+    }
+
+    @Test
     fun urlDefaultsToTracewayCloudWhenAbsentOrBlank() {
         assertEquals("https://cloud.tracewayapp.com", TracewaySymbols.DEFAULT_URL)
         assertEquals(TracewaySymbols.DEFAULT_URL, TracewaySymbols.resolveUrl(null))
