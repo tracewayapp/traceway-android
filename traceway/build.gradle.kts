@@ -7,7 +7,7 @@ plugins {
     id("com.vanniktech.maven.publish")
 }
 
-val sdkVersion = "2.0.0-beta.1"
+val sdkVersion = "2.1.0"
 val otelVersion = "1.68.0"
 
 android {
@@ -70,7 +70,8 @@ dependencies {
     // SDK, and leave as OTLP protobuf built by its marshalers. Pinned to one
     // line through the BOM so the api/sdk singletons never mix versions.
     implementation(platform("io.opentelemetry:opentelemetry-bom:$otelVersion"))
-    implementation("io.opentelemetry:opentelemetry-api")
+    // Part of the public API: `Traceway.tracer` is an OpenTelemetry `Tracer`.
+    api("io.opentelemetry:opentelemetry-api:$otelVersion")
     implementation("io.opentelemetry:opentelemetry-sdk-common")
     implementation("io.opentelemetry:opentelemetry-sdk-logs")
     implementation("io.opentelemetry:opentelemetry-sdk-trace")
@@ -86,6 +87,8 @@ dependencies {
     compileOnly("com.squareup.okhttp3:okhttp:4.12.0")
     compileOnly("androidx.compose.ui:ui-android:1.7.8")
     compileOnly("androidx.fragment:fragment:1.8.9")
+    // Compose Navigation screens (`Traceway.trackNavigation`).
+    compileOnly("androidx.navigation:navigation-runtime:2.8.5")
 
     // ── JVM unit tests ────────────────────────────────────────────────
     testImplementation("junit:junit:4.13.2")
@@ -112,6 +115,7 @@ dependencies {
     testImplementation("androidx.compose.material3:material3")
     testImplementation("androidx.compose.material:material-icons-core")
     testImplementation("androidx.activity:activity-compose:1.9.3")
+    testImplementation("androidx.navigation:navigation-compose:2.8.5")
     // The Compose compiler for the tests' composables only. Applied as the
     // Gradle plugin it would also compile the library, which has none, and
     // add Compose's `$stable` fields to its public classes.

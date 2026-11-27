@@ -57,7 +57,7 @@ class AppVitalsTest {
         vitals = vitals()
     }
 
-    private fun vitals(currentScreen: () -> String? = { screen }) = AppVitals(
+    private fun vitals(currentScreen: () -> String? = { screen }, reportHangsInDebug: Boolean = false) = AppVitals(
         r.recorder,
         currentScreen = currentScreen,
         scheduler = r.scheduler,
@@ -67,6 +67,7 @@ class AppVitalsTest {
         hangThresholdMs = 150,
         watchdogIntervalMs = 20,
         host = host,
+        reportHangsInDebug = reportHangsInDebug,
     )
 
     @After
@@ -224,6 +225,24 @@ class AppVitalsTest {
         host.runMain()
         r.recorder.flush()
         assertTrue(r.bodies.isEmpty())
+    }
+
+    /** AND2-18: `reportHangsInDebug` counts a hang from Android Studio's Debug run. */
+    @Test
+    fun reportHangsInDebugCountsAHangUnderADebugger() {
+        vitals.stop()
+        vitals = vitals(reportHangsInDebug = true)
+        vitals.start(null)
+        host.runMain()
+        host.debugger = true
+        r.scheduler.advance(20)
+        r.scheduler.advance(300)
+        host.runMain()
+        r.scheduler.advance(20)
+        host.runMain()
+        vitals.lifecycleChanged(false)
+        r.recorder.flush()
+        assertEquals(1.0, r.decoded.sums["app.hang|screen=/cart"])
     }
 
     @Test

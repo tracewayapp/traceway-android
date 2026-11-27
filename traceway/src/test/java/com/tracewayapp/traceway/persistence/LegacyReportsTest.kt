@@ -1,39 +1,40 @@
 package com.tracewayapp.traceway.persistence
 
-import com.tracewayapp.traceway.core.OtlpDestination
-import com.tracewayapp.traceway.internal.HttpResponse
 import com.tracewayapp.traceway.internal.Json
-import com.tracewayapp.traceway.internal.ManualScheduler
 import com.tracewayapp.traceway.internal.Rfc3339
-import com.tracewayapp.traceway.internal.asJsonList
-import com.tracewayapp.traceway.internal.asJsonObject
-import com.tracewayapp.traceway.otel.FakeHttp
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
-import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
 import org.junit.rules.TemporaryFolder
 import java.io.File
 
+/**
+ * CONTRACT §16: what a 1.x build left unsent is read once, as exceptions
+ * and messages of this SDK, and deleted; nothing is posted to `/api/report`
+ * (the client end of it is in `StartApiTest`).
+ */
 class LegacyReportsTest {
     @get:Rule
     val tmp = TemporaryFolder()
 
-    // Real time: expiry looks at file modification times.
-    private val scheduler = ManualScheduler(nowMs = System.currentTimeMillis())
+    private val now = System.currentTimeMillis()
 
     /** A file as the 1.x ExceptionStore wrote it, with the clip its client added. */
-    private fun entry(createdAtMs: Long = scheduler.now()) = linkedMapOf(
+    private fun entry(
+        createdAtMs: Long = now,
+        stackTrace: String = "java.lang.IllegalStateException: legacy error\n    at com.example.Main.run(Main.kt:10)",
+        isMessage: Boolean = false,
+    ) = linkedMapOf(
         "createdAt" to Rfc3339.format(createdAtMs),
         "exception" to linkedMapOf(
             "traceId" to null,
             "isTask" to false,
-            "stackTrace" to "java.lang.IllegalStateException: legacy error\n    at com.example.Main.run(Main.kt:10)",
-            "recordedAt" to Rfc3339.format(createdAtMs),
+            "stackTrace" to stackTrace,
+            "recordedAt" to Rfc3339.format(createdAtMs - 1000),
             "attributes" to linkedMapOf("device.model" to "Pixel"),
-            "isMessage" to false,
+            "isMessage" to isMessage,
             "sessionRecordingId" to "clip-1",
             "distributedTraceId" to null,
         ),
@@ -44,93 +45,55 @@ class LegacyReportsTest {
         ),
     )
 
-    private val target = OtlpDestination("https://old.test/api/report", mapOf("Authorization" to "Bearer original"))
-
     @Test
-    fun legacyErrorsAndTheirClipsRetryOnlyAgainstTheirOriginalProject() {
-        val pending = tmp.newFolder("traceway_pending")
-        val saved = entry()
-        File(pending, "report.json").writeText(Json.stringify(saved))
-        val old = File(pending, "expired.json").apply {
-            writeText(Json.stringify(saved))
-            setLastModified(System.currentTimeMillis() - 2 * 24 * 3600_000L)
-        }
-        var status = 503
-        val http = FakeHttp { HttpResponse(status) }
-
-        LegacyReports(pending, null, http, scheduler).drain()
-        assertFalse(old.exists())
-        assertTrue(http.requests.isEmpty())
-
-        LegacyReports(pending, target, http, scheduler).drain()
-        LegacyReports(pending, OtlpDestination("https://new.test/api/report", emptyMap()), http, scheduler).drain()
-        assertEquals(1, http.requests.size)
-
-        status = 200
-        val next = LegacyReports(pending, target, http, scheduler)
-        next.drain()
-        next.drain()
-        assertEquals(2, http.requests.size)
-        for (request in http.requests) {
-            assertEquals(target.url, request.url)
-            assertEquals("Bearer original", request.headers["Authorization"])
-            assertEquals("application/json", request.headers["Content-Type"])
-            val frame = Json.parse(request.plain.toString(Charsets.UTF_8)).asJsonObject()!!["collectionFrames"]
-                .asJsonList()!!.single().asJsonObject()!!
-            assertEquals(listOf(saved["exception"]), frame["stackTraces"])
-            assertEquals(listOf(saved["recording"]), frame["sessionRecordings"])
-        }
-        assertTrue(File(pending, target.key).listFiles()!!.isEmpty())
-    }
-
-    @Test
-    fun aPermanentFailureDeletesTheReport() {
+    fun exceptionsAndMessagesAreReadOnceAndEveryFileIsDeleted() {
         val pending = tmp.newFolder("traceway_pending")
         File(pending, "a.json").writeText(Json.stringify(entry()))
-        val http = FakeHttp { HttpResponse(401) }
-        LegacyReports(pending, target, http, scheduler).drain()
-        assertEquals(1, http.requests.size)
-        assertTrue(File(pending, target.key).listFiles()!!.isEmpty())
+        File(pending, "b.json").writeText(Json.stringify(entry(createdAtMs = now - 5000, stackTrace = "User opened support chat", isMessage = true)))
+        // A 2.0 beta moved reports into a folder of the project it meant to send them to.
+        val project = File(pending, "0123abcd").apply { mkdirs() }
+        File(project, "c.json").writeText(Json.stringify(entry(stackTrace = "java.io.IOException\n    at com.example.Net.call(Net.kt:3)")))
+        // Too old for 1.x, unreadable, not a report: deleted unread.
+        File(pending, "old.json").writeText(Json.stringify(entry(createdAtMs = now - 13 * 3600_000L)))
+        File(pending, "broken.json").writeText("{not json")
+        File(pending, "notes.txt").writeText("x")
+
+        val reports = LegacyReports.takeAll(pending, now)
+        assertEquals(3, reports.size)
+        val message = reports.first()
+        assertTrue("oldest first", message.isMessage)
+        assertEquals("User opened support chat", message.message)
+        assertEquals("", message.type)
+
+        val exception = reports.first { it.type == "java.lang.IllegalStateException" }
+        assertFalse(exception.isMessage)
+        assertEquals("legacy error", exception.message)
+        assertTrue(exception.stackTrace.startsWith("java.lang.IllegalStateException: legacy error\n    at com.example.Main.run"))
+        assertEquals("the time 1.x recorded it", now - 1000, exception.timeMs)
+        assertEquals(mapOf("device.model" to "Pixel"), exception.attributes)
+
+        val bare = reports.first { it.type == "java.io.IOException" }
+        assertEquals("", bare.message)
+
+        assertFalse("the 1.x directory is gone", pending.exists())
+        assertTrue("and there is nothing to read again", LegacyReports.takeAll(pending, now).isEmpty())
     }
 
     @Test
-    fun reportsCreatedMoreThanTwelveHoursAgoOrUnreadableAreDropped() {
+    fun atMostTheNewestReportsAreKept() {
         val pending = tmp.newFolder("traceway_pending")
-        File(pending, "old.json").writeText(Json.stringify(entry(scheduler.now() - 13 * 3600_000L)))
-        File(pending, "corrupt.json").writeText("{not json")
-        File(pending, "noexception.json").writeText("""{"createdAt":"${Rfc3339.format(scheduler.now())}"}""")
-        val http = FakeHttp()
-        LegacyReports(pending, target, http, scheduler).drain()
-        assertTrue(http.requests.isEmpty())
-        assertTrue(File(pending, target.key).listFiles()!!.isEmpty())
+        for (i in 0 until LegacyReports.MAX_REPORTS + 5) {
+            File(pending, "r$i.json").writeText(Json.stringify(entry(createdAtMs = now - (100 - i) * 1000L, stackTrace = "java.lang.Error: $i")))
+        }
+        val reports = LegacyReports.takeAll(pending, now)
+        assertEquals(LegacyReports.MAX_REPORTS, reports.size)
+        assertEquals("java.lang.Error: ${LegacyReports.MAX_REPORTS + 4}", reports.last().stackTrace)
+        assertFalse(pending.exists())
     }
 
     @Test
-    fun aReportWithoutAClipIsSentWithoutRecordings() {
-        val pending = tmp.newFolder("traceway_pending")
-        val saved = entry().apply { remove("recording") }
-        File(pending, "a.json").writeText(Json.stringify(saved))
-        val http = FakeHttp()
-        assertTrue(LegacyReports(pending, target, http, scheduler).drainBlocking(1000))
-        val frame = Json.parse(http.requests.single().plain.toString(Charsets.UTF_8)).asJsonObject()!!["collectionFrames"]
-            .asJsonList()!!.single().asJsonObject()!!
-        assertFalse(frame.containsKey("sessionRecordings"))
-    }
-
-    @Test
-    fun theOneXConnectionStringNamesTheProject() {
-        val destination = LegacyReports.destinationOf("original@https://old.test/prefix/api/report")!!
-        assertEquals("https://old.test/prefix/api/report", destination.url)
-        assertEquals("Bearer original", destination.headers["Authorization"])
-        assertNull(LegacyReports.destinationOf("no-separator"))
-        assertNull(LegacyReports.destinationOf(null))
-        assertEquals(File("/data/nb", "traceway_pending"), LegacyReports.directoryIn(File("/data/nb")))
-    }
-
-    @Test
-    fun aMissingDirectoryIsNothingToDo() {
-        val http = FakeHttp()
-        assertTrue(LegacyReports(File(tmp.root, "absent"), target, http, scheduler).drainBlocking(100))
-        assertTrue(http.requests.isEmpty())
+    fun noDirectoryIsNoReport() {
+        assertTrue(LegacyReports.takeAll(File(tmp.root, "missing"), now).isEmpty())
+        assertEquals("traceway_pending", LegacyReports.directoryIn(tmp.root).name)
     }
 }

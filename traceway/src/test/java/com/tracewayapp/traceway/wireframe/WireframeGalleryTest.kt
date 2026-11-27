@@ -83,6 +83,8 @@ class WireframeGalleryTest {
         val only = System.getenv("WIREFRAME_GALLERY_ONLY")?.split(',')?.map { it.trim() }?.filter { it.isNotEmpty() }?.toSet()
         val scenarios = GalleryScenes.all.filter { only == null || it.id in only }
         assertTrue("WIREFRAME_GALLERY_ONLY=$only names no scenario of ${GalleryScenes.all.map { it.id }}", scenarios.isNotEmpty())
+        // Colours other tests resolved in this JVM must not be served to the gallery's screens.
+        resetAndroidxColorCaches()
         val driver = GalleryDriver(GalleryDriver.outputDirectory())
         try {
             for (scenario in scenarios) driver.run(scenario)
@@ -138,6 +140,28 @@ internal open class GalleryActivity : AppCompatActivity() {
 /** The Material 3 day-night theme; dark when the gallery runs it with the night qualifier. */
 internal class GalleryDayNightActivity : GalleryActivity() {
     override val themeId: Int = com.google.android.material.R.style.Theme_Material3_DayNight_NoActionBar
+
+    /**
+     * The mode switched the way an app switches it, for this activity
+     * alone: AppCompat gives it a configuration (and so resources) of its
+     * own, while the process keeps its qualifiers. Changing Robolectric's
+     * qualifiers in place instead let AndroidX's process-wide
+     * ColorStateList cache serve colours resolved in the other mode.
+     */
+    override fun attachBaseContext(newBase: android.content.Context) {
+        delegate.localNightMode = if (night) {
+            androidx.appcompat.app.AppCompatDelegate.MODE_NIGHT_YES
+        } else {
+            androidx.appcompat.app.AppCompatDelegate.MODE_NIGHT_NO
+        }
+        super.attachBaseContext(newBase)
+    }
+
+    companion object {
+        /** The mode the next one opens in. */
+        @JvmStatic
+        var night = false
+    }
 }
 
 /**

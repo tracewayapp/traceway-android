@@ -126,11 +126,36 @@ internal class FrameTally(
 }
 
 /**
+ * What a [HangWatchdog] tells about a block long enough to be an issue:
+ * that it goes on (with the main thread still blocked, so its stack shows
+ * where), and that it ended.
+ */
+internal interface HangListener {
+    /** How long the main thread must be blocked before [stalled] is called. */
+    val thresholdMs: Long
+
+    /**
+     * The main thread has been blocked for [blockedMs] (at least
+     * [thresholdMs]) and still is. On the watchdog's timer thread, at each
+     * of its ticks while the block lasts.
+     */
+    fun stalled(blockedMs: Long)
+
+    /**
+     * The block [stalled] told about ended after [blockedMs]; [report] is
+     * false when it is not the app's (a debugger stopped it) or the watchdog
+     * stopped first. On the main thread, or the thread that stopped it.
+     */
+    fun ended(blockedMs: Long, report: Boolean)
+}
+
+/**
  * Watches the main thread for hangs: every [intervalMs] a timer thread
  * posts a probe to the main thread, unless the last one has not run yet,
  * and the time the probe waited is how long the main thread could not
  * respond. Nothing spins: one message every half second, only while
- * started. Thread-safe.
+ * started. A [listener] also hears, at each tick, of a probe still waiting
+ * past its own threshold. Thread-safe.
  */
 internal class HangWatchdog(
     /** A monotonic clock that stops in deep sleep (`SystemClock.uptimeMillis`). */
@@ -142,6 +167,7 @@ internal class HangWatchdog(
     /** True while a hang is not the app's (a debugger stopped it). */
     private val excused: () -> Boolean = { false },
     private val onHang: (blockedMs: Long) -> Unit,
+    private val listener: HangListener? = null,
 ) {
     private val lock = Any()
     private var running = false
@@ -149,6 +175,10 @@ internal class HangWatchdog(
     private var probe: Probe? = null
 
     private inner class Probe(val postedAt: Long) : Runnable {
+        /** Whether [listener] was told it stalled: it is told it ended too. */
+        @Volatile
+        var stalled = false
+
         // Runs in the app's main looper: nothing may escape into it.
         override fun run() = guarded("hang probe") { ran(this) }
     }
@@ -162,23 +192,41 @@ internal class HangWatchdog(
     }
 
     fun stop() {
-        synchronized(lock) {
+        val dropped = synchronized(lock) {
             running = false
             timer?.cancel()
             timer = null
-            probe = null
+            probe.also { probe = null }
+        }
+        if (dropped != null && dropped.stalled) {
+            guarded("hang stop") { listener?.ended(clock() - dropped.postedAt, report = false) }
         }
     }
 
     private fun tick() {
         var post: Probe? = null
+        var waiting: Probe? = null
+        var waitedMs = 0L
         synchronized(lock) {
             if (!running) return
-            if (probe == null) {
+            val outstanding = probe
+            if (outstanding == null) {
                 post = Probe(clock())
                 probe = post
+            } else if (listener != null) {
+                waitedMs = clock() - outstanding.postedAt
+                if (waitedMs >= listener.thresholdMs) waiting = outstanding
             }
             timer = schedule(intervalMs) { tick() }
+        }
+        val w = waiting
+        if (w != null && listener != null) {
+            guarded("hang stalled") {
+                if (!excused()) {
+                    w.stalled = true
+                    listener.stalled(waitedMs)
+                }
+            }
         }
         val p = post ?: return
         val posted = try {
@@ -197,7 +245,9 @@ internal class HangWatchdog(
             if (!running) return
         }
         val blocked = at - p.postedAt
-        if (blocked >= thresholdMs && !excused()) onHang(blocked)
+        val ours = guarded("hang excused", true) { !excused() }
+        if (blocked >= thresholdMs && ours) guarded("hang metric") { onHang(blocked) }
+        if (p.stalled) guarded("hang ended") { listener?.ended(blocked, report = ours) }
     }
 }
 
@@ -264,6 +314,10 @@ internal class AppVitals(
     watchdogIntervalMs: Long = 500,
     /** Replaces the Android host in tests. */
     private var host: VitalsHost? = null,
+    /** Hears of blocks long enough to be `AppHang` issues. */
+    hangListener: HangListener? = null,
+    /** Hangs count under a debugger too (`TracewayOptions.reportHangsInDebug`). */
+    private val reportHangsInDebug: Boolean = false,
 ) {
     private class PendingStart(val type: String, val originMs: Long)
 
@@ -303,8 +357,9 @@ internal class AppVitals(
         schedule = { delay, task -> scheduler.schedule(delay, task) },
         thresholdMs = hangThresholdMs,
         intervalMs = watchdogIntervalMs,
-        excused = { host?.debuggerAttached() ?: false },
+        excused = { !reportHangsInDebug && (host?.debuggerAttached() ?: false) },
         onHang = { ms -> recorder.hang(ms.toDouble(), screen ?: safeScreen()) },
+        listener = hangListener,
     )
 
     /**

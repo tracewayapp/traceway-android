@@ -11,6 +11,10 @@ import android.view.View
 import android.widget.FrameLayout
 import android.widget.TextView
 import androidx.fragment.app.Fragment
+import com.tracewayapp.traceway.diagnostics.AppHangs
+import com.tracewayapp.traceway.diagnostics.ExitReasons
+import com.tracewayapp.traceway.diagnostics.ExitRecord
+import com.tracewayapp.traceway.diagnostics.ExitSource
 import com.tracewayapp.traceway.interaction.PointerListener
 import com.tracewayapp.traceway.interaction.TapListener
 import com.tracewayapp.traceway.interaction.TouchTracker
@@ -20,9 +24,11 @@ import com.tracewayapp.traceway.internal.HttpResponse
 import com.tracewayapp.traceway.internal.HttpTransport
 import com.tracewayapp.traceway.internal.ManualScheduler
 import com.tracewayapp.traceway.internal.NavigationCapture
+import com.tracewayapp.traceway.metrics.HangListener
 import com.tracewayapp.traceway.metrics.HangWatchdog
 import com.tracewayapp.traceway.network.TracewayOkHttpInterceptor
 import com.tracewayapp.traceway.otel.FakeHttp
+import com.tracewayapp.traceway.wireframe.RealScreen
 import com.tracewayapp.traceway.wireframe.TestActivity
 import com.tracewayapp.traceway.wireframe.ViewFrameSource
 import com.tracewayapp.traceway.wireframe.WireframeImages
@@ -52,13 +58,18 @@ import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
 import org.junit.Assert.fail
 import org.junit.Before
+import org.junit.Rule
 import org.junit.Test
+import org.junit.rules.TemporaryFolder
 import org.junit.runner.RunWith
 import org.robolectric.Robolectric
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.RuntimeEnvironment
 import org.robolectric.Shadows.shadowOf
+import org.robolectric.annotation.GraphicsMode
+import java.io.File
 import java.io.IOException
+import java.io.InputStream
 import java.lang.reflect.InvocationTargetException
 import java.lang.reflect.Method
 import java.lang.reflect.Modifier
@@ -107,7 +118,11 @@ private class Spans : SpanExporter {
  * the app's own crashes still reach the handler that was there before.
  */
 @RunWith(RobolectricTestRunner::class)
+@GraphicsMode(GraphicsMode.Mode.NATIVE)
 class CrashSafetyTest {
+    @get:Rule
+    val tmp = TemporaryFolder()
+
     private val app: Application get() = RuntimeEnvironment.getApplication()
     private val scheduler = ManualScheduler(ioInline = true)
     private val http = FakeHttp()
@@ -188,8 +203,9 @@ class CrashSafetyTest {
         assertEquals("on the facade", emptyList<String>(), callWithNulls(null, facade()))
         assertEquals("on the client", emptyList<String>(), callWithNulls(client, clientMethods()))
         val interaction = Traceway.startInteraction("checkout")
+        // run and makeCurrent are called in their own tests: a scope left open would outlive this one.
         val interactionMethods = TracewayInteraction::class.java.declaredMethods.filter {
-            Modifier.isPublic(it.modifiers) && !it.isSynthetic && '$' !in it.name && it.name != "run"
+            Modifier.isPublic(it.modifiers) && !it.isSynthetic && '$' !in it.name && it.name != "run" && it.name != "makeCurrent"
         }
         assertEquals("on an interaction", emptyList<String>(), callWithNulls(interaction, interactionMethods))
 
@@ -271,14 +287,19 @@ class CrashSafetyTest {
             Traceway.getInstanceId()
             Traceway.currentSessionId
             Traceway.refreshConfig()
+            Traceway.tracer?.spanBuilder("s")?.startSpan()?.end()
+            TracewayLogcat.i("T", "logcat")
+            TracewayLogcat.println(android.util.Log.ERROR, null, "p", android.util.Log.INFO)
             Traceway.flush(100)
         }
+        assertNull(Traceway.tracer)
         everything()
         Traceway.shutdown(100)
         val c = start()
         everything()
         c.shutdown(2000)
         c.shutdown(2000)
+        assertNull("after shutdown", Traceway.tracer)
         val began = System.nanoTime()
         everything()
         c.captureException(RuntimeException("after shutdown"))
@@ -393,7 +414,7 @@ class CrashSafetyTest {
         c.captureException(RuntimeException("kept too"))
         c.captureMessage("kept")
         c.flush(2000)
-        assertEquals("a callback that throws keeps the record", 2, logs.all.count { it.eventName == "exception" || it.eventName == "message" })
+        assertEquals("a callback that throws keeps the record", 2, logs.all.count { it.eventName == "exception" || it.eventName == "traceway.message" })
     }
 
     @Test
@@ -563,8 +584,7 @@ class CrashSafetyTest {
         try {
             TracewayClient.initialize(
                 app,
-                CONNECTION,
-                TracewayOptions(),
+                TracewayOptions(token = "tok", baseUrl = "https://traceway.test"),
                 TracewayTestOverrides(instrument = true, startThread = { throw OutOfMemoryError("pthread_create (1040KB stack) failed") }),
             )
             fail()
@@ -581,8 +601,7 @@ class CrashSafetyTest {
     fun aHookThatCannotBeInstalledLeavesTheOthers() {
         val client = TracewayClient.initialize(
             app,
-            CONNECTION,
-            TracewayOptions(remoteConfig = false),
+            TracewayOptions(token = "tok", baseUrl = "https://traceway.test", remoteConfig = false),
             TracewayTestOverrides(instrument = true, beforeInstallStep = { if (it == "taps") throw IllegalStateException("taps") }),
         )
         assertSame(client, TracewayClient.instance)
@@ -650,16 +669,212 @@ class CrashSafetyTest {
 
     @Test
     fun theWireframeSourceForgetsItsWindowsWhenItStops() {
-        val controller = Robolectric.buildActivity(Activity::class.java).setup()
-        shadowOf(Looper.getMainLooper()).idle()
-        val source = ViewFrameSource(WireframeRoots(), app)
+        val screen = RealScreen.open { a -> TextView(a).apply { text = "hello" } }
+        val source = ViewFrameSource(WireframeRoots(), screen.activity)
         source.observe { }
-        source.capture(1_000L, null)
-        source.stopObserving()
+        assertNotNull(source.capture(1_000L, null))
         val field = ViewFrameSource::class.java.getDeclaredField("lastRoots")
         field.isAccessible = true
-        assertEquals("nothing keeps the destroyed activity's window", 0, (field.get(source) as Array<*>).size)
-        controller.pause().stop().destroy()
+        assertTrue("the capture saw the window", (field.get(source) as Array<*>).isNotEmpty())
+        source.stopObserving()
+        assertEquals("nothing keeps the activity's window while stopped", 0, (field.get(source) as Array<*>).size)
+        screen.controller.pause().stop().destroy()
+    }
+
+    // ---- §14: exit reasons, hangs, logcat, flush ---------------------------------------
+
+    private fun startWithState(dir: File, source: ExitSource, options: TracewayOptions = TracewayOptions()): TracewayClient =
+        TracewayClient.initializeForTest(
+            CONNECTION,
+            options,
+            TracewayTestOverrides(
+                logExporter = logs, spanExporter = spans, http = http, scheduler = scheduler, random = { 0.5 },
+                stateDirectory = dir, exitSource = source, sdkInt = 34, pid = 77,
+            ),
+        )
+
+    @Test
+    fun exitRecordsAndTracesThatCannotBeReadNeverReachTheApp() {
+        val dir = tmp.newFolder("state")
+        // A first start keeps the newest exit seen.
+        startWithState(dir, ExitSource { emptyList() }).shutdown(2000)
+        val endless = object : InputStream() {
+            override fun read(): Int = 0x0A
+            override fun read(b: ByteArray, off: Int, len: Int): Int = len.also { java.util.Arrays.fill(b, off, off + len, 0x0A) }
+        }
+        val at = scheduler.nowMs + 10
+        val hostile = listOf(
+            ExitRecord(ExitReasons.REASON_CRASH_NATIVE, at, 1, null, null) { throw IOException("no tombstone") },
+            ExitRecord(ExitReasons.REASON_CRASH_NATIVE, at + 1, -5, null, "garbage") { java.io.ByteArrayInputStream(ByteArray(300) { (it * 31).toByte() }) },
+            ExitRecord(ExitReasons.REASON_CRASH_NATIVE, at + 2, 2, null, "endless") { endless },
+            ExitRecord(ExitReasons.REASON_ANR, at + 3, 3, null, null) { throw OutOfMemoryError("trace") },
+            ExitRecord(ExitReasons.REASON_ANR, at + 4, 4, null, "endless") { endless },
+            ExitRecord(Int.MIN_VALUE, at + 5, 5, null, null),
+        )
+        scheduler.advance(1000)
+        val c = startWithState(dir, ExitSource { hostile })
+        c.captureException(RuntimeException("after"))
+        c.flush(2000)
+        assertTrue(exceptions().contains("after"))
+        assertEquals("each still reported, from its description", 5, logs.all.count { r ->
+            var type: Any? = null
+            r.attributes.forEach { k, v -> if (k.key == "exception.type") type = v }
+            type == "NativeCrash" || type == "ApplicationNotResponding"
+        })
+        c.shutdown(2000)
+
+        // A source that fails as a whole: nothing reported, the SDK runs.
+        scheduler.advance(1000)
+        val failing = startWithState(dir, ExitSource { throw SecurityException("no exit info") })
+        failing.captureException(RuntimeException("still"))
+        failing.flush(2000)
+        assertTrue(exceptions().contains("still"))
+    }
+
+    @Test
+    fun hangHooksThatFailNeverReachTheMainThread() {
+        val main = Handler(Looper.getMainLooper())
+        val throwing = object : HangListener {
+            override val thresholdMs: Long = 0
+            override fun stalled(blockedMs: Long) = throw IllegalStateException("stalled")
+            override fun ended(blockedMs: Long, report: Boolean) = throw OutOfMemoryError("ended")
+        }
+        var now = 0L
+        var excusedCalls = 0
+        val timers = ArrayList<() -> Unit>()
+        val watchdog = HangWatchdog(
+            clock = { now },
+            postToMain = { main.post(it) },
+            schedule = { _, task -> timers.add(task); Cancellable { } },
+            thresholdMs = 0,
+            intervalMs = 500,
+            // Fine when the stall is told (which throws), failing when the hang ends.
+            excused = { if (excusedCalls++ == 0) false else throw IllegalStateException("debugger check") },
+            onHang = { throw IllegalStateException("metric") },
+            listener = throwing,
+        )
+        watchdog.start()
+        now = 3000
+        timers.toList().forEach { it() }
+        assertEquals("the stall was told", 1, excusedCalls)
+        shadowOf(Looper.getMainLooper()).idle()
+        assertEquals("and the end", 2, excusedCalls)
+        watchdog.stop()
+
+        // AppHangs whose stack, screen, session, file and report all fail.
+        val notADirectory = tmp.newFile("hangs")
+        val hangs = AppHangs(
+            thresholdMs = 2000,
+            directory = notADirectory,
+            pid = 1,
+            mainStack = { throw SecurityException("stack") },
+            screen = { throw IllegalStateException("screen") },
+            sessionId = { throw IllegalStateException("session") },
+            now = { 0L },
+            background = { it() },
+            report = { throw OutOfMemoryError("report") },
+        )
+        hangs.stalled(2500)
+        hangs.ended(3000, report = true)
+        assertTrue(hangs.takePrevious().isEmpty())
+        AppHangs(2000, notADirectory, 1, { null }, { emptyMap() }, { null }, { 0L }, { throw RejectedExecutionException("disk") }, { }).apply {
+            stalled(2500)
+            ended(2600, report = true)
+        }
+    }
+
+    @Test
+    fun theLogcatBridgeBehavesExactlyAsLogDoes() {
+        val bridge = TracewayLogcat::class.java.declaredMethods.filter { Modifier.isStatic(it.modifiers) && Modifier.isPublic(it.modifiers) }
+        assertEquals(15, bridge.size)
+        fun outcome(m: Method, args: Array<Any?>): String = try {
+            "returned ${m.invoke(null, *args)}"
+        } catch (e: InvocationTargetException) {
+            "threw ${e.targetException.javaClass.name}"
+        }
+        fun same(phase: String) {
+            for (m in bridge) {
+                val logArgs = if (m.name == "println") m.parameterTypes.dropLast(1) else m.parameterTypes.toList()
+                val real = android.util.Log::class.java.getMethod(m.name, *logArgs.toTypedArray())
+                for (args in listOf(
+                    logArgs.map { if (it == Integer.TYPE) android.util.Log.ERROR else null },
+                    logArgs.map {
+                        when (it) {
+                            Integer.TYPE -> android.util.Log.WARN
+                            String::class.java -> "text"
+                            else -> IllegalStateException("tr")
+                        }
+                    },
+                )) {
+                    val bridgeArgs = if (m.name == "println") args + android.util.Log.VERBOSE else args
+                    assertEquals("$phase ${m.name}${logArgs.map { it.simpleName }} $args", outcome(real, args.toTypedArray()), outcome(m, bridgeArgs.toTypedArray()))
+                }
+            }
+        }
+        same("before init")
+        val c = start(TracewayOptions(collection = mapOf("signals" to mapOf("console" to mapOf("mode" to "stream", "minSeverity" to "trace")))))
+        same("running")
+        logs.failing = true
+        same("with an exporter that fails")
+        logs.failing = false
+        c.flush(2000)
+        assertTrue("the lines were recorded", logs.all.any { r ->
+            var source: Any? = null
+            r.attributes.forEach { k, v -> if (k.key == "log.source") source = v }
+            source == "logcat"
+        })
+        c.shutdown(2000)
+        same("after shutdown")
+    }
+
+    /** Its exporter's flush completes at [releaseAt] (epoch ms), from a thread of its own. */
+    private class SlowLogs : LogRecordExporter {
+        @Volatile
+        var releaseAt = 0L
+
+        override fun export(logs: Collection<LogRecordData>): CompletableResultCode = CompletableResultCode.ofSuccess()
+
+        override fun flush(): CompletableResultCode {
+            val wait = releaseAt - System.currentTimeMillis()
+            if (wait <= 0) return CompletableResultCode.ofSuccess()
+            val code = CompletableResultCode()
+            Thread {
+                Thread.sleep(wait)
+                code.succeed()
+            }.apply { isDaemon = true }.start()
+            return code
+        }
+
+        override fun shutdown(): CompletableResultCode = CompletableResultCode.ofSuccess()
+    }
+
+    @Test
+    fun aFlushOnTheMainThreadNeverWaitsLongEnoughForAnAnr() {
+        val slow = SlowLogs()
+        val c = TracewayClient.initializeForTest(
+            CONNECTION,
+            TracewayOptions(),
+            TracewayTestOverrides(logExporter = slow, spanExporter = spans, http = http, scheduler = scheduler, random = { 0.5 }),
+        )
+        assertSame("Robolectric runs the test on the main thread", Looper.getMainLooper().thread, Thread.currentThread())
+        slow.releaseAt = System.currentTimeMillis() + 6_000
+        var began = System.nanoTime()
+        Traceway.flush(10_000)
+        val onMain = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - began)
+        assertTrue("$onMain ms", onMain in 1_900L..3_500L)
+
+        // Off the main thread the whole timeout is waited for.
+        slow.releaseAt = System.currentTimeMillis() + 3_000
+        var offMain = 0L
+        Thread {
+            began = System.nanoTime()
+            c.flush(10_000)
+            offMain = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - began)
+        }.apply {
+            start()
+            join(20_000)
+        }
+        assertTrue("$offMain ms", offMain >= 2_600L)
     }
 
     // ---- the helper itself -----------------------------------------------------------

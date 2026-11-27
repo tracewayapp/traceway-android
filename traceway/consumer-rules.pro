@@ -14,3 +14,4 @@
 -dontwarn okhttp3.**
 -dontwarn androidx.compose.**
 -dontwarn androidx.fragment.**
+-dontwarn androidx.navigation.**

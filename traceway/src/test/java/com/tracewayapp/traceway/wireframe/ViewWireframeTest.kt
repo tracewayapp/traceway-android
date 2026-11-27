@@ -92,6 +92,10 @@ import org.robolectric.annotation.GraphicsMode
 @Config(qualifiers = "w400dp-h800dp-mdpi")
 @GraphicsMode(GraphicsMode.Mode.NATIVE)
 class ViewWireframeTest {
+    /** Colours this class resolved in dark mode must not be served to the tests after it (see [resetAndroidxColorCaches]). */
+    @org.junit.After
+    fun forgetResolvedColours() = resetAndroidxColorCaches()
+
     private fun column(a: Context, vararg views: View): LinearLayout = LinearLayout(a).apply {
         orientation = LinearLayout.VERTICAL
         for (v in views) addView(v)

@@ -67,6 +67,27 @@ class TracewayInteraction internal constructor(
         }
     }
 
+    /**
+     * Makes this interaction current on the calling thread until the
+     * returned scope is closed, as [run] does for its block: the form for
+     * Java's try-with-resources, where a lambda cannot throw checked
+     * exceptions.
+     *
+     * ```java
+     * try (TracewayScope ignored = checkout.makeCurrent()) {
+     *     api.placeOrder(cart);
+     * }
+     * ```
+     *
+     * Close it on the same thread, before the scope that was current when it
+     * was made. An interaction that records nothing returns a scope that
+     * does nothing.
+     */
+    fun makeCurrent(): TracewayScope {
+        val c = context ?: return TracewayScope(null)
+        return TracewayScope(guarded("interaction.makeCurrent", null) { c.makeCurrent() })
+    }
+
     /** Sets an attribute on the interaction's span: a String, Boolean, whole number or decimal; anything else as text. */
     fun setAttribute(key: String?, value: Any?) {
         val s = span ?: return
@@ -120,5 +141,18 @@ class TracewayInteraction internal constructor(
 
         /** The OpenTelemetry context of [current], for spans and records made inside it. */
         fun currentContext(): Context? = current?.context
+    }
+}
+
+/** The time an interaction is current, from [TracewayInteraction.makeCurrent] until [close]. */
+class TracewayScope internal constructor(private val scope: io.opentelemetry.context.Scope?) : AutoCloseable {
+    @Volatile
+    private var closed = false
+
+    /** Ends the scope; only the first call counts. */
+    override fun close() {
+        if (closed) return
+        closed = true
+        guarded("interaction.scope") { scope?.close() }
     }
 }

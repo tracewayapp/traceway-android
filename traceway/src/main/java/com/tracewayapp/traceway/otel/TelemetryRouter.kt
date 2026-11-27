@@ -254,7 +254,11 @@ internal class TelemetryRouter(
         if (signal == Events.SIGNAL_CONTROL) return if (control.enabled) Routed.STREAM else Routed.OFF
         val mode = control.modeFor(signal)
         val sampleRate = control.sampleRate(signal)
-        if (!accept() || (sampleRate < 1 && random() >= sampleRate)) return Routed.FILTERED
+        if (!accept()) return Routed.FILTERED
+        if (sampleRate < 1 && random() >= sampleRate) {
+            if (com.tracewayapp.traceway.Guard.debug && (signal == "errors" || signal == "messages")) notSampled(signal, sampleRate)
+            return Routed.FILTERED
+        }
         if (mode == Mode.OFF) return Routed.OFF
         val sessionId = hooks.sessionId
         val baselineSampled = signal in BASELINE_SIGNALS &&
@@ -272,6 +276,14 @@ internal class TelemetryRouter(
     }
 
     private fun isIssue(eventName: String?) = eventName == Events.EXCEPTION || eventName == Events.MESSAGE
+
+    /** With `debug`: an exception or a message the sample rate left out, so a test capture that never arrives says why. */
+    private fun notSampled(signal: String, sampleRate: Double) {
+        try {
+            android.util.Log.d("Traceway", "dropped ${if (signal == "errors") "an exception" else "a message"}: not sampled (sampleRate $sampleRate)")
+        } catch (_: Throwable) {
+        }
+    }
 
     /** An issue written to disk first is sent from there; the outbox drains it. */
     private fun persistedAsIssue(data: LogRecordData): Boolean =

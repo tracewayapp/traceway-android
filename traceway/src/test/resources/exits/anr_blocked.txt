@@ -1,0 +1,55 @@
+Subject: Input dispatching timed out (8d3c1a2 com.example.shop/com.example.shop.CheckoutActivity (server) is not responding. Waited 5001ms for MotionEvent(deviceId=4, eventTime=1234567, source=0x00001002, displayId=0, action=DOWN, actionButton=0x00000000, flags=0x00000000, metaState=0x00000000, buttonState=0x00000000, classification=NONE, edgeFlags=0x00000000, xPrecision=1.0, yPrecision=1.0, xCursorPosition=nan, yCursorPosition=nan, pointers=[0: (540.0, 1200.0)]), policyFlags=0x62000000)
+RssHwmKb: 245112
+RssKb: 241008
+RssAnonKb: 98004
+RssShmemKb: 1204
+VmSwapKb: 0
+
+--- CriticalEventLog ---
+capacity: 20
+timestamp_ms: 1763630102123
+window_ms: 300000
+
+----- pid 4321 at 2026-11-20 10:15:02.123456789+0100 -----
+Cmd line: com.example.shop
+Build fingerprint: 'google/oriole/oriole:14/AP2A.240805.005/12025142:user/release-keys'
+ABI: 'arm64'
+Build type: optimized
+suspend all histogram:	Sum: 1.221ms 99% C.I. 3us-405.120us Avg: 40.700us Max: 418us
+DALVIK THREADS (23):
+"main" prio=5 tid=1 Blocked
+  | group="main" sCount=1 ucsCount=0 flags=1 obj=0x72a8e5b8 self=0xb400007a2bc10380
+  | sysTid=4321 nice=-10 cgrp=top-app sched=0/0 handle=0x7b7d3d34f8
+  | state=S schedstat=( 1823445512 211339401 1853 ) utm=152 stm=30 core=2 HZ=100
+  | stack=0x7fe0a00000-0x7fe0a02000 stackSize=8188KB
+  | held mutexes=
+  at com.example.shop.cart.CartRepository.total(CartRepository.kt:88)
+  - waiting to lock <0x0b6f3e21> (a java.lang.Object) held by thread 19
+  at com.example.shop.CheckoutActivity.onPay(CheckoutActivity.kt:41)
+  at com.example.shop.CheckoutActivity.onCreate$lambda$0(CheckoutActivity.kt:27)
+  at android.view.View.performClick(View.java:7659)
+  at android.view.View.performClickInternal(View.java:7636)
+  at android.view.View$PerformClick.run(View.java:30156)
+  at android.os.Handler.handleCallback(Handler.java:958)
+  at android.os.Handler.dispatchMessage(Handler.java:99)
+  at android.os.Looper.loopOnce(Looper.java:205)
+  at android.os.Looper.loop(Looper.java:294)
+  at android.app.ActivityThread.main(ActivityThread.java:8177)
+  at java.lang.reflect.Method.invoke(Native method)
+  at com.android.internal.os.RuntimeInit$MethodAndArgsCaller.run(RuntimeInit.java:552)
+  at com.android.internal.os.ZygoteInit.main(ZygoteInit.java:971)
+
+"Signal Catcher" daemon prio=10 tid=7 Runnable
+  | group="system" sCount=0 ucsCount=0 flags=0 obj=0x13040278 self=0xb400007a2bc2a7b0
+  | sysTid=4334 nice=-20 cgrp=top-app sched=0/0 handle=0x7a0cbffcb0
+  native: #00 pc 000000000056b0d0  /apex/com.android.art/lib64/libart.so (art::DumpNativeStack+108) (BuildId: 61bf89c2fc8b7bdf2b0e8b2b7f8fc8ef)
+  at not.the.main.Thread.run(Thread.java:1)
+
+"sync" prio=5 tid=19 Sleeping
+  | group="main" sCount=1 ucsCount=0 flags=1 obj=0x13140278 self=0xb400007a2bc40000
+  at java.lang.Thread.sleep(Native method)
+  - sleeping on <0x0e2a1b3c> (a java.lang.Object)
+  at com.example.shop.cart.CartSync.run(CartSync.kt:52)
+  - locked <0x0b6f3e21> (a java.lang.Object)
+
+----- end 4321 -----

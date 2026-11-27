@@ -236,7 +236,7 @@ class CatalogTest {
         val catalog = setOf(
             "app.start.duration", "app.screen.ttid", "app.screen.ttfd",
             "app.frames.slow", "app.frames.slow.total", "app.frames.frozen",
-            "app.frames.frozen.total", "app.hang", "app.hang.duration", "app.crash",
+            "app.frames.frozen.total", "app.hang", "app.hang.duration", "app.crash", "app.anr", "app.oom",
             "app.session", "app.user", "app.user.affected", "app.memory.peak",
             "app.request.duration", "app.request.bytes", "app.request.failed",
             "app.request.failed.total",
@@ -244,7 +244,7 @@ class CatalogTest {
         val names = setOf(
             METRIC_APP_START, METRIC_SCREEN_TTID, METRIC_SCREEN_TTFD,
             METRIC_FRAMES_SLOW, "$METRIC_FRAMES_SLOW.total", METRIC_FRAMES_FROZEN, "$METRIC_FRAMES_FROZEN.total",
-            METRIC_HANG, METRIC_HANG_DURATION, METRIC_CRASH, METRIC_SESSION, METRIC_USER, METRIC_USER_AFFECTED,
+            METRIC_HANG, METRIC_HANG_DURATION, METRIC_CRASH, METRIC_ANR, METRIC_OOM, METRIC_SESSION, METRIC_USER, METRIC_USER_AFFECTED,
             METRIC_MEMORY_PEAK, METRIC_REQUEST_DURATION, METRIC_REQUEST_BYTES, METRIC_REQUEST_FAILED,
             "$METRIC_REQUEST_FAILED.total",
         )

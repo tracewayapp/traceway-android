@@ -1,5 +1,10 @@
 package com.tracewayapp.traceway
 
+import com.tracewayapp.traceway.diagnostics.AppHangs
+import com.tracewayapp.traceway.diagnostics.ExitReasons
+import com.tracewayapp.traceway.diagnostics.ExitRecord
+import com.tracewayapp.traceway.diagnostics.ExitSource
+import com.tracewayapp.traceway.diagnostics.fixture
 import com.tracewayapp.traceway.internal.ExecutorScheduler
 import com.tracewayapp.traceway.internal.HttpResponse
 import com.tracewayapp.traceway.internal.Json
@@ -99,6 +104,8 @@ class TracewayClientTest {
         stateDir: File? = null,
         inMemory: Boolean = true,
         connectionString: String? = CONNECTION,
+        exitSource: ExitSource? = null,
+        pid: Int? = null,
     ): TracewayClient = TracewayClient.initializeForTest(
         connectionString,
         options,
@@ -109,6 +116,9 @@ class TracewayClientTest {
             scheduler = scheduler,
             stateDirectory = stateDir,
             random = { 0.5 },
+            exitSource = exitSource,
+            sdkInt = 34,
+            pid = pid,
         ),
     )
 
@@ -860,5 +870,248 @@ class TracewayClientTest {
         assertEquals("early", crash.attr("exception.message"))
         assertEquals(true, crash.attr("traceway.crash.before_start"))
         assertFalse(File(dir, "crash.json").exists())
+    }
+
+    // ------------------------------------------- §14: exits, hangs, logcat, the tracer
+
+    private fun metricSums(): Map<String, Double> =
+        com.tracewayapp.traceway.metrics.Decoded(http.to("https://traceway.test/api/otel/v1/metrics").map { it.plain }).sums
+
+    private fun LogRecordData.timeMs(): Long = timestampEpochNanos / 1_000_000
+
+    @Test
+    fun theWayEarlierRunsEndedIsReportedOnceInTheirSessions() {
+        val dir = tmp.newFolder("state")
+        val exits = ArrayList<ExitRecord>()
+        val source = ExitSource { exits.sortedByDescending { it.timestampMs } }
+        // Android's history from before the SDK: a first start reports none of it.
+        exits.add(ExitRecord(ExitReasons.REASON_ANR, scheduler.nowMs - 600_000, 11, "shop", "before the SDK"))
+        val first = start(TracewayOptions(), stateDir = dir, exitSource = source, pid = 4321)
+        first.flush(2000)
+        val firstSession = first.currentSessionId!!
+        assertTrue(named("exception").isEmpty())
+        first.shutdown(2000)
+
+        // The process died; the next start is after the session timed out.
+        scheduler.advance(20 * 60_000L)
+        val crashedAt = scheduler.nowMs - 30_000
+        exits.add(ExitRecord(ExitReasons.REASON_CRASH_NATIVE, crashedAt, 4321, "shop", "crash") { java.io.ByteArrayInputStream(fixture("tombstone_segv_arm64.pb")) })
+        exits.add(ExitRecord(ExitReasons.REASON_ANR, scheduler.nowMs - 20_000, 5555, "shop", "Input dispatching timed out") { java.io.ByteArrayInputStream(fixture("anr_blocked.txt")) })
+        exits.add(ExitRecord(ExitReasons.REASON_LOW_MEMORY, scheduler.nowMs - 10_000, 6000, "shop", null))
+        exits.add(ExitRecord(ExitReasons.REASON_CRASH, scheduler.nowMs - 5_000, 7000, "shop", "its handler reported it"))
+        logs.reset()
+        http.clear()
+        val second = start(TracewayOptions(), stateDir = dir, exitSource = source, pid = 9999)
+        second.flush(2000)
+        val now = second.currentSessionId
+        assertTrue(now != firstSession)
+
+        val issues = named("exception")
+        assertEquals(listOf("NativeCrash", "ApplicationNotResponding"), issues.map { it.attr("exception.type") })
+        val native = issues[0]
+        assertEquals("SIGSEGV (SEGV_MAPERR), fault addr 0x0: null pointer dereference", native.attr("exception.message"))
+        assertTrue((native.attr("exception.stacktrace") as String).startsWith("NativeCrash: SIGSEGV (SEGV_MAPERR)"))
+        assertEquals("the dead process's session", firstSession, native.attr("session.id"))
+        assertEquals("ImageDecoder", native.attr("thread.name"))
+        assertEquals("crash_native", native.attr("app.exit.reason"))
+        assertEquals(4321L, native.attr("process.pid"))
+        assertEquals(true, native.attr("exception.unhandled"))
+        assertEquals(true, native.attr("traceway.previous_run"))
+        assertEquals("this run's replay is not its context", "buffer_unavailable", native.attr("traceway.replay.status"))
+        assertEquals(Severity.FATAL, native.severity)
+        assertEquals("when the process died", crashedAt, native.timeMs())
+
+        val anr = issues[1]
+        assertTrue((anr.attr("exception.message") as String).startsWith("Input dispatching timed out (8d3c1a2"))
+        assertTrue((anr.attr("exception.stacktrace") as String).contains("\n\tat com.example.shop.cart.CartRepository.total(CartRepository.kt:88)\n"))
+        assertEquals("anr", anr.attr("app.exit.reason"))
+        assertEquals("an unknown process's issue goes in the current session", now, anr.attr("session.id"))
+
+        val sums = metricSums()
+        assertEquals(1.0, sums["app.anr"])
+        assertEquals(1.0, sums["app.oom"])
+        assertEquals("the native crash", 1.0, sums["app.crash"])
+
+        // The next start has nothing new.
+        second.shutdown(2000)
+        logs.reset()
+        start(TracewayOptions(), stateDir = dir, exitSource = source, pid = 10_000).flush(2000)
+        assertTrue(named("exception").isEmpty())
+    }
+
+    @Test
+    fun exitReasonsCanBeTurnedOff() {
+        val dir = tmp.newFolder("state")
+        val exits = ArrayList<ExitRecord>()
+        val source = ExitSource { exits.toList() }
+        start(TracewayOptions(captureExitReasons = false), stateDir = dir, exitSource = source).shutdown(2000)
+        exits.add(ExitRecord(ExitReasons.REASON_ANR, scheduler.nowMs + 1, 1, "shop", "ANR"))
+        scheduler.advance(1000)
+        start(TracewayOptions(captureExitReasons = false), stateDir = dir, exitSource = source).flush(2000)
+        assertTrue(named("exception").isEmpty())
+    }
+
+    @Test
+    fun aHangTheProcessDidNotSurviveIsReportedAtTheNextStartUnlessAndroidRecordedItsAnr() {
+        val dir = tmp.newFolder("state")
+        val exits = ArrayList<ExitRecord>()
+        val source = ExitSource { exits.sortedByDescending { it.timestampMs } }
+        start(TracewayOptions(), stateDir = dir, exitSource = source, pid = 1).shutdown(2000)
+        // Two runs hung and died: Android recorded one as an ANR, not the other (swiped away while frozen).
+        fun leftBehind(pid: Int, blockedMs: Long) = AppHangs(
+            thresholdMs = 2000,
+            directory = File(dir, "hangs"),
+            pid = pid,
+            mainStack = { arrayOf(StackTraceElement("com.example.shop.Cart", "total", "Cart.kt", 88)) },
+            screen = { mapOf("app.screen.name" to "/cart") },
+            sessionId = { "session-$pid" },
+            now = { scheduler.nowMs },
+            background = { it() },
+            report = { },
+        ).stalled(blockedMs)
+        leftBehind(4321, 5000)
+        leftBehind(5555, 3000)
+        exits.add(ExitRecord(ExitReasons.REASON_ANR, scheduler.nowMs + 2_000, 5555, "shop", "Input dispatching timed out"))
+        scheduler.advance(10_000)
+        logs.reset()
+        start(TracewayOptions(), stateDir = dir, exitSource = source, pid = 9999).flush(2000)
+
+        val issues = named("exception")
+        assertEquals(listOf("ApplicationNotResponding", "AppHang"), issues.map { it.attr("exception.type") })
+        val anr = issues[0]
+        assertEquals(
+            "no dump: the frames the watchdog saw",
+            "ApplicationNotResponding: Input dispatching timed out\n\tat com.example.shop.Cart.total(Cart.kt:88)",
+            anr.attr("exception.stacktrace"),
+        )
+        assertEquals("session-5555", anr.attr("session.id"))
+        assertEquals("/cart", anr.attr("app.screen.name"))
+        val hang = issues[1]
+        assertEquals("Main thread blocked for 5.0 s", hang.attr("exception.message"))
+        assertEquals("AppHang: Main thread blocked for 5.0 s\n\tat com.example.shop.Cart.total(Cart.kt:88)", hang.attr("exception.stacktrace"))
+        assertEquals(true, hang.attr("app.hang.fatal"))
+        assertEquals(5000L, hang.attr("app.hang.duration_ms"))
+        assertEquals("session-4321", hang.attr("session.id"))
+        assertEquals(true, hang.attr("exception.unhandled"))
+        assertEquals(Severity.FATAL, hang.severity)
+        assertEquals("taken once", 0, File(dir, "hangs").listFiles()?.size ?: 0)
+    }
+
+    @Test
+    fun aHangThatEndsIsAnAppHangIssueOfThisRunWithItsScreen() {
+        var keep = true
+        val client = start(TracewayOptions(beforeCapture = { keep }))
+        client.recordNavigation("/checkout", route = "/checkout")
+        val hangs = client.hangsForTest!!
+        hangs.stalled(2400)
+        hangs.ended(3240, report = true)
+        client.flush(2000)
+        val hang = named("exception").single()
+        assertEquals("AppHang", hang.attr("exception.type"))
+        assertEquals("Main thread blocked for 3.2 s", hang.attr("exception.message"))
+        assertEquals(false, hang.attr("app.hang.fatal"))
+        assertEquals(3240L, hang.attr("app.hang.duration_ms"))
+        assertEquals("/checkout", hang.attr("app.screen.name"))
+        assertEquals("main", hang.attr("thread.name"))
+        assertEquals(Severity.ERROR, hang.severity)
+        assertNull(hang.attr("traceway.previous_run"))
+        assertEquals(client.currentSessionId, hang.attr("session.id"))
+
+        // beforeCapture sees it like an exception, and can drop it.
+        keep = false
+        hangs.stalled(2400)
+        hangs.ended(2500, report = true)
+        client.flush(2000)
+        assertEquals(1, named("exception").size)
+        assertNull("off", start(TracewayOptions(captureAppHangs = false)).hangsForTest)
+    }
+
+    @Test
+    fun logcatLinesTheGradlePluginRewroteAreConsoleRecords() {
+        val client = start(TracewayOptions(collection = mapOf("signals" to mapOf("console" to mapOf("mode" to "stream")))))
+        assertEquals("what Log returned", 0, TracewayLogcat.i("Shop", "cart opened"))
+        TracewayLogcat.d("Shop", "below the console's minimum severity")
+        TracewayLogcat.e("Shop", "checkout failed", IllegalStateException("declined"))
+        TracewayLogcat.w("Shop", IllegalArgumentException("bad sku"))
+        TracewayLogcat.wtf("Shop", "impossible")
+        TracewayLogcat.println(android.util.Log.WARN, "Timber", "from a tree", android.util.Log.INFO)
+        TracewayLogcat.println(android.util.Log.INFO, "Timber", "below the plugin's minimum", android.util.Log.WARN)
+        TracewayLogcat.v(null, null)
+        client.flush(2000)
+        val lines = named(null)
+        val bodies = lines.map { it.bodyValue?.asString() ?: "" }
+        assertEquals(5, lines.size)
+        assertEquals("cart opened", bodies[0])
+        assertTrue(bodies[1], bodies[1].startsWith("checkout failed\njava.lang.IllegalStateException: declined\n\tat "))
+        assertTrue(bodies[2], bodies[2].startsWith("java.lang.IllegalArgumentException: bad sku\n"))
+        assertEquals(listOf("impossible", "from a tree"), bodies.drop(3))
+        assertEquals(listOf("INFO", "ERROR", "WARN", "FATAL", "WARN"), lines.map { it.severityText })
+        assertTrue(lines.all { it.attr("log.source") == "logcat" })
+        assertEquals(listOf("Shop", "Shop", "Shop", "Shop", "Timber"), lines.map { it.attr("log.tag") })
+
+        // The collection settings' minimum severity, from the server or the app.
+        logs.reset()
+        val debug = start(
+            TracewayOptions(collection = mapOf("signals" to mapOf("console" to mapOf("mode" to "stream", "minSeverity" to "debug")))),
+        )
+        TracewayLogcat.d("Shop", "now it counts")
+        debug.flush(2000)
+        assertEquals(listOf("now it counts"), named(null).map { it.bodyValue?.asString() })
+
+        // Off: the console mode, captureLogs, and after shutdown.
+        logs.reset()
+        start(TracewayOptions(collection = mapOf("signals" to mapOf("console" to mapOf("mode" to "off"))))).also {
+            TracewayLogcat.e("Shop", "off")
+            it.flush(2000)
+        }
+        start(TracewayOptions(captureLogs = false, collection = mapOf("signals" to mapOf("console" to mapOf("mode" to "stream"))))).also {
+            TracewayLogcat.e("Shop", "not captured")
+            it.flush(2000)
+            it.shutdown(2000)
+        }
+        assertEquals(0, TracewayLogcat.e("Shop", "after shutdown"))
+        assertTrue(named(null).isEmpty())
+    }
+
+    @Test
+    fun theTracerGivesTheAppsOwnSpansTheSessionAndTheInteraction() {
+        TracewayClient.resetForTest()
+        assertNull("before init", Traceway.tracer)
+        io.opentelemetry.api.GlobalOpenTelemetry.resetForTest()
+        val ownPropagators = io.opentelemetry.context.propagation.ContextPropagators.create(
+            io.opentelemetry.api.trace.propagation.W3CTraceContextPropagator.getInstance(),
+        )
+        io.opentelemetry.api.GlobalOpenTelemetry.set(io.opentelemetry.api.OpenTelemetry.propagating(ownPropagators))
+        try {
+            val client = start(TracewayOptions(collection = mapOf("signals" to mapOf("network" to mapOf("mode" to "stream")))))
+            val tracer = Traceway.tracer!!
+            assertSame(tracer, client.tracer)
+            // GlobalOpenTelemetry.get() wraps what was set: its propagators say whose it is.
+            assertSame("the app's own OpenTelemetry stays the global one", ownPropagators, io.opentelemetry.api.GlobalOpenTelemetry.getPropagators())
+
+            tracer.spanBuilder("decode-image").startSpan().end()
+            val checkout = Traceway.startInteraction("checkout")
+            checkout.run { tracer.spanBuilder("load-cart").startSpan().end() }
+            checkout.end()
+            client.flush(2000)
+
+            val decode = exportedSpans().single { it.name == "decode-image" }
+            assertEquals(client.currentSessionId, decode.attributes.get(AttributeKey.stringKey("session.id")))
+            assertFalse("outside an interaction: a trace of its own", decode.parentSpanContext.isValid)
+            val load = exportedSpans().single { it.name == "load-cart" }
+            assertEquals(checkout.traceId, load.traceId)
+            assertEquals(checkout.spanId, load.parentSpanId)
+            assertEquals(client.currentSessionId, load.attributes.get(AttributeKey.stringKey("session.id")))
+
+            client.shutdown(2000)
+            assertNull("after shutdown", Traceway.tracer)
+            assertNull(client.tracer)
+        } finally {
+            io.opentelemetry.api.GlobalOpenTelemetry.resetForTest()
+        }
+        // Without an OpenTelemetry of the app's, none is registered either.
+        start()
+        assertFalse(io.opentelemetry.api.GlobalOpenTelemetry.get().getTracer("app").spanBuilder("x").startSpan().spanContext.isValid)
+        io.opentelemetry.api.GlobalOpenTelemetry.resetForTest()
     }
 }

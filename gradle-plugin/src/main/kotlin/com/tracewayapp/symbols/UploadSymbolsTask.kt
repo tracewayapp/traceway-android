@@ -15,7 +15,9 @@ abstract class UploadSymbolsTask : DefaultTask() {
     @get:Internal
     abstract val uploadToken: Property<String>
 
+    /** The Traceway server; absent or blank means Traceway Cloud. */
     @get:Input
+    @get:Optional
     abstract val url: Property<String>
 
     @get:Input
@@ -34,9 +36,7 @@ abstract class UploadSymbolsTask : DefaultTask() {
     fun run() {
         val token = uploadToken.orNull?.takeIf { it.isNotBlank() }
             ?: throw GradleException("traceway.uploadToken (the project source-map upload token, not the DSN token) is required to upload symbols")
-        val url = url.orNull?.takeIf { it.isNotBlank() }
-            ?: throw GradleException("traceway.url is required to upload symbols")
-        val endpoint = TracewaySymbols.uploadEndpoint(url)
+        val endpoint = TracewaySymbols.uploadEndpoint(TracewaySymbols.resolveUrl(url.orNull))
 
         var uploaded = 0
 
@@ -54,7 +54,7 @@ abstract class UploadSymbolsTask : DefaultTask() {
             if (result.status !in 200..299) {
                 throw GradleException("mapping upload failed (${result.status}): ${result.body}")
             }
-            logger.lifecycle("Traceway: uploaded mapping ${mapping.name} as ${proguardUuid.get()}.txt")
+            logger.lifecycle("Traceway: uploaded mapping ${mapping.name} as ${proguardUuid.get()}.txt to $endpoint")
             uploaded++
         } else {
             logger.warn("Traceway: no mapping.txt found for ${proguardUuid.get()} (is minifyEnabled on for this build type?), skipping symbol upload")

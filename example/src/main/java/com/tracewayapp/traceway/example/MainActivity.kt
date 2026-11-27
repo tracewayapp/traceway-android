@@ -4,6 +4,7 @@ import android.content.Intent
 import android.graphics.Color
 import android.os.Bundle
 import android.text.InputType
+import android.util.Log
 import android.view.Gravity
 import android.view.View
 import android.widget.CheckBox
@@ -81,15 +82,20 @@ class MainActivity : AppCompatActivity() {
 
         button("Pay", R.id.pay) {
             Traceway.track("checkout_started", mapOf("items" to 2L))
-            println("Paying for 2 items") // a console breadcrumb
+            // A logcat line: the Gradle plugin rewrites it so it is a breadcrumb too.
+            Log.i("Checkout", "Paying for 2 items")
             // One trace for the whole checkout: the request below is its child, the exception points to it.
             val checkout = Traceway.startInteraction("checkout", mapOf("items" to 2L))
             Thread {
                 checkout.run {
                     Traceway.log("Calling the payment provider", TracewayLogLevel.DEBUG)
+                    // A span of the app's own, in the checkout's trace.
+                    val span = Traceway.tracer?.spanBuilder("payment-provider")?.startSpan()
                     try {
                         httpClient.newCall(Request.Builder().url("https://httpbin.org/status/500").build()).execute().close()
                     } catch (_: IOException) {
+                    } finally {
+                        span?.end()
                     }
                     try {
                         error("Payment provider returned 500")

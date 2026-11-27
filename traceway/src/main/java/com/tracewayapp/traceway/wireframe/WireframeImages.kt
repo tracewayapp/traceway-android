@@ -36,13 +36,15 @@ internal interface ImageBudget {
  * shows it) and bitmap backgrounds, never a screenshot of the window, never
  * under a mask.
  *
- * A picture is copied at the size it shows (1.5 times its dp size, at most
- * [MAX_SIDE_PX] on its longest side, never larger than the bitmap) on the
+ * A picture is copied at the size it shows (one pixel per dp, at most
+ * [MAX_SIDE_PX] on its longest side, [ALPHA_MAX_SIDE_PX] for one with
+ * transparency, never larger than the bitmap) on the
  * main thread, while the capture looks at it: the app's image loader may
  * recycle or reuse its bitmap at any time after, so only that copy goes to
  * the encoder (a recycled bitmap read on another thread aborts the
- * process). The copy is encoded off the main thread: JPEG at quality 0.6,
- * PNG when it has alpha and is at most [PNG_MAX_SIDE_PX]. One that still
+ * process). The copy is encoded off the main thread: JPEG at quality 0.45,
+ * always PNG when it has transparency (JPEG would replay its clear pixels
+ * black). One that still
  * takes more than [MAX_BYTES] at half that size is left out, and so is one
  * that cannot be copied (out of memory; a hardware bitmap before API 28).
  * At most [MAX_COPIES_PER_FRAME] copies per frame and [MAX_PENDING_BYTES]
@@ -54,16 +56,20 @@ internal interface ImageBudget {
  * is one picture however many views show it.
  *
  * At most [maxImages] pictures are kept: past that, those not shown for
- * [LINGER_MS] (whose styles are off the page) make room, and a new session
- * starts the set again ([newSession]). [ImageBudget] bytes per session;
+ * [LINGER_MS] (whose styles are off the page) make room, else the one shown
+ * longest ago (its style leaves the page; shown again, it is a new
+ * picture), and a new session starts the set again ([newSession]).
+ * [ImageBudget] bytes per session;
  * past it, new pictures are placeholders. Whether a frame may record pictures
  * is decided when it is captured ([beginCapture]): a picture recorded on
  * Wi-Fi stays in that clip.
  */
 internal class WireframeImages(
     private val onReady: () -> Unit,
-    private val maxImages: Int = 64,
+    private val maxImages: Int = MAX_IMAGES,
     private val encoder: Executor? = null,
+    /** The most bytes one encoded picture may take ([MAX_BYTES]; a test lowers it). */
+    private val maxBytes: Int = MAX_BYTES,
 ) {
     class Image(
         val cls: String,
@@ -181,15 +187,22 @@ internal class WireframeImages(
         } catch (_: Throwable) {
             return null
         }
-        val tw = target(wDp, hDp, bitmap.width, bitmap.height, true)
-        val th = target(wDp, hDp, bitmap.width, bitmap.height, false)
+        // A picture with transparency is never JPEG (its clear pixels would replay black): PNG, at most 192 px.
+        val alpha = try {
+            bitmap.hasAlpha()
+        } catch (_: Throwable) {
+            true
+        }
+        val maxSide = if (alpha) ALPHA_MAX_SIDE_PX else MAX_SIDE_PX
+        val tw = target(wDp, hDp, bitmap.width, bitmap.height, true, maxSide)
+        val th = target(wDp, hDp, bitmap.width, bitmap.height, false, maxSide)
         if (tw <= 0 || th <= 0) return null
         val known = bySource.getOrPut(bitmap) { ArrayList(1) }
         var image = known.firstOrNull { it.generation == generation && it.wPx == tw && it.hPx == th }
         if (image == null) {
             // A picture already encoded costs nothing more; a new one needs room in the session's budget.
             if (budget?.hasRoom() == false) return null
-            if (all.size >= maxImages && !evictLingering()) return null
+            if (all.size >= maxImages && !evictLingering() && !evictOldest()) return null
             // Copies are bounded per frame and while the encoder is behind: this picture waits for a later frame.
             val bytes = tw.toLong() * th * 4
             if (copiesThisFrame >= MAX_COPIES_PER_FRAME || pendingBytes.get() + bytes > MAX_PENDING_BYTES) return null
@@ -199,11 +212,6 @@ internal class WireframeImages(
             // A pooled bitmap that now holds another picture is a new one.
             known.removeAll { it.generation != generation }
             known.add(image)
-            val alpha = try {
-                bitmap.hasAlpha()
-            } catch (_: Throwable) {
-                true
-            }
             val copy = copyOf(bitmap, tw, th)
             if (copy == null) {
                 image.failed = true
@@ -217,21 +225,22 @@ internal class WireframeImages(
         return image
     }
 
-    /** A side of the copy: the shown size at 1.5 px per dp, the longest side at most [MAX_SIDE_PX], no larger than the bitmap. */
-    private fun target(wDp: Float, hDp: Float, bw: Int, bh: Int, width: Boolean): Int {
+    /** A side of the copy: the shown size at one pixel per dp, the longest side at most [maxSide], no larger than the bitmap. */
+    private fun target(wDp: Float, hDp: Float, bw: Int, bh: Int, width: Boolean, maxSide: Float): Int {
         var w = wDp * SCALE
         var h = hDp * SCALE
         val longest = max(w, h)
-        if (longest > MAX_SIDE_PX) {
-            w *= MAX_SIDE_PX / longest
-            h *= MAX_SIDE_PX / longest
+        if (longest > maxSide) {
+            w *= maxSide / longest
+            h *= maxSide / longest
         }
         if (w > bw || h > bh) {
             val f = minOf(bw / w, bh / h)
             w *= f
             h *= f
         }
-        return max(1, ceil(if (width) w else h).toInt())
+        // Never more pixels than the bitmap has, float rounding (60.000004) included.
+        return max(1, minOf(if (width) bw else bh, ceil((if (width) w else h) - 0.001f).toInt()))
     }
 
     /**
@@ -248,6 +257,24 @@ internal class WireframeImages(
         if (gone.isEmpty()) return false
         all.removeAll(gone)
         for (list in bySource.values) list.removeAll(gone)
+        return true
+    }
+
+    /**
+     * Forgets the picture shown longest ago, to make room for a new one, when
+     * none lingers: not one on the screen being captured, nor one still
+     * encoding. False when every picture is one of those. Main thread.
+     */
+    private fun evictOldest(): Boolean {
+        var oldest: Image? = null
+        for (image in all) {
+            if (image in shown || (image.css == null && !image.failed)) continue
+            val o = oldest
+            if (o == null || maxOf(image.lastShownMs, image.addedMs) < maxOf(o.lastShownMs, o.addedMs)) oldest = image
+        }
+        val gone = oldest ?: return false
+        all.remove(gone)
+        for (list in bySource.values) list.remove(gone)
         return true
     }
 
@@ -317,16 +344,20 @@ internal class WireframeImages(
         }
     }
 
-    /** [copy] at [w] x [h], as its MIME type and bytes; null when it takes more than [MAX_BYTES] or cannot be encoded. */
+    /**
+     * [copy] at [w] x [h], as its MIME type and bytes: PNG when it has
+     * transparency, else JPEG; null when it takes more than [maxBytes] or
+     * cannot be encoded.
+     */
     private fun encoded(copy: Bitmap, alpha: Boolean, w: Int, h: Int): Pair<String, ByteArray>? {
         val scaled = if (copy.width == w && copy.height == h) copy else Bitmap.createScaledBitmap(copy, w, h, true)
         try {
-            val png = alpha && max(w, h) <= PNG_MAX_SIDE_PX
+            val png = alpha
             val out = ByteArrayOutputStream(16 * 1024)
             if (!scaled.compress(if (png) Bitmap.CompressFormat.PNG else Bitmap.CompressFormat.JPEG, if (png) 100 else JPEG_QUALITY, out)) {
                 return null
             }
-            if (out.size() > MAX_BYTES) return null
+            if (out.size() > maxBytes) return null
             return (if (png) "image/png" else "image/jpeg") to out.toByteArray()
         } finally {
             if (scaled !== copy) scaled.recycle()
@@ -343,16 +374,21 @@ internal class WireframeImages(
 
     companion object {
         /** Pixels per dp of a picture's copy. */
-        const val SCALE = 1.5f
-        const val MAX_SIDE_PX = 512f
-        const val PNG_MAX_SIDE_PX = 128
-        const val JPEG_QUALITY = 60
-        const val MAX_BYTES = 96 * 1024
+        const val SCALE = 1f
+        const val MAX_SIDE_PX = 384f
+
+        /** The longest side of a picture with transparency, always PNG: smaller, as PNG takes more bytes than JPEG. */
+        const val ALPHA_MAX_SIDE_PX = 192f
+        const val JPEG_QUALITY = 45
+        const val MAX_BYTES = 48 * 1024
+
+        /** Pictures kept per capture instance; past it the one shown longest ago makes room. */
+        const val MAX_IMAGES = 128
 
         /** New copies one frame makes at most, so a screen full of new pictures does not hold up the main thread. */
         const val MAX_COPIES_PER_FRAME = 8
 
-        /** Bytes of copies waiting for the encoder at most (four of the largest). */
+        /** Bytes of copies waiting for the encoder at most (seven of the largest). */
         const val MAX_PENDING_BYTES = 4L * 1024 * 1024
 
         private val FILTER = Paint(Paint.FILTER_BITMAP_FLAG)

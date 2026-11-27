@@ -7,6 +7,8 @@ import java.net.URI
 import java.util.UUID
 
 object TracewaySymbols {
+    /** Traceway Cloud: where mappings go unless `traceway.url` names a self-hosted server. */
+    const val DEFAULT_URL = "https://cloud.tracewayapp.com"
 
     fun deriveProguardUuid(seed: String): String =
         UUID.nameUUIDFromBytes(seed.toByteArray(Charsets.UTF_8)).toString()
@@ -37,6 +39,9 @@ object TracewaySymbols {
         out.write("--$boundary--$crlf".toByteArray())
         return out.toByteArray()
     }
+
+    /** The server [configured] names (`traceway.url`), or Traceway Cloud when it is absent or blank. */
+    fun resolveUrl(configured: String?): String = configured?.trim()?.takeIf { it.isNotEmpty() } ?: DEFAULT_URL
 
     fun uploadEndpoint(url: String): String {
         var base = url.trim().removeSuffix("/")

@@ -61,7 +61,7 @@ Defaults: Playwright from `~/Work/workspace/js-client/node_modules/playwright` (
 
 `--dashboard <origin>` uploads the run into a running Traceway as a session of the seeded `Android App` project
 (`android-dev-token`, from `traceway/examples/devtesting-embedded`; `--project`, `--token`, `--email`,
-`--password` change it): an OTLP `session.start` log with scope `traceway-android` `2.0.0-beta.1`, the events
+`--password` change it): an OTLP `session.start` log with scope `traceway-android` `2.1.0`, the events
 through `POST /api/recordings` (gzip, one segment per Meta + full snapshot), `session.end`. Each segment carries a
 custom action `wireframe-gallery/<checkpoint>` at every checkpoint; the session page lists them under Actions and
 clicking one seeks its player there. At every checkpoint the dashboard's replay iframe must report no rrweb

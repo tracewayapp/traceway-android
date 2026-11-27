@@ -316,3 +316,19 @@ internal class RowScreens {
         return VNode.element(screenNodeId, "div", mapOf("id" to "tw", "style" to "width:400px;height:800px"), children)
     }
 }
+
+/**
+ * Empties AndroidX's process-wide ColorStateList cache
+ * (`ResourcesCompat.sColorStateCaches`), which Robolectric does not reset
+ * between tests: an entry resolved under another night mode, for the same
+ * resources and an equal theme, would be served again.
+ */
+internal fun resetAndroidxColorCaches() {
+    try {
+        val c = Class.forName("androidx.core.content.res.ResourcesCompat")
+        val lock = c.getDeclaredField("sColorStateCacheLock").apply { isAccessible = true }.get(null)
+        val caches = c.getDeclaredField("sColorStateCaches").apply { isAccessible = true }.get(null) as MutableMap<*, *>
+        synchronized(lock!!) { caches.clear() }
+    } catch (_: ReflectiveOperationException) {
+    }
+}

@@ -60,12 +60,53 @@ internal fun postOtlp(
     }
 }
 
-private fun postOnce(http: HttpTransport, url: String, headers: Map<String, String>, body: ByteArray): Int =
-    try {
+private fun postOnce(http: HttpTransport, url: String, headers: Map<String, String>, body: ByteArray): Int {
+    val status = try {
         http.post(url, headers, body, OTLP_TIMEOUT_MS).status
     } catch (_: Throwable) {
         0
     }
+    if (status == 401 || status == 403 || status == 404) ServerProblems.rejected(url, status)
+    return status
+}
+
+/**
+ * One warning per process, whatever `debug` says, when a server refuses
+ * the SDK's telemetry for good: a wrong token (401, 403) or a server
+ * without OTLP (404) would otherwise drop every batch without a word.
+ */
+internal object ServerProblems {
+    private val warned = java.util.concurrent.atomic.AtomicBoolean(false)
+
+    /** Where the warning goes; tests replace it. */
+    @Volatile
+    internal var log: (String) -> Unit = { message ->
+        try {
+            android.util.Log.w("Traceway", message)
+        } catch (_: Throwable) {
+        }
+    }
+
+    fun rejected(url: String, status: Int) {
+        if (warned.get() || !warned.compareAndSet(false, true)) return
+        guarded("server problem") { log(message(url, status)) }
+    }
+
+    fun message(url: String, status: Int): String {
+        val at = url.indexOf("/api/otel/")
+        if (at < 0) return "Traceway: the telemetry receiver $url refused a batch (HTTP $status); check TracewayOptions.telemetry"
+        val server = url.substring(0, at)
+        return if (status == 404) {
+            "Traceway: $server does not accept Android 2.x telemetry (HTTP 404 on ${url.substring(at)}). The server needs " +
+                "OTLP support; on an older server stay on com.tracewayapp:traceway 1.0.1"
+        } else {
+            "Traceway: the server rejected the project token (HTTP $status) at $server. Copy the token from the " +
+                "project's Connection page into TracewayOptions(token = …)"
+        }
+    }
+
+    internal fun resetForTest() = warned.set(false)
+}
 
 /**
  * An exporter that can write to disk instead of the network, for a process

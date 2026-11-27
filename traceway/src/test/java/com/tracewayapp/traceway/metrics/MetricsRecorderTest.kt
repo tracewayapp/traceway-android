@@ -175,6 +175,27 @@ class MetricsRecorderTest {
     }
 
     @Test
+    fun anrsAndLowMemoryKillsOfEarlierRunsAreCountedWithTheUsersTheyAffected() {
+        val r = recorder(persistent = true, deferUntilStart = true)
+        // Read at the next start, before the recorder runs: kept until it does.
+        r.recorder.anr()
+        r.recorder.start()
+        r.recorder.anr()
+        r.recorder.oom()
+        r.recorder.flush()
+        assertEquals(
+            mapOf(
+                "app.user" to 1.0,
+                "app.user.affected|issue=anr" to 1.0,
+                "app.user.affected|issue=oom" to 1.0,
+                "app.anr" to 2.0,
+                "app.oom" to 1.0,
+            ),
+            r.decoded.sums,
+        )
+    }
+
+    @Test
     fun usersAndAffectedUsersOnceADayOnlyWithLastingStorage() {
         val scheduler = ManualScheduler(nowMs = 20000L * 86_400_000L)
         val r = recorder(persistent = true, scheduler = scheduler)

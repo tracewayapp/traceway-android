@@ -49,7 +49,6 @@ class EndpointsTest {
         assertTrue(e.isOwn("https://host/api/recordings"))
         assertFalse(e.isOwn("https://host/api/users"))
         assertFalse(e.isOwn("https://other/api/otel/v1/logs"))
-        assertFalse(resolveEndpoints("").isOwn("/api/otel/v1/logs"))
     }
 
     @Test
@@ -75,12 +74,70 @@ class EndpointsTest {
         )) {
             val parsed = parseConnectionString(connection)
             assertEquals(connection, token, parsed.token)
-            assertEquals(connection, base, resolveEndpoints(parsed.apiUrl).base)
+            assertEquals(connection, base, parsed.baseUrl)
+            assertEquals(connection, base, resolveEndpoints(parsed.baseUrl).base)
         }
         for (bad in listOf("notokenhere", "@https://example.com", "token@")) {
             try {
                 parseConnectionString(bad)
                 fail("accepted $bad")
+            } catch (_: IllegalArgumentException) {
+            }
+        }
+    }
+
+    /** CONTRACT §16.1: the shared table of connection-string variations, the same on every SDK. */
+    @Test
+    fun `every connection string of the shared table parses to its token and server`() {
+        for ((input, base) in listOf(
+            "tok@https://cloud.tracewayapp.com" to "https://cloud.tracewayapp.com",
+            "tok@https://cloud.tracewayapp.com/" to "https://cloud.tracewayapp.com",
+            "tok@https://cloud.tracewayapp.com/api" to "https://cloud.tracewayapp.com",
+            "tok@https://cloud.tracewayapp.com/api/" to "https://cloud.tracewayapp.com",
+            "tok@https://cloud.tracewayapp.com/api/report" to "https://cloud.tracewayapp.com",
+            "tok@https://cloud.tracewayapp.com/api/report/" to "https://cloud.tracewayapp.com",
+            "tok@cloud.tracewayapp.com" to "https://cloud.tracewayapp.com",
+            "tok@cloud.tracewayapp.com/api/report" to "https://cloud.tracewayapp.com",
+            "  tok@https://cloud.tracewayapp.com/api/report  " to "https://cloud.tracewayapp.com",
+            "tok@http://localhost:8082/api/report" to "http://localhost:8082",
+            "tok@localhost:8082" to "http://localhost:8082",
+            "tok@https://corp.example/traceway/api/report" to "https://corp.example/traceway",
+            "tok@https://cloud.tracewayapp.com/api/report?x=1" to "https://cloud.tracewayapp.com",
+        )) {
+            val parsed = parseConnectionString(input)
+            assertEquals(input, "tok", parsed.token)
+            assertEquals(input, base, parsed.baseUrl)
+        }
+        for (bad in listOf("@https://cloud.tracewayapp.com", "tok", "tok@", "tok@ftp://host")) {
+            try {
+                parseConnectionString(bad)
+                fail("accepted $bad")
+            } catch (_: IllegalArgumentException) {
+            }
+        }
+    }
+
+    @Test
+    fun `a server url alone is normalized by the same rules`() {
+        for ((input, base) in listOf(
+            "https://cloud.tracewayapp.com/api/report" to "https://cloud.tracewayapp.com",
+            "cloud.tracewayapp.com" to "https://cloud.tracewayapp.com",
+            " https://cloud.tracewayapp.com/ " to "https://cloud.tracewayapp.com",
+            "10.0.2.2:8082" to "http://10.0.2.2:8082",
+            "127.0.0.1:8082/api" to "http://127.0.0.1:8082",
+            "[::1]:8082" to "http://[::1]:8082",
+            "http://10.0.2.2:8082" to "http://10.0.2.2:8082",
+            "https://corp.example/traceway/" to "https://corp.example/traceway",
+            "https://cloud.tracewayapp.com#top" to "https://cloud.tracewayapp.com",
+            "https://cloud.tracewayapp.com/api/api" to "https://cloud.tracewayapp.com/api",
+        )) {
+            assertEquals(input, base, normalizeBaseUrl(input))
+            assertEquals(input, base, resolveEndpoints(input).base)
+        }
+        for (bad in listOf("", "   ", "https://", "ftp://h", "https:///path")) {
+            try {
+                resolveEndpoints(bad)
+                fail("accepted \"$bad\"")
             } catch (_: IllegalArgumentException) {
             }
         }

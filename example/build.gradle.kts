@@ -12,12 +12,13 @@ val localProps = Properties().apply {
     if (localFile.exists()) localFile.inputStream().use { load(it) }
 }
 
-val tracewayDsn: String = localProps.getProperty("traceway.dsn")
-    ?: "your-token@https://your-traceway-instance.com"
+// The project token (TRACEWAY_TOKEN), from the environment or local.properties; TRACEWAY_URL only for a self-hosted
+// server (Traceway Cloud otherwise).
+fun setting(name: String): String? = System.getenv(name)?.takeIf { it.isNotBlank() } ?: localProps.getProperty(name)?.takeIf { it.isNotBlank() }
 
-val tracewayUploadToken: String = localProps.getProperty("traceway.upload_token") ?: ""
-val tracewayUrl: String = localProps.getProperty("traceway.upload_url")
-    ?: tracewayDsn.substringAfter('@', "").removeSuffix("/api/report").removeSuffix("/")
+val tracewayToken: String = setting("TRACEWAY_TOKEN") ?: "YOUR_TOKEN"
+val tracewayUrl: String = setting("TRACEWAY_URL") ?: "https://cloud.tracewayapp.com"
+val tracewayUploadToken: String = setting("TRACEWAY_UPLOAD_TOKEN") ?: ""
 
 android {
     namespace = "com.tracewayapp.traceway.example"
@@ -28,9 +29,10 @@ android {
         minSdk = 21
         targetSdk = 35
         versionCode = 1
-        versionName = "2.0.0"
+        versionName = "2.1.0"
 
-        buildConfigField("String", "TRACEWAY_DSN", "\"$tracewayDsn\"")
+        buildConfigField("String", "TRACEWAY_TOKEN", "\"$tracewayToken\"")
+        buildConfigField("String", "TRACEWAY_URL", "\"$tracewayUrl\"")
     }
 
     buildFeatures {

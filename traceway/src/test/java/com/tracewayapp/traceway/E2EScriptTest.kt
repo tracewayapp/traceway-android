@@ -410,7 +410,7 @@ internal class E2EScript(private val dsn: String, private val control: File) {
 
         // 2. The exception brings them up, with a replay clip.
         Traceway.captureException(CheckoutException(1999))
-        Traceway.flush(15_000)
+        flushOffMain(15_000)
         phase("exception_sent")
 
         // 3. The trigger of the app's own settings: a user's page, a tap on
@@ -433,7 +433,7 @@ internal class E2EScript(private val dsn: String, private val control: File) {
             pump(1000)
         }
         Traceway.log("e2e after journey")
-        Traceway.flush(15_000)
+        flushOffMain(15_000)
         phase("journey_done")
 
         // 4. A capture the dashboard starts for this instance.
@@ -445,12 +445,12 @@ internal class E2EScript(private val dsn: String, private val control: File) {
             Traceway.log("e2e remote tick $i")
             pump(500)
         }
-        Traceway.flush(15_000)
+        flushOffMain(15_000)
         phase("capture_running", mapOf("capture" to captureId))
         untilConfigured("the capture's cancellation") { client.settings.captures.isEmpty() }
         pump(1000)
         Traceway.log("e2e after cancel")
-        Traceway.flush(15_000)
+        flushOffMain(15_000)
         phase("capture_cancelled")
 
         // 5. A Data Collection rule whose click step is the selector the
@@ -460,7 +460,7 @@ internal class E2EScript(private val dsn: String, private val control: File) {
         again.onPay = { Traceway.log("e2e paid again") }
         tap(again, again.pay)
         pump(1000)
-        Traceway.flush(15_000)
+        flushOffMain(15_000)
         phase("rule_tapped")
 
         // 6. Replay images: a rule turns them off, then on. The policy a
@@ -472,18 +472,26 @@ internal class E2EScript(private val dsn: String, private val control: File) {
             show(GalleryActivity::class.java)
             pump(4000)
             Traceway.captureException(GalleryException(policy.wire))
-            Traceway.flush(15_000)
+            flushOffMain(15_000)
             phase("images_${policy.wire}", mapOf("session" to client.currentSessionId, "images" to client.settings.replayImages.wire))
         }
 
         // 7. Metrics: the app's own next to what the SDK measured.
         Traceway.metric("e2e.checkout.amount", 30.59, mapOf("method" to "card"))
         Traceway.count("e2e.checkout.completed", 2.0)
-        Traceway.flush(15_000)
+        flushOffMain(15_000)
         phase("metrics_sent")
 
         val session = client.currentSessionId
         Traceway.shutdown(15_000)
         phase("done", mapOf("session" to session), wait = false)
+    }
+
+    /** flush() waits 2 s at most on the main thread (an ANR comes at 5 s): the script waits for the whole send, as an app's worker would. */
+    private fun flushOffMain(timeoutMs: Long) {
+        Thread { Traceway.flush(timeoutMs) }.apply {
+            start()
+            join(timeoutMs + 5_000)
+        }
     }
 }

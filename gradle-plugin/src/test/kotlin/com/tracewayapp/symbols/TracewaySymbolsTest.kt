@@ -32,6 +32,19 @@ class TracewaySymbolsTest {
     }
 
     @Test
+    fun urlDefaultsToTracewayCloudWhenAbsentOrBlank() {
+        assertEquals("https://cloud.tracewayapp.com", TracewaySymbols.DEFAULT_URL)
+        assertEquals(TracewaySymbols.DEFAULT_URL, TracewaySymbols.resolveUrl(null))
+        assertEquals(TracewaySymbols.DEFAULT_URL, TracewaySymbols.resolveUrl(""))
+        assertEquals(TracewaySymbols.DEFAULT_URL, TracewaySymbols.resolveUrl("   "))
+        assertEquals("https://traceway.example.com", TracewaySymbols.resolveUrl(" https://traceway.example.com "))
+        assertEquals(
+            "https://cloud.tracewayapp.com/api/symbols/upload",
+            TracewaySymbols.uploadEndpoint(TracewaySymbols.resolveUrl(null)),
+        )
+    }
+
+    @Test
     fun multipartBodyHasFieldsAndFiles() {
         val mapping = tmp.newFile("mapping.txt").apply { writeBytes(byteArrayOf(1, 2, 3)) }
         val parts = listOf(

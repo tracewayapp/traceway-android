@@ -52,16 +52,13 @@ internal class TracewayEndpoints(
 }
 
 /**
- * Derives every endpoint the SDK talks to from the URL half of the
- * connection string. Accepts the bare server URL as well as the 1.x form
- * that ended in `/api/report`, so existing connection strings keep working.
+ * Derives every endpoint the SDK talks to from the Traceway server's URL
+ * ([com.tracewayapp.traceway.TracewayOptions.baseUrl], or the URL half of
+ * an old connection string), normalized by [normalizeBaseUrl].
+ * @throws IllegalArgumentException for a URL that is not HTTP(S) with a host.
  */
-internal fun resolveEndpoints(apiUrl: String): TracewayEndpoints {
-    val trimmed = apiUrl.trim()
-        .replace(Regex("/+$"), "")
-        .replace(Regex("/api/report$"), "")
-        .replace(Regex("/api$"), "")
-    val base = normalizeUrl(trimmed)
+internal fun resolveEndpoints(baseUrl: String): TracewayEndpoints {
+    val base = normalizeBaseUrl(baseUrl)
     return TracewayEndpoints(
         base = base,
         logs = "$base/api/otel/v1/logs",
@@ -70,6 +67,40 @@ internal fun resolveEndpoints(apiUrl: String): TracewayEndpoints {
         opamp = "$base/api/otel/v1/opamp",
         recordings = "$base/api/recordings",
     )
+}
+
+/** Hosts a URL without a scheme reaches over plain `http://`: the machine itself, or it seen from an emulator. */
+private val LOCAL_HOSTS = setOf("localhost", "127.0.0.1", "10.0.2.2", "[::1]")
+
+/**
+ * The Traceway server's base URL as every SDK normalizes it (CONTRACT
+ * §16.1): trimmed; `https://` added when there is no scheme (`http://` for
+ * `localhost`, `127.0.0.1`, `10.0.2.2` and `[::1]`); a query or fragment
+ * dropped, then trailing slashes; a trailing `/api/report`, else `/api`,
+ * dropped, then trailing slashes again. Any other path is kept, so a
+ * server under a sub-path stays reachable. Lowercase scheme and host, no
+ * default port: the form request URLs take.
+ * @throws IllegalArgumentException when the result is not an HTTP(S) URL with a host.
+ */
+internal fun normalizeBaseUrl(raw: String): String {
+    var url = raw.trim()
+    if (url.isNotEmpty() && !url.contains("://")) {
+        val authority = url.substringBefore('/').substringBefore('?').substringBefore('#')
+        val host = if (authority.startsWith("[")) authority.substringBefore(']') + "]" else authority.substringBefore(':')
+        url = (if (host.lowercase(Locale.US) in LOCAL_HOSTS) "http://" else "https://") + url
+    }
+    url = url.substringBefore('#').substringBefore('?').trimEnd('/')
+    url = when {
+        url.endsWith("/api/report") -> url.removeSuffix("/api/report")
+        url.endsWith("/api") -> url.removeSuffix("/api")
+        else -> url
+    }.trimEnd('/')
+    val parts = UrlParts.parse(url)
+    val scheme = parts?.scheme?.lowercase(Locale.US)
+    require(parts != null && (scheme == "http" || scheme == "https") && parts.host.isNotEmpty()) {
+        "Invalid Traceway server URL \"${raw.trim()}\": expected https://host, e.g. https://cloud.tracewayapp.com"
+    }
+    return parts.normalized()
 }
 
 /**
@@ -150,12 +181,6 @@ private class UrlParts(
     }
 }
 
-/** The form request URLs take (lowercase scheme and host, no default port), so [TracewayEndpoints.isOwn] matches. */
-private fun normalizeUrl(raw: String): String {
-    if (raw.isEmpty()) return raw
-    return UrlParts.parse(raw)?.normalized() ?: raw
-}
-
 /** The destination of every OTLP signal: Traceway's, or the receiver the app configured in [TracewayTelemetry]. */
 internal class TelemetryRoutes private constructor(
     val logs: OtlpDestination,
@@ -193,7 +218,7 @@ internal class TelemetryRoutes private constructor(
                     }
                     return OtlpDestination(tracewayUrl, auth)
                 }
-                val url = checkedUrl(endpoint?.url ?: base!!)
+                val url = checkedUrl(if (endpoint != null) endpoint.url.orEmpty() else base.orEmpty())
                 val headers = LinkedHashMap<String, String>()
                 telemetry?.headers?.let { headers.putAll(it) }
                 endpoint?.headers?.let { headers.putAll(it) }

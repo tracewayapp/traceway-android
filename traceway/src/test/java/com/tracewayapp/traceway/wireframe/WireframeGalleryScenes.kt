@@ -1581,7 +1581,7 @@ internal object GalleryScenes {
 
     private val darkMode = GalleryScenario("dark-mode") {
         lateinit var toggle: MaterialSwitch
-        RuntimeEnvironment.setQualifiers("+night")
+        GalleryDayNightActivity.night = true
         val screen = { a: GalleryDayNightActivity ->
                 val p = Page(a, "Dark mode")
                 p.add(TextView(a).apply { text = "Colours come from the theme"; setTextAppearance(com.google.android.material.R.style.TextAppearance_Material3_BodyLarge) })
@@ -1610,11 +1610,11 @@ internal object GalleryScenes {
             checkpoint(shows = listOf("Dark mode", "Colours come from the theme", "Card on a dark surface", "Dark button", "Dark switch", "Dark checkbox", "Dark field"))
             tap(toggle)
             expect(toggle.isChecked, "the tap turned the switch on")
-            RuntimeEnvironment.setQualifiers("+notnight")
+            GalleryDayNightActivity.night = false
             open(GalleryDayNightActivity::class.java, screen)
             checkpoint("light", shows = listOf("Dark mode", "Colours come from the theme", "Dark button"))
         } finally {
-            RuntimeEnvironment.setQualifiers("+notnight")
+            GalleryDayNightActivity.night = false
         }
     }
 }

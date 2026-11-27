@@ -42,7 +42,7 @@ private fun sameBytes(a: ByteArray?, b: ByteArray?): Boolean =
  * lock, so a callback may take the caller's lock or call back in.
  */
 internal class OpampHttpClient(
-    /** The server's OpAMP endpoint, e.g. https://host/api/otel/v1/opamp. */
+    /** The server's OpAMP endpoint, e.g. https://cloud.tracewayapp.com/api/otel/v1/opamp. */
     val endpoint: String,
     val headers: Map<String, String> = emptyMap(),
     instanceUid: ByteArray,

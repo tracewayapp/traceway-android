@@ -18,6 +18,9 @@ dependencies {
     compileOnly("com.android.tools.build:gradle:8.2.2")
     compileOnly("com.android.tools.build:gradle-api:8.2.2")
     testImplementation("junit:junit:4.13.2")
+    // The logcat rewrite's tests run it on compiled classes; AGP brings ASM 9.2 to the build.
+    testImplementation("org.ow2.asm:asm:9.2")
+    testImplementation("org.ow2.asm:asm-util:9.2")
 }
 
 java {
@@ -37,8 +40,8 @@ gradlePlugin {
             id = "com.tracewayapp.symbols"
             implementationClass = "com.tracewayapp.symbols.TracewaySymbolsPlugin"
             displayName = "Traceway Symbols"
-            description = "Uploads R8/ProGuard mapping.txt to a Traceway instance"
-            tags.set(listOf("android", "traceway", "proguard", "r8", "symbolication", "crash-reporting"))
+            description = "Uploads R8/ProGuard mapping.txt to a Traceway instance and records logcat lines with the Traceway SDK"
+            tags.set(listOf("android", "traceway", "proguard", "r8", "symbolication", "crash-reporting", "logcat"))
         }
     }
 }
@@ -49,14 +52,15 @@ mavenPublishing {
 
     configure(GradlePublishPlugin())
 
-    coordinates("com.tracewayapp", "traceway-symbols-plugin", "1.0.1")
+    coordinates("com.tracewayapp", "traceway-symbols-plugin", "2.1.0")
 
     pom {
         name.set("Traceway Symbols Gradle Plugin")
         description.set(
             "Uploads R8/ProGuard mapping.txt to a Traceway instance and injects a " +
                 "per-build ProGuard UUID into BuildConfig so obfuscated release crashes " +
-                "can be deobfuscated.",
+                "can be deobfuscated. Rewrites android.util.Log calls so the Traceway SDK " +
+                "records logcat lines.",
         )
         inceptionYear.set("2026")
         url.set("https://github.com/tracewayapp/traceway-android")

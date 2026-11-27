@@ -17,6 +17,7 @@ import androidx.compose.material3.Checkbox
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -29,27 +30,17 @@ import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import com.tracewayapp.traceway.Traceway
 import com.tracewayapp.traceway.compose.tracewayMask
+import com.tracewayapp.traceway.navigation.trackNavigation
 
-/** A Compose screen: recorded from its semantics, routes reported through recordNavigation. */
+/** A Compose screen: recorded from its semantics, its screens reported through trackNavigation. */
 class ComposeActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContent {
             MaterialTheme {
                 val nav = rememberNavController()
-                androidx.compose.runtime.DisposableEffect(nav) {
-                    val listener = androidx.navigation.NavController.OnDestinationChangedListener { _, destination, arguments ->
-                        destination.route?.let { route ->
-                            // The path with its arguments (/orders/42), and the route it is an instance of (/orders/:id).
-                            @Suppress("DEPRECATION")
-                            val path = ARGUMENT.replace(route) { m -> arguments?.get(m.groupValues[1])?.toString() ?: m.value }
-                            Traceway.recordNavigation("/$path")
-                            Traceway.setRoute("/" + ARGUMENT.replace(route, ":$1"))
-                        }
-                    }
-                    nav.addOnDestinationChangedListener(listener)
-                    onDispose { nav.removeOnDestinationChangedListener(listener) }
-                }
+                // Every destination is a screen: /orders, /orders/8841 with the route /orders/:id.
+                LaunchedEffect(nav) { Traceway.trackNavigation(nav) }
                 NavHost(nav, startDestination = "orders") {
                     composable("orders") { Orders(onOpen = { nav.navigate("orders/$it") }) }
                     composable("orders/{id}") { entry -> OrderDetail(entry.arguments?.getString("id") ?: "") }
@@ -88,6 +79,3 @@ private fun OrderDetail(id: String) {
         }
     }
 }
-
-/** A `{name}` argument in a navigation route. */
-private val ARGUMENT = Regex("\\{(\\w+)\\}")

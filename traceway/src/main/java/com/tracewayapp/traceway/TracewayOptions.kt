@@ -1,8 +1,23 @@
 package com.tracewayapp.traceway
 
+import java.util.regex.Pattern
+
 /**
- * Configuration for [Traceway.init]. Names and defaults follow the Flutter
- * and browser SDKs, so one Data Collection rule targets every client.
+ * Configuration for [Traceway.init]: the project [token], the server
+ * ([baseUrl], Traceway Cloud unless you host Traceway yourself) and what is
+ * collected. Names and defaults follow the Flutter and browser SDKs, so one
+ * Data Collection rule targets every client.
+ *
+ * ```kotlin
+ * Traceway.init(this, TracewayOptions(token = "YOUR_TOKEN", screenCapture = true))
+ * ```
+ *
+ * From Java, build them with [builder]; a `null` passed for any option, to
+ * the builder or the constructor, means its default:
+ *
+ * ```java
+ * Traceway.init(this, TracewayOptions.builder().token("YOUR_TOKEN").screenCapture(true).build());
+ * ```
  *
  * The `capture*` flags, [screenCapture], [replayImages] and [sessions] are
  * **ceilings**: remote settings can lower what is collected but never raise
@@ -11,14 +26,31 @@ package com.tracewayapp.traceway
  * that a rule can change either way.
  */
 data class TracewayOptions @JvmOverloads constructor(
+    /**
+     * The project token, from the project's Connection page in Traceway.
+     * Without one (null or blank) the SDK runs standalone and sends
+     * everything to [telemetry].
+     */
+    val token: String? = null,
+
+    /**
+     * The Traceway server: Traceway Cloud ([DEFAULT_BASE_URL]) unless you
+     * host Traceway yourself (`https://traceway.mycompany.com`). `https://`
+     * is added when it has no scheme; null means the default.
+     */
+    val baseUrl: String? = DEFAULT_BASE_URL,
+
     /** Share of exceptions and messages that are reported (0.0 - 1.0). */
     val sampleRate: Double = 1.0,
 
     /** Print debug info to logcat (tag `Traceway`). */
     val debug: Boolean = false,
 
-    /** App version, sent as `service.version` (`unknown` when empty). */
-    val version: String = "",
+    /**
+     * App version, sent as `service.version`. Null or empty: the app's
+     * `versionName` (`unknown` when it has none).
+     */
+    val version: String? = null,
 
     /** Sent as `service.name`. Defaults to the application id. */
     val serviceName: String? = null,
@@ -27,7 +59,7 @@ data class TracewayOptions @JvmOverloads constructor(
     val environment: String? = null,
 
     /** Attributes attached to every record, and usable to target this app from Data Collection rules. */
-    val attributes: Map<String, String> = emptyMap(),
+    val attributes: Map<String, String>? = emptyMap(),
 
     /**
      * Record the screen as a wireframe: the view tree (and Jetpack Compose
@@ -41,10 +73,11 @@ data class TracewayOptions @JvmOverloads constructor(
      * The most session replay records of the pictures image views show:
      * [TracewayImagePolicy.OFF] draws placeholders only, [TracewayImagePolicy.WIFI]
      * pictures on an unmetered connection, [TracewayImagePolicy.ALWAYS] (the
-     * default) whatever the collection settings (`replay.images`, Wi-Fi by
-     * default) allow. A ceiling: the lower of the two applies.
+     * default, also for null) whatever the collection settings
+     * (`replay.images`, Wi-Fi by default) allow. A ceiling: the lower of the
+     * two applies.
      */
-    val replayImages: TracewayImagePolicy = TracewayImagePolicy.ALWAYS,
+    val replayImages: TracewayImagePolicy? = TracewayImagePolicy.ALWAYS,
 
     /** Most wireframe frames captured per second (1-30); only frames where something was drawn are captured. */
     val fps: Int = 10,
@@ -55,7 +88,11 @@ data class TracewayOptions @JvmOverloads constructor(
     /** Keep SDK state and undelivered telemetry on disk across restarts. */
     val persistToDisk: Boolean = true,
 
-    /** Capture `System.out` / `System.err` lines and [Traceway.log] calls. A ceiling for `console`. */
+    /**
+     * Capture `System.out` / `System.err` lines, [Traceway.log] calls and,
+     * with the Gradle plugin, `android.util.Log` (logcat) calls. A ceiling
+     * for `console`.
+     */
     val captureLogs: Boolean = true,
 
     /** Record HTTP calls made through [com.tracewayapp.traceway.network.TracewayOkHttpInterceptor]. */
@@ -75,7 +112,7 @@ data class TracewayOptions @JvmOverloads constructor(
     val captureMetrics: Boolean = true,
 
     /** Up to two app-defined dimensions on every metric (`custom.<key>`). */
-    val metricDimensions: Map<String, String> = emptyMap(),
+    val metricDimensions: Map<String, String>? = emptyMap(),
 
     /** Stream breadcrumbs and the screen recording all the time instead of keeping them for errors. */
     val recordAllSessions: Boolean = false,
@@ -99,18 +136,22 @@ data class TracewayOptions @JvmOverloads constructor(
     /** How long finished records wait to be sent as one batch. */
     val exportDelayMs: Long = 1000,
 
-    /** Send logs, spans and metrics to another OTLP/HTTP receiver as well, or (standalone) only there. */
+    /**
+     * Send logs, spans and metrics to another OpenTelemetry (OTLP/HTTP)
+     * receiver as well as Traceway, or, without a [token], only there.
+     */
     val telemetry: TracewayTelemetry? = null,
 
     /** URL prefixes whose requests carry a W3C `traceparent` header naming their client span. */
-    val propagateTraceHeaderUrls: List<String> = emptyList(),
+    val propagateTraceHeaderUrls: List<String>? = emptyList(),
 
     /**
      * Exceptions and messages not to report, matched against their first
      * line `Type: message` (stack frames are not): a [String] matches when
-     * it occurs in it, a [Regex] when it finds a match. Null uses
-     * [DEFAULT_IGNORE_ERRORS]; an empty list reports everything. Crashes
-     * (uncaught exceptions that end the process) are always reported.
+     * it occurs in it, a [Regex] or a [java.util.regex.Pattern] when it
+     * finds a match. Null uses [DEFAULT_IGNORE_ERRORS]; an empty list
+     * reports everything. Crashes (uncaught exceptions that end the
+     * process) are always reported.
      */
     val ignoreErrors: List<Any>? = null,
 
@@ -122,24 +163,145 @@ data class TracewayOptions @JvmOverloads constructor(
     val beforeCapture: ((TracewayCapturedError) -> Boolean)? = null,
 
     /**
-     * The connection string a 1.x build of the app used. Unsent 1.x reports
-     * found on the device are delivered to that project's `/api/report`
-     * (and expire after 12 hours, the 1.x default).
-     */
-    val legacyConnectionString: String? = null,
-
-    /**
      * R8/ProGuard build UUID used to symbolicate obfuscated release crashes.
-     * Set it to `BuildConfig.TRACEWAY_PROGUARD_UUID` (injected by the
-     * `com.tracewayapp.symbols` Gradle plugin) so reported traces match the
-     * uploaded `mapping.txt`. Sent as `app.debug.proguard_uuid`.
+     * Null reads the one the `com.tracewayapp.symbols` Gradle plugin puts
+     * into the app's assets, so applying the plugin is enough; set it only
+     * to pin your own (`BuildConfig.TRACEWAY_PROGUARD_UUID` is the plugin's
+     * too). Sent as `app.debug.proguard_uuid`, so reported traces match the
+     * uploaded `mapping.txt`.
      */
     val proguardUuid: String? = null,
 
     /** Like [propagateTraceHeaderUrls], for URLs matching a pattern. */
-    val propagateTraceHeaderUrlPatterns: List<Regex> = emptyList(),
+    val propagateTraceHeaderUrlPatterns: List<Regex>? = emptyList(),
+
+    /**
+     * Report, at the next start, how earlier runs of the process ended, as
+     * Android recorded it (`ApplicationExitInfo`, API 30+): a native crash
+     * as a `NativeCrash` issue (with the tombstone's signal, abort message
+     * and frames on API 31+), an ANR as an `ApplicationNotResponding` issue
+     * with the main thread's stack and an `app.anr` count, a low-memory kill
+     * as an `app.oom` count. Needs [persistToDisk].
+     */
+    val captureExitReasons: Boolean = true,
+
+    /**
+     * Report a main thread blocked for [appHangThresholdMs] or more in the
+     * foreground as an `AppHang` issue, with the main thread's stack taken
+     * while it was blocked. A hang the process does not survive is reported
+     * at the next start (`app.hang.fatal = true`), unless Android recorded
+     * it as an ANR. Not under a debugger, unless [reportHangsInDebug].
+     */
+    val captureAppHangs: Boolean = true,
+
+    /** How long the main thread must be blocked for an `AppHang` issue (at least 250 ms). */
+    val appHangThresholdMs: Long = 2000,
+
+    /**
+     * Report hangs (the `app.hang` metric and `AppHang` issues) while a
+     * debugger is attached too, to try them from Android Studio's Debug run.
+     * Off by default: a breakpoint blocks the main thread as a hang does.
+     */
+    val reportHangsInDebug: Boolean = false,
+
+    /**
+     * Run in every process of the app. By default the SDK runs in the main
+     * process only (the one named after the application id): another one
+     * (`:sync`, `:remote`) gets no client, as [Traceway.init] there returns
+     * null. With it on, each process keeps its state in a directory of its
+     * own.
+     */
+    val allProcesses: Boolean = false,
 ) {
+    /** These options as a [Builder], to change some of them (from Java, where [copy] takes every parameter). */
+    fun toBuilder(): Builder = Builder(this)
+
+    /**
+     * Builds [TracewayOptions] one option at a time, for Java. Each setter
+     * has the option's name; a null value means the option's default.
+     *
+     * ```java
+     * TracewayOptions options = TracewayOptions.builder()
+     *     .token(BuildConfig.TRACEWAY_TOKEN)
+     *     .screenCapture(true)
+     *     .attributes(Map.of("tier", "gold"))
+     *     .build();
+     * ```
+     */
+    class Builder internal constructor(private var options: TracewayOptions) {
+        constructor() : this(TracewayOptions())
+
+        private val defaults = TracewayOptions()
+
+        private inline fun set(change: TracewayOptions.() -> TracewayOptions): Builder {
+            options = options.change()
+            return this
+        }
+
+        fun token(token: String?): Builder = set { copy(token = token) }
+        fun baseUrl(baseUrl: String?): Builder = set { copy(baseUrl = baseUrl ?: defaults.baseUrl) }
+        fun sampleRate(sampleRate: Double?): Builder = set { copy(sampleRate = sampleRate ?: defaults.sampleRate) }
+        fun debug(debug: Boolean?): Builder = set { copy(debug = debug ?: defaults.debug) }
+        fun version(version: String?): Builder = set { copy(version = version) }
+        fun serviceName(serviceName: String?): Builder = set { copy(serviceName = serviceName) }
+        fun environment(environment: String?): Builder = set { copy(environment = environment) }
+        fun attributes(attributes: Map<String, String>?): Builder = set { copy(attributes = attributes ?: defaults.attributes) }
+        fun screenCapture(screenCapture: Boolean?): Builder = set { copy(screenCapture = screenCapture ?: defaults.screenCapture) }
+        fun replayImages(replayImages: TracewayImagePolicy?): Builder = set { copy(replayImages = replayImages ?: defaults.replayImages) }
+        fun fps(fps: Int?): Builder = set { copy(fps = fps ?: defaults.fps) }
+        fun maxBufferFrames(maxBufferFrames: Int?): Builder = set { copy(maxBufferFrames = maxBufferFrames ?: defaults.maxBufferFrames) }
+        fun persistToDisk(persistToDisk: Boolean?): Builder = set { copy(persistToDisk = persistToDisk ?: defaults.persistToDisk) }
+        fun captureLogs(captureLogs: Boolean?): Builder = set { copy(captureLogs = captureLogs ?: defaults.captureLogs) }
+        fun captureNetwork(captureNetwork: Boolean?): Builder = set { copy(captureNetwork = captureNetwork ?: defaults.captureNetwork) }
+        fun captureNavigation(captureNavigation: Boolean?): Builder =
+            set { copy(captureNavigation = captureNavigation ?: defaults.captureNavigation) }
+        fun captureUserActions(captureUserActions: Boolean?): Builder =
+            set { copy(captureUserActions = captureUserActions ?: defaults.captureUserActions) }
+        fun captureMetrics(captureMetrics: Boolean?): Builder = set { copy(captureMetrics = captureMetrics ?: defaults.captureMetrics) }
+        fun metricDimensions(metricDimensions: Map<String, String>?): Builder =
+            set { copy(metricDimensions = metricDimensions ?: defaults.metricDimensions) }
+        fun recordAllSessions(recordAllSessions: Boolean?): Builder =
+            set { copy(recordAllSessions = recordAllSessions ?: defaults.recordAllSessions) }
+        fun collection(collection: Map<String, Any?>?): Builder = set { copy(collection = collection) }
+        fun sessions(sessions: Boolean?): Builder = set { copy(sessions = sessions ?: defaults.sessions) }
+        fun baselineSampleRate(baselineSampleRate: Double?): Builder =
+            set { copy(baselineSampleRate = baselineSampleRate ?: defaults.baselineSampleRate) }
+        fun remoteConfig(remoteConfig: Boolean?): Builder = set { copy(remoteConfig = remoteConfig ?: defaults.remoteConfig) }
+        fun exportDelayMs(exportDelayMs: Long?): Builder = set { copy(exportDelayMs = exportDelayMs ?: defaults.exportDelayMs) }
+        fun telemetry(telemetry: TracewayTelemetry?): Builder = set { copy(telemetry = telemetry) }
+        fun propagateTraceHeaderUrls(propagateTraceHeaderUrls: List<String>?): Builder =
+            set { copy(propagateTraceHeaderUrls = propagateTraceHeaderUrls ?: defaults.propagateTraceHeaderUrls) }
+
+        /** `String`s, [Regex]es and [java.util.regex.Pattern]s; null entries are skipped, a null list is [DEFAULT_IGNORE_ERRORS]. */
+        fun ignoreErrors(ignoreErrors: List<*>?): Builder = set { copy(ignoreErrors = ignoreErrors?.filterNotNull()) }
+        fun beforeCapture(beforeCapture: ((TracewayCapturedError) -> Boolean)?): Builder = set { copy(beforeCapture = beforeCapture) }
+        fun proguardUuid(proguardUuid: String?): Builder = set { copy(proguardUuid = proguardUuid) }
+        fun propagateTraceHeaderUrlPatterns(propagateTraceHeaderUrlPatterns: List<Regex>?): Builder =
+            set { copy(propagateTraceHeaderUrlPatterns = propagateTraceHeaderUrlPatterns ?: defaults.propagateTraceHeaderUrlPatterns) }
+
+        /** [propagateTraceHeaderUrlPatterns] as `java.util.regex.Pattern`s, for Java. */
+        fun propagateTraceHeaderUrlPatterns(vararg patterns: Pattern?): Builder =
+            set { copy(propagateTraceHeaderUrlPatterns = patterns.filterNotNull().map { it.toRegex() }) }
+        fun captureExitReasons(captureExitReasons: Boolean?): Builder =
+            set { copy(captureExitReasons = captureExitReasons ?: defaults.captureExitReasons) }
+        fun captureAppHangs(captureAppHangs: Boolean?): Builder = set { copy(captureAppHangs = captureAppHangs ?: defaults.captureAppHangs) }
+        fun appHangThresholdMs(appHangThresholdMs: Long?): Builder =
+            set { copy(appHangThresholdMs = appHangThresholdMs ?: defaults.appHangThresholdMs) }
+        fun reportHangsInDebug(reportHangsInDebug: Boolean?): Builder =
+            set { copy(reportHangsInDebug = reportHangsInDebug ?: defaults.reportHangsInDebug) }
+        fun allProcesses(allProcesses: Boolean?): Builder = set { copy(allProcesses = allProcesses ?: defaults.allProcesses) }
+
+        fun build(): TracewayOptions = options
+    }
+
     companion object {
+        /** Traceway Cloud, the default [baseUrl]. */
+        const val DEFAULT_BASE_URL = "https://cloud.tracewayapp.com"
+
+        /** A [Builder] of the default options, for Java. */
+        @JvmStatic
+        fun builder(): Builder = Builder()
+
         /**
          * Errors not reported unless [ignoreErrors] says otherwise: a phone
          * losing its connection, a request timing out or a server saying no

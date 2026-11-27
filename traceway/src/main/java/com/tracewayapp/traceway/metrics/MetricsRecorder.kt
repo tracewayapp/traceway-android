@@ -24,6 +24,8 @@ internal const val METRIC_FRAMES_FROZEN = "app.frames.frozen"
 internal const val METRIC_HANG = "app.hang"
 internal const val METRIC_HANG_DURATION = "app.hang.duration"
 internal const val METRIC_CRASH = "app.crash"
+internal const val METRIC_ANR = "app.anr"
+internal const val METRIC_OOM = "app.oom"
 internal const val METRIC_SESSION = "app.session"
 internal const val METRIC_USER = "app.user"
 internal const val METRIC_USER_AFFECTED = "app.user.affected"
@@ -43,7 +45,9 @@ internal const val START_HOT = "hot"
  */
 internal enum class UserIssue(val wire: String) {
     CRASH("crash"),
+    ANR("anr"),
     HANG("hang"),
+    OOM("oom"),
     SLOW_START("slow_start"),
     FROZEN_FRAMES("frozen_frames"),
     FAILED_REQUEST("failed_request"),
@@ -361,6 +365,22 @@ internal class MetricsRecorder(
         guarded("metrics") { user(UserIssue.CRASH) }
         if (!active) return
         lock.withLock { aggregator.count(METRIC_CRASH) }
+    }
+
+    /** An earlier run of the app was killed as not responding (Android's `ApplicationExitInfo`, read at the next start). */
+    fun anr() {
+        if (defer { anr() }) return
+        guarded("metrics") { user(UserIssue.ANR) }
+        if (!active) return
+        lock.withLock { aggregator.count(METRIC_ANR) }
+    }
+
+    /** An earlier run of the app was killed for want of memory (read at the next start). */
+    fun oom() {
+        if (defer { oom() }) return
+        guarded("metrics") { user(UserIssue.OOM) }
+        if (!active) return
+        lock.withLock { aggregator.count(METRIC_OOM) }
     }
 
     /** A finished HTTP request the SDK saw. */

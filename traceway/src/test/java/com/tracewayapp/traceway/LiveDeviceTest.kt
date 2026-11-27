@@ -203,9 +203,17 @@ class LiveDeviceTest {
         // The app goes to the background: buffers are saved, metrics flushed.
         controller.pause().stop()
         frames(1500)
-        client.flush(15_000)
+        flushOffMain(15_000)
         println("E2E-DEVICE session=${client.currentSessionId} instance=${client.getInstanceId()} console=${client.settings.signal("console").mode}")
         payments.shutdown()
         client.shutdown(10_000)
+    }
+
+    /** flush() waits 2 s at most on the main thread (an ANR comes at 5 s): the script waits for the whole send, as an app's worker would. */
+    private fun flushOffMain(timeoutMs: Long) {
+        Thread { Traceway.flush(timeoutMs) }.apply {
+            start()
+            join(timeoutMs + 5_000)
+        }
     }
 }

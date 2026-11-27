@@ -671,7 +671,7 @@ def main():
     dash.add_argument('--password', default='admin')
     dash.add_argument('--project', help='the project to upload into (default: the seeded "<Platform> App")')
     dash.add_argument('--token', help="the project's ingest token (default: the seeded <platform>-dev-token)")
-    dash.add_argument('--sdk-version', default='2.0.0-beta.1', help='the scope version the session reports')
+    dash.add_argument('--sdk-version', default='2.1.0', help='the scope version the session reports')
     dash.add_argument('--dashboard-floor', type=float, default=0.85,
                       help="SSIM the dashboard's rendering keeps against rrweb-player's; the dashboard scales a phone replay down (about 0.8), which softens dense text to about 0.9, while a wrong frame or lost styles fall far below 0.85")
     dash.add_argument('--dashboard-max-change', type=float, default=0.05,

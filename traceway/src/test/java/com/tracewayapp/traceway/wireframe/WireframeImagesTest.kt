@@ -112,10 +112,10 @@ class WireframeImagesTest {
         val jpeg = android.util.Base64.decode(Regex("base64,([^)]+)\\)").find(styles[0])!!.groupValues[1], 0)
         assertEquals(0xFF.toByte(), jpeg[0])
         assertEquals(0xD8.toByte(), jpeg[1])
-        // Copied at 1.5 px per dp of where it shows.
+        // Copied at one pixel per dp of where it shows.
         val decoded = BitmapFactory.decodeByteArray(jpeg, 0, jpeg.size)
-        assertEquals(300, decoded.width)
-        assertEquals(150, decoded.height)
+        assertEquals(200, decoded.width)
+        assertEquals(100, decoded.height)
 
         val pictures = allNodes(screen).filter { (it.attributes["class"] ?: "").startsWith("im p") }.toList()
         assertEquals(listOf("im p0", "im p1", "im p2"), pictures.map { it.attributes["class"] })
@@ -251,17 +251,20 @@ class WireframeImagesTest {
     }
 
     /** The size [lookup] copies a bitmap of [bw] x [bh] shown [wDp] x [hDp] at, or null when it records none. */
-    private fun copySize(wDp: Float, hDp: Float, bw: Int, bh: Int): List<Int>? {
+    private fun copySize(wDp: Float, hDp: Float, bw: Int, bh: Int, alpha: Boolean = false): List<Int>? {
         val images = images()
-        assertNull("the first frame shows the placeholder", images.lookup(Bitmap.createBitmap(bw, bh, Bitmap.Config.ALPHA_8), wDp, hDp))
+        val bitmap = Bitmap.createBitmap(bw, bh, Bitmap.Config.ARGB_8888).apply { setHasAlpha(alpha) }
+        assertNull("the first frame shows the placeholder", images.lookup(bitmap, wDp, hDp))
         return images.all.singleOrNull()?.let { listOf(it.wPx, it.hPx) }
     }
 
     @Test
     fun picturesAreCopiedAtTheirDisplayedSize() {
-        assertEquals("1.5 pixels per dp", listOf(150, 120), copySize(100f, 80f, 1000, 800))
-        assertEquals("the longest side is at most 512", listOf(512, 384), copySize(400f, 300f, 1000, 800))
-        assertEquals(listOf(256, 512), copySize(300f, 600f, 1000, 1000))
+        assertEquals("one pixel per dp", listOf(100, 80), copySize(100f, 80f, 1000, 800))
+        assertEquals("the longest side is at most 384", listOf(384, 288), copySize(400f, 300f, 1000, 800))
+        assertEquals(listOf(192, 384), copySize(300f, 600f, 1000, 1000))
+        assertEquals("a picture with transparency at most 192", listOf(192, 144), copySize(400f, 300f, 1000, 800, alpha = true))
+        assertEquals(listOf(100, 80), copySize(100f, 80f, 1000, 800, alpha = true))
         assertEquals("never more pixels than the bitmap has", listOf(60, 60), copySize(100f, 100f, 60, 60))
         assertNull(copySize(0f, 100f, 60, 60))
         assertNull(copySize(100f, -1f, 60, 60))
@@ -269,32 +272,58 @@ class WireframeImagesTest {
         assertNull(copySize(100f, Float.NaN, 60, 60))
     }
 
+    /** CONTRACT §14.5 as corrected: a picture with transparency is never JPEG (it would replay as a black box). */
     @Test
-    fun pngOnlyForSmallSeeThroughPictures() {
+    fun seeThroughPicturesAreAlwaysPngOfAtMost192Px() {
         val images = images(encoder = Executor { it.run() })
-        fun encoded(bitmap: Bitmap, wDp: Float, hDp: Float): WireframeImages.Image {
-            images.lookup(bitmap, wDp, hDp)
-            val image = images.all.last()
-            assertNotNull(image.css)
-            return image
+        fun encoded(bitmap: Bitmap, wDp: Float, hDp: Float, on: WireframeImages = images): WireframeImages.Image {
+            on.lookup(bitmap, wDp, hDp)
+            return on.all.last()
         }
         fun mime(image: WireframeImages.Image) = Regex("data:([^;]+);").find(image.css!!)!!.groupValues[1]
+        fun decoded(image: WireframeImages.Image): Bitmap {
+            val bytes = android.util.Base64.decode(Regex("base64,([^)]+)\\)").find(image.css!!)!!.groupValues[1], 0)
+            return BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+        }
         val seeThrough = { w: Int, h: Int -> Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888).apply { eraseColor(0x80FF0000.toInt()) } }
 
-        val small = encoded(seeThrough(128, 32), 128f, 32f)
-        assertEquals(listOf(128, 32), listOf(small.wPx, small.hPx))
+        val small = encoded(seeThrough(96, 24), 96f, 24f)
+        assertEquals(listOf(96, 24), listOf(small.wPx, small.hPx))
         assertEquals("image/png", mime(small))
-        val png = android.util.Base64.decode(Regex("base64,([^)]+)\\)").find(small.css!!)!!.groupValues[1], 0)
-        val decoded = BitmapFactory.decodeByteArray(png, 0, png.size)
-        assertEquals("the picture keeps its transparency", 0x80, Color.alpha(decoded.getPixel(10, 10)))
+        assertEquals("the picture keeps its transparency", 0x80, Color.alpha(decoded(small).getPixel(10, 10)))
 
-        val wide = encoded(seeThrough(200, 200), 86f, 20f)
-        assertEquals(129, wide.wPx)
-        assertEquals("image/jpeg", mime(wide))
+        // Shown larger than 192 dp: PNG all the same, at most 192 px on its longest side.
+        val large = encoded(seeThrough(200, 200), 300f, 300f)
+        assertEquals(listOf(192, 192), listOf(large.wPx, large.hPx))
+        assertEquals("image/png", mime(large))
+        val picture = decoded(large)
+        assertEquals(192, picture.width)
+        assertEquals("its clear pixels stay clear, not black", 0x80, Color.alpha(picture.getPixel(100, 100)))
+        assertTrue("red, not black", Color.red(picture.getPixel(100, 100)) > 0xF0)
+
+        // An opaque photo is JPEG.
         assertEquals("image/jpeg", mime(encoded(photo(32, 32), 32f, 32f)))
-        assertEquals(60, WireframeImages.JPEG_QUALITY)
-        assertEquals(96 * 1024, WireframeImages.MAX_BYTES)
-        assertTrue(listOf(small.bytes, wide.bytes).all { it in 1..WireframeImages.MAX_BYTES })
+        assertEquals("image/jpeg", mime(encoded(photo(400, 400), 300f, 300f)))
+
+        // A noisy picture with transparency that is still over the limit at half its size is left out, never JPEG.
+        val random = Random(3)
+        val noise = Bitmap.createBitmap(192, 192, Bitmap.Config.ARGB_8888).apply {
+            setPixels(IntArray(192 * 192) { random.nextInt() }, 0, 192, 0, 0, 192, 192)
+            setHasAlpha(true)
+        }
+        val tight = WireframeImages(onReady = {}, encoder = Executor { it.run() }, maxBytes = 2048).apply {
+            policy = TracewayImagePolicy.ALWAYS
+            beginCapture()
+        }
+        val dropped = encoded(noise, 192f, 192f, tight)
+        assertTrue("left out", dropped.failed)
+        assertNull(dropped.css)
+
+        assertEquals(45, WireframeImages.JPEG_QUALITY)
+        assertEquals(48 * 1024, WireframeImages.MAX_BYTES)
+        assertEquals(192f, WireframeImages.ALPHA_MAX_SIDE_PX)
+        assertEquals(128, WireframeImages.MAX_IMAGES)
+        assertTrue(listOf(small.bytes, large.bytes).all { it in 1..WireframeImages.MAX_BYTES })
     }
 
     @Test
@@ -304,16 +333,30 @@ class WireframeImagesTest {
             setPixels(IntArray(512 * 512) { random.nextInt() or (0xFF shl 24) }, 0, 512, 0, 0, 512, 512)
             setHasAlpha(false)
         }
-        val images = images(encoder = Executor { it.run() })
+        // At quality 0.45 even noise fits 48 KiB at 384 px (about 39 KB); a lower limit makes it too big there, not at 192.
+        fun jpegBytes(side: Int): Int {
+            val scaled = Bitmap.createScaledBitmap(noise, side, side, true)
+            val out = java.io.ByteArrayOutputStream()
+            scaled.compress(Bitmap.CompressFormat.JPEG, WireframeImages.JPEG_QUALITY, out)
+            return out.size()
+        }
+        val full = jpegBytes(384)
+        val half = jpegBytes(192)
+        val limit = (full + half) / 2
+        assertTrue("$full $half", full <= WireframeImages.MAX_BYTES && half < limit && full > limit)
+        val images = WireframeImages(onReady = {}, encoder = Executor { it.run() }, maxBytes = limit).apply {
+            policy = TracewayImagePolicy.ALWAYS
+            beginCapture()
+        }
         images.lookup(noise, 400f, 400f)
         val image = images.all.single()
-        assertEquals(512, image.wPx)
+        assertEquals(384, image.wPx)
         assertFalse(image.failed)
         val jpeg = android.util.Base64.decode(Regex("base64,([^)]+)\\)").find(image.css!!)!!.groupValues[1], 0)
         val decoded = BitmapFactory.decodeByteArray(jpeg, 0, jpeg.size)
-        assertEquals("over ${WireframeImages.MAX_BYTES} bytes at 512 px, so half that", 256, decoded.width)
+        assertEquals("over $limit bytes at 384 px, so half that", 192, decoded.width)
         assertEquals(jpeg.size, image.bytes)
-        assertTrue("${image.bytes}", image.bytes <= WireframeImages.MAX_BYTES)
+        assertTrue("${image.bytes}", image.bytes <= limit)
 
         // The app recycles its bitmap before the encoder gets to it: the encoder only reads the copy taken on the
         // main thread during the capture, never the app's bitmap (a recycled bitmap read off the main thread aborts
@@ -352,7 +395,7 @@ class WireframeImagesTest {
         assertNotNull(image.css)
         val jpeg = android.util.Base64.decode(Regex("base64,([^)]+)\\)").find(image.css!!)!!.groupValues[1], 0)
         val decoded = BitmapFactory.decodeByteArray(jpeg, 0, jpeg.size)
-        assertEquals("copied at the size it shows", 150, decoded.width)
+        assertEquals("copied at the size it shows", 100, decoded.width)
         val pixel = decoded.getPixel(75, 75)
         assertTrue("the app's picture, red: ${Integer.toHexString(pixel)}", Color.red(pixel) > 150 && Color.green(pixel) < 100)
     }
@@ -361,12 +404,12 @@ class WireframeImagesTest {
     fun copiesWaitingForTheEncoderAreBounded() {
         val queued = ArrayList<Runnable>()
         val images = images(encoder = Executor { queued.add(it) })
-        // Each 342 x 512 copy takes about 0.7 MB: a few wait at most, the rest wait for later frames.
+        // Each 256 x 384 copy takes about 0.4 MB: a few wait at most, the rest wait for later frames.
         val bitmaps = List(12) { photo(400, 600) }
         for (b in bitmaps) images.lookup(b, 400f, 600f)
         val waiting = images.all.size
         assertTrue("$waiting", waiting in 1 until bitmaps.size)
-        assertTrue(waiting.toLong() * 342 * 512 * 4 <= WireframeImages.MAX_PENDING_BYTES)
+        assertTrue(waiting.toLong() * 256 * 384 * 4 <= WireframeImages.MAX_PENDING_BYTES)
         // Encoded, their copies are released: the next frame copies more.
         queued.forEach { it.run() }
         queued.clear()
@@ -390,6 +433,8 @@ class WireframeImagesTest {
 
         // Both still show: a third waits.
         images.beginCapture(t0 + 1000)
+        assertNotNull(images.lookup(a, 100f, 50f))
+        assertNotNull(images.lookup(b, 100f, 50f))
         val c = photo(color = Color.BLUE)
         assertNull(images.lookup(c, 100f, 50f))
         assertEquals(listOf("p0", "p1"), images.all.map { it.cls })
@@ -402,15 +447,62 @@ class WireframeImagesTest {
     }
 
     @Test
+    fun pastTheCapThePictureShownLongestAgoMakesRoomThoughItStillLingers() {
+        val images = WireframeImages(onReady = {}, maxImages = 2, encoder = Executor { it.run() }).apply {
+            policy = TracewayImagePolicy.ALWAYS
+        }
+        val t0 = 1_000_000L
+        // As the capture does after each frame: what was shown, when.
+        fun shown(at: Long) = images.shown.forEach { it.lastShownMs = at }
+        val a = photo(color = Color.RED)
+        val b = photo(color = Color.GREEN)
+        val c = photo(color = Color.BLUE)
+        images.beginCapture(t0)
+        images.lookup(a, 100f, 50f)
+        images.lookup(b, 100f, 50f)
+        images.beginCapture(t0 + 1000)
+        images.lookup(a, 100f, 50f)
+        images.lookup(b, 100f, 50f)
+        shown(t0 + 1000)
+        images.beginCapture(t0 + 2000)
+        assertNotNull(images.lookup(b, 100f, 50f))
+        shown(t0 + 2000)
+        // a was shown longest ago, 1 s: its style still lingers, but it goes, not the stop of every new picture.
+        images.beginCapture(t0 + 3000)
+        assertNull("the first frame of a picture shows the placeholder", images.lookup(c, 100f, 50f))
+        assertEquals(listOf("p1", "p2"), images.all.map { it.cls })
+        assertNotNull(images.lookup(c, 100f, 50f))
+        // Shown again, a is a new picture with a new class, and b, shown longest ago now, makes room.
+        images.beginCapture(t0 + 4000)
+        images.lookup(c, 100f, 50f)
+        shown(t0 + 4000)
+        images.beginCapture(t0 + 5000)
+        images.lookup(a, 100f, 50f)
+        assertEquals(listOf("p2", "p3"), images.all.map { it.cls })
+
+        // Pictures still encoding never make room: the new one waits.
+        val pending = WireframeImages(onReady = {}, maxImages = 1, encoder = Executor { }).apply {
+            policy = TracewayImagePolicy.ALWAYS
+            beginCapture(t0)
+        }
+        pending.lookup(a, 100f, 50f)
+        pending.beginCapture(t0 + 1000)
+        assertNull(pending.lookup(b, 100f, 50f))
+        assertEquals(listOf("p0"), pending.all.map { it.cls })
+    }
+
+    @Test
     fun aNewSessionRecordsItsPicturesAgain() {
         val images = WireframeImages(onReady = {}, maxImages = 1, encoder = Executor { it.run() }).apply {
             policy = TracewayImagePolicy.ALWAYS
         }
         images.beginCapture(1_000L)
-        images.lookup(photo(), 100f, 50f)
+        val first = photo()
+        images.lookup(first, 100f, 50f)
         val other = photo(color = Color.GREEN)
         images.beginCapture(2_000L)
-        assertNull("the cap is reached", images.lookup(other, 100f, 50f))
+        assertNotNull(images.lookup(first, 100f, 50f))
+        assertNull("the cap is reached by a picture on screen", images.lookup(other, 100f, 50f))
         images.newSession()
         images.beginCapture(3_000L)
         images.lookup(other, 100f, 50f)
