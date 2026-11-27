@@ -19,8 +19,8 @@ import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.style.ResolvedTextDirection
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.style.TextOverflow
-import com.tracewayapp.traceway.PrivacyMasks
 import com.tracewayapp.traceway.TracewayMaskMode
+import com.tracewayapp.traceway.TracewayMasks
 import com.tracewayapp.traceway.compose.TracewayMaskKey
 import java.util.WeakHashMap
 import kotlin.math.max
@@ -153,8 +153,8 @@ internal class WireframeComposeCapture(private val c: WireframeCapture) {
 
         var m = mask
         val own = config.getOrNull(TracewayMaskKey) ?: when (config.getOrNull(SemanticsProperties.TestTag)) {
-            PrivacyMasks.TAG_BLUR -> TracewayMaskMode.Blur
-            PrivacyMasks.TAG_BLANK -> TracewayMaskMode.blank()
+            TracewayMasks.TAG_BLUR -> TracewayMaskMode.Blur
+            TracewayMasks.TAG_BLANK -> TracewayMaskMode.blank()
             else -> null
         }
         if (own is TracewayMaskMode.Blank) {

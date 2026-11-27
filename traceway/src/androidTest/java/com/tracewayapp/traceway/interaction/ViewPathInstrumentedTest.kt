@@ -17,8 +17,8 @@ import androidx.appcompat.view.ContextThemeWrapper
 import androidx.appcompat.widget.AppCompatButton
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
-import com.tracewayapp.traceway.PrivacyMasks
 import com.tracewayapp.traceway.TracewayMaskMode
+import com.tracewayapp.traceway.TracewayMasks
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotEquals
@@ -213,12 +213,12 @@ class ViewPathInstrumentedTest {
         val card = FrameLayout(context)
         val number = Button(context).apply { text = "4242 4242 4242 4242" }
         card.addView(number, FrameLayout.LayoutParams(600, 200))
-        PrivacyMasks.set(card, TracewayMaskMode.blur())
+        TracewayMasks.set(card, TracewayMaskMode.blur())
         val call = ImageButton(context).apply { contentDescription = "Call Ann Smith" }
         val column = LinearLayout(context).apply { orientation = LinearLayout.VERTICAL }
         column.addView(card, LinearLayout.LayoutParams(600, 200))
         column.addView(call, LinearLayout.LayoutParams(200, 200))
-        call.tag = PrivacyMasks.TAG_BLANK
+        call.tag = TracewayMasks.TAG_BLANK
         val root = screen(column)
         val numberTarget = describeTap(pathAt(root, number))!!
         assertNull(numberTarget.text)

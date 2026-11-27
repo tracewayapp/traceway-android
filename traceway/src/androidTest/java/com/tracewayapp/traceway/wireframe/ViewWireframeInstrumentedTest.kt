@@ -23,8 +23,8 @@ import android.widget.ScrollView
 import android.widget.TextView
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
-import com.tracewayapp.traceway.PrivacyMasks
 import com.tracewayapp.traceway.TracewayMaskMode
+import com.tracewayapp.traceway.TracewayMasks
 import com.tracewayapp.traceway.internal.Cancellable
 import com.tracewayapp.traceway.internal.Json
 import com.tracewayapp.traceway.internal.ManualScheduler
@@ -186,7 +186,7 @@ class ViewWireframeInstrumentedTest {
     }
 
     @Test
-    fun masksWhatPrivacyMasksAndTextFieldsHold() {
+    fun masksWhatTracewayMasksAndTextFieldsHold() {
         val capture = WireframeCapture(context)
         lateinit var root: LinearLayout
         lateinit var screen: VNode
@@ -194,10 +194,10 @@ class ViewWireframeInstrumentedTest {
             root = LinearLayout(context).apply { orientation = LinearLayout.VERTICAL }
             root.addView(TextView(context).apply {
                 text = "secret blank"
-                PrivacyMasks.set(this, TracewayMaskMode.blank(0xFF123456.toInt()))
+                TracewayMasks.set(this, TracewayMaskMode.blank(0xFF123456.toInt()))
             })
             root.addView(FrameLayout(context).apply {
-                tag = PrivacyMasks.TAG_BLUR
+                tag = TracewayMasks.TAG_BLUR
                 addView(TextView(context).apply { text = "secret blur" })
             })
             root.addView(EditText(context).apply { setText("typed text") })

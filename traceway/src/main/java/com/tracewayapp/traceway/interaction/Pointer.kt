@@ -38,8 +38,8 @@ internal class TapTarget(
     val tag: String,
     /** Its id: the view's resource entry name or a Compose `testTag`. */
     val id: String?,
-    /** Text it shows; null inside a privacy mask or for text fields. */
+    /** Text it shows; null inside a mask or for text fields. */
     val text: String?,
-    /** Its content description / semantics label; null inside a privacy mask. */
+    /** Its content description / semantics label; null inside a mask. */
     val label: String?,
 )

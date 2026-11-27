@@ -57,8 +57,8 @@ import android.widget.ScrollView
 import android.widget.Switch
 import android.widget.TextView
 import android.widget.ToggleButton
-import com.tracewayapp.traceway.PrivacyMasks
 import com.tracewayapp.traceway.TracewayMaskMode
+import com.tracewayapp.traceway.TracewayMasks
 import java.util.Arrays
 import java.util.WeakHashMap
 import kotlin.math.max
@@ -465,7 +465,7 @@ internal class WireframeCapture(context: Context?, onAssetReady: () -> Unit = {}
             }
         }
         var m = mask
-        val own = PrivacyMasks.own(v)
+        val own = TracewayMasks.own(v)
         if (own is TracewayMaskMode.Blank) {
             val rec = rec(v)
             sb.setLength(0)

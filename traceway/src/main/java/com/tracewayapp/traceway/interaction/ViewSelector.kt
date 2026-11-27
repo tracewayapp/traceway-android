@@ -314,9 +314,9 @@ internal class UiElement(
     val label: String? = null,
     /** The text shown by it or the views under it, masked parts included; never the content of an input. */
     val text: String? = null,
-    /** [text] without the parts inside privacy masks: what a tap may report. */
+    /** [text] without the parts inside masks: what a tap may report. */
     val reportedText: String? = text,
-    /** A privacy mask is set on this element itself. */
+    /** A mask is set on this element itself. */
     val masked: Boolean = false,
     /** Clickable, long-clickable or an adapter view item: it handles the taps that land on it. */
     val handlesTaps: Boolean = false,
@@ -364,7 +364,7 @@ internal class UiElementPath(val elements: List<UiElement>) : ElementPath {
         return child.precedingSiblings + child
     }
 
-    /** Whether the element at [index] or one of its ancestors is inside a privacy mask. */
+    /** Whether the element at [index] or one of its ancestors is inside a mask. */
     fun isMasked(index: Int): Boolean {
         for (i in index until elements.size) if (elements[i].masked) return true
         return false

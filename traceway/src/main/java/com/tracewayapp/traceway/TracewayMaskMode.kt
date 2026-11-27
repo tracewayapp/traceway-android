@@ -1,4 +1,4 @@
-@file:JvmName("TracewayPrivacyMask")
+@file:JvmName("TracewayMask")
 
 package com.tracewayapp.traceway
 
@@ -31,25 +31,25 @@ sealed class TracewayMaskMode {
  * null for no mask of its own. `android:tag="traceway-mask"` (blur) or
  * `"traceway-blank"` in a layout masks it too, and reads back here. Masks
  * change the recording only; the app looks the same to its user. From Java:
- * `Traceway.setPrivacyMask(view, mode)`.
+ * `Traceway.mask(view, mode)` and `Traceway.unmask(view)`.
  */
-var View.tracewayPrivacyMask: TracewayMaskMode?
-    get() = PrivacyMasks.own(this)
-    set(value) = PrivacyMasks.set(this, value)
+var View.tracewayMask: TracewayMaskMode?
+    get() = TracewayMasks.own(this)
+    set(value) = TracewayMasks.set(this, value)
 
 /** Where masks are recorded and read; the wireframe capture and tap recording honor them. */
-internal object PrivacyMasks {
+internal object TracewayMasks {
     /** `android:tag` values that mask a view from XML. */
     const val TAG_BLUR = "traceway-mask"
     const val TAG_BLANK = "traceway-blank"
 
     fun set(view: View, mode: TracewayMaskMode?) {
-        view.setTag(R.id.traceway_privacy_mask, mode)
+        view.setTag(R.id.traceway_mask, mode)
     }
 
     /** The mask set on this view itself, not its ancestors. */
     fun own(view: View): TracewayMaskMode? {
-        (view.getTag(R.id.traceway_privacy_mask) as? TracewayMaskMode)?.let { return it }
+        (view.getTag(R.id.traceway_mask) as? TracewayMaskMode)?.let { return it }
         return when (view.tag) {
             TAG_BLUR -> TracewayMaskMode.Blur
             TAG_BLANK -> TracewayMaskMode.blank()

@@ -209,26 +209,20 @@ object Traceway {
 
     /**
      * Masks [view] and everything inside it in wireframe recordings and tap
-     * records, as [mode] says; null removes the mask. The same as setting
-     * [android.view.View.tracewayPrivacyMask].
+     * records, as [mode] says. The same as setting
+     * [android.view.View.tracewayMask]; this form is for Java, where an
+     * extension property reads poorly.
      */
     @JvmStatic
     @JvmOverloads
-    fun setPrivacyMask(view: View, mode: TracewayMaskMode? = TracewayMaskMode.blur()) {
-        PrivacyMasks.set(view, mode)
-    }
-
-    @Deprecated("Use setPrivacyMask(view, mode).", ReplaceWith("Traceway.setPrivacyMask(view, mode)"))
-    @JvmStatic
-    @JvmOverloads
     fun mask(view: View, mode: TracewayMaskMode = TracewayMaskMode.blur()) {
-        PrivacyMasks.set(view, mode)
+        TracewayMasks.set(view, mode)
     }
 
-    @Deprecated("Use setPrivacyMask(view, null).", ReplaceWith("Traceway.setPrivacyMask(view, null)"))
+    /** Removes the mask [mask] set on [view]; a mask tag from its layout still applies. */
     @JvmStatic
     fun unmask(view: View) {
-        PrivacyMasks.set(view, null)
+        TracewayMasks.set(view, null)
     }
 
     /** The id this installation reports (`service.instance.id`), to target it from the dashboard. */

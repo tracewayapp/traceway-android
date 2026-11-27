@@ -18,7 +18,7 @@ import com.google.android.material.materialswitch.MaterialSwitch
 import com.tracewayapp.traceway.Traceway
 import com.tracewayapp.traceway.TracewayLogLevel
 import com.tracewayapp.traceway.TracewayMaskMode
-import com.tracewayapp.traceway.tracewayPrivacyMask
+import com.tracewayapp.traceway.tracewayMask
 import com.tracewayapp.traceway.network.TracewayOkHttpInterceptor
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -63,7 +63,7 @@ class MainActivity : AppCompatActivity() {
             inputType = InputType.TYPE_CLASS_NUMBER
         }
         // Blank in the replay: a box, nothing of what is typed.
-        card.tracewayPrivacyMask = TracewayMaskMode.blank(Color.DKGRAY)
+        card.tracewayMask = TracewayMaskMode.blank(Color.DKGRAY)
         root.addView(card)
         root.addView(CheckBox(this).apply { text = "Save card for next time" })
         root.addView(MaterialSwitch(this).apply { text = "Express delivery" })

@@ -24,8 +24,8 @@ import androidx.compose.ui.semantics.SemanticsActions
 import androidx.compose.ui.semantics.SemanticsNode
 import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.semantics.getOrNull
-import com.tracewayapp.traceway.PrivacyMasks
 import com.tracewayapp.traceway.TracewayMaskMode
+import com.tracewayapp.traceway.TracewayMasks
 import java.lang.ref.WeakReference
 
 /**
@@ -226,7 +226,7 @@ internal object UiSnapshot {
 
         /**
          * The label of the first node below [node] that has one, as long as
-         * the tree does not branch, and not inside a privacy mask.
+         * the tree does not branch, and not inside a mask.
          */
         private fun labelBelow(node: SourceNode): String? {
             var current = node
@@ -242,7 +242,7 @@ internal object UiSnapshot {
 
         /**
          * The texts [node] shows: its own, else those of the nodes under it,
-         * at most three. Hidden nodes are skipped, and so are privacy masks
+         * at most three. Hidden nodes are skipped, and so are masked ones
          * unless [includeMasked].
          */
         private fun parts(node: SourceNode, includeMasked: Boolean): List<String> {
@@ -358,7 +358,7 @@ private class ViewNode(val view: View) : SourceNode() {
             val tag = view.tag as? CharSequence ?: return null
             val text = tag.toString()
             if (text.isBlank() || text.length > 256) return null
-            if (text == PrivacyMasks.TAG_BLUR || text == PrivacyMasks.TAG_BLANK) return null
+            if (text == TracewayMasks.TAG_BLUR || text == TracewayMasks.TAG_BLANK) return null
             return text
         }
 
@@ -386,7 +386,7 @@ private class ViewNode(val view: View) : SourceNode() {
 
     override val hidden: Boolean get() = view.visibility != View.VISIBLE || view.alpha <= 0f
 
-    override val masked: Boolean get() = PrivacyMasks.own(view) != null
+    override val masked: Boolean get() = TracewayMasks.own(view) != null
 
     override val handlesTaps: Boolean get() = viewHandlesTaps(view)
 
@@ -736,8 +736,8 @@ private class ComposeNode(private val node: SemanticsNode, private val owner: Vi
         }
 
     /**
-     * A Compose privacy mask is a semantics property whose value is a
-     * [TracewayMaskMode] (`Modifier.tracewayPrivacyMask`), or a mask test
+     * A Compose mask is a semantics property whose value is a
+     * [TracewayMaskMode] (`Modifier.tracewayMask`), or a mask test
      * tag, as the wireframe reads them.
      */
     override val masked: Boolean
@@ -758,6 +758,6 @@ private class ComposeNode(private val node: SemanticsNode, private val owner: Vi
     private companion object {
         const val GENERIC = "Composable"
 
-        fun isMaskTag(tag: String): Boolean = tag == PrivacyMasks.TAG_BLUR || tag == PrivacyMasks.TAG_BLANK
+        fun isMaskTag(tag: String): Boolean = tag == TracewayMasks.TAG_BLUR || tag == TracewayMasks.TAG_BLANK
     }
 }

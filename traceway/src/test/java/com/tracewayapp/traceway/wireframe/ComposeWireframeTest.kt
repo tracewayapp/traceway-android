@@ -53,7 +53,6 @@ import android.widget.LinearLayout
 import android.widget.TextView
 import com.tracewayapp.traceway.TracewayMaskMode
 import com.tracewayapp.traceway.compose.tracewayMask
-import com.tracewayapp.traceway.compose.tracewayPrivacyMask
 import com.tracewayapp.traceway.interaction.ViewPath
 import com.tracewayapp.traceway.interaction.describeTap
 import androidx.compose.foundation.clickable
@@ -224,8 +223,8 @@ class ComposeWireframeTest {
     fun masksHideWhatTheyCover() {
         val s = compose {
             Column {
-                Text("secret blur", Modifier.tracewayPrivacyMask())
-                Box(Modifier.tracewayPrivacyMask(TracewayMaskMode.blank(0xFF123456.toInt()))) { Text("secret blank") }
+                Text("secret blur", Modifier.tracewayMask())
+                Box(Modifier.tracewayMask(TracewayMaskMode.blank(0xFF123456.toInt()))) { Text("secret blank") }
                 Text("tagged", Modifier.testTag("traceway-mask"))
                 Box(Modifier.testTag("traceway-blank").size(40.dp)) { Text("blank tag") }
                 Text("visible")
@@ -275,17 +274,6 @@ class ComposeWireframeTest {
         val screen = s.screen()
         assertEquals(listOf("A view", "Composed"), texts(screen))
         assertEquals(10f to 100f, position(screen, withText(screen, "Composed")!!))
-    }
-
-    @Test
-    fun theOldMaskModifierStillMasks() {
-        val s = compose {
-            Column {
-                @Suppress("DEPRECATION")
-                Text("old secret", Modifier.tracewayMask())
-            }
-        }
-        assertEquals(listOf("*** ******"), texts(s.screen()))
     }
 
     @Test

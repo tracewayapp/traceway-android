@@ -16,7 +16,7 @@ private fun quoted(value: String): String? =
  * prefers, in order: an id on the target, on a wrapper right around it or
  * inside it; its string tag; its text; its label; and the type alone with
  * the nearest ancestor id as context. It is checked to match [path] before
- * it is returned. Inside a privacy mask, neither text nor label is used.
+ * it is returned. Inside a mask, neither text nor label is used.
  */
 internal fun describeTap(path: UiElementPath, includeText: Boolean = true): TapTarget? {
     if (path.size == 0) return null

@@ -7,7 +7,7 @@ import com.tracewayapp.traceway.TracewayMaskMode
 
 /**
  * Hides this composable in wireframe recordings, the Compose counterpart of
- * [android.view.View.tracewayPrivacyMask]. With [TracewayMaskMode.blank] it is a box of that
+ * [android.view.View.tracewayMask]. With [TracewayMaskMode.blank] it is a box of that
  * color and nothing inside it is recorded; with [TracewayMaskMode.blur] (the
  * default) the layout is kept but its text becomes `*` and its images
  * placeholders. Tap records leave out the text it shows. The app looks the
@@ -15,11 +15,8 @@ import com.tracewayapp.traceway.TracewayMaskMode
  *
  * A `testTag` of `traceway-mask` or `traceway-blank` masks the same way.
  */
-fun Modifier.tracewayPrivacyMask(mode: TracewayMaskMode = TracewayMaskMode.blur()): Modifier =
+fun Modifier.tracewayMask(mode: TracewayMaskMode = TracewayMaskMode.blur()): Modifier =
     this.semantics { this[TracewayMaskKey] = mode }
 
-@Deprecated("Use tracewayPrivacyMask(mode).", ReplaceWith("tracewayPrivacyMask(mode)"))
-fun Modifier.tracewayMask(mode: TracewayMaskMode = TracewayMaskMode.blur()): Modifier = tracewayPrivacyMask(mode)
-
-/** The semantics property [tracewayPrivacyMask] sets; read by the wireframe capture and tap recording. */
+/** The semantics property [tracewayMask] sets; read by the wireframe capture and tap recording. */
 internal val TracewayMaskKey = SemanticsPropertyKey<TracewayMaskMode>("TracewayMask")

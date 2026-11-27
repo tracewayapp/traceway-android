@@ -29,7 +29,7 @@ internal interface ImageBudget {
  * `TracewayOptions.replayImages`): the bitmap of an `ImageView`'s
  * `BitmapDrawable` (the top bitmap of a layer drawable, as a crossfade
  * shows it) and bitmap backgrounds, never a screenshot of the window, never
- * under a privacy mask.
+ * under a mask.
  *
  * A picture is copied at the size it shows (1.5 times its dp size, at most
  * [MAX_SIDE_PX] on its longest side, never larger than the bitmap) and

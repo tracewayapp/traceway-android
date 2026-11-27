@@ -61,7 +61,7 @@ import com.google.android.material.textfield.TextInputEditText
 import com.google.android.material.textfield.TextInputLayout
 import com.tracewayapp.traceway.Traceway
 import com.tracewayapp.traceway.TracewayMaskMode
-import com.tracewayapp.traceway.tracewayPrivacyMask
+import com.tracewayapp.traceway.tracewayMask
 import android.graphics.Insets
 import android.view.WindowInsets
 import org.junit.Assert.assertEquals
@@ -240,7 +240,7 @@ class ViewWireframeTest {
                 TextView(a).apply { text = "offscreen"; translationY = 2000f },
                 FrameLayout(a).apply {
                     addView(TextView(a).apply { text = "under a blank mask" })
-                    Traceway.setPrivacyMask(this, TracewayMaskMode.blank())
+                    Traceway.mask(this, TracewayMaskMode.blank())
                 },
             )
         }
@@ -531,7 +531,7 @@ class ViewWireframeTest {
                 a,
                 TextView(a).apply {
                     text = "secret blank"
-                    Traceway.setPrivacyMask(this, TracewayMaskMode.blank(0xFF123456.toInt()))
+                    Traceway.mask(this, TracewayMaskMode.blank(0xFF123456.toInt()))
                 },
                 FrameLayout(a).apply {
                     tag = "traceway-mask"
@@ -560,7 +560,7 @@ class ViewWireframeTest {
         val s = RealScreen.open { a ->
             FrameLayout(a).apply {
                 masked = this
-                tracewayPrivacyMask = TracewayMaskMode.blur()
+                tracewayMask = TracewayMaskMode.blur()
                 addView(
                     column(
                         a,
@@ -574,18 +574,16 @@ class ViewWireframeTest {
         assertEquals(listOf("******* ********"), texts(screen))
         assertNull("a masked icon gets no glyph", allNodes(screen).firstOrNull { (it.attributes["class"] ?: "").startsWith("ic g") })
 
-        // The facade and the deprecated names set the same mask.
-        Traceway.setPrivacyMask(masked, null)
-        assertNull(masked.tracewayPrivacyMask)
-        assertEquals(listOf("Balance 1,234.56"), texts(s.screen()))
-        @Suppress("DEPRECATION")
-        Traceway.mask(masked)
-        assertSame(TracewayMaskMode.Blur, masked.tracewayPrivacyMask)
-        @Suppress("DEPRECATION")
+        // The property and the Java statics set the same mask.
         Traceway.unmask(masked)
-        assertNull(masked.tracewayPrivacyMask)
+        assertNull(masked.tracewayMask)
+        assertEquals(listOf("Balance 1,234.56"), texts(s.screen()))
+        Traceway.mask(masked)
+        assertSame(TracewayMaskMode.Blur, masked.tracewayMask)
+        masked.tracewayMask = null
+        assertNull(masked.tracewayMask)
         masked.tag = "traceway-blank"
-        assertTrue(masked.tracewayPrivacyMask is TracewayMaskMode.Blank)
+        assertTrue(masked.tracewayMask is TracewayMaskMode.Blank)
     }
 
     @Test

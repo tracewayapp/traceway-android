@@ -1378,7 +1378,7 @@ internal object GalleryScenes {
                 label(a, "Card 4242 4242 4242 4242", 17f, Color.WHITE).apply {
                     setPadding(a.dp(16), a.dp(14), a.dp(16), a.dp(14))
                     setBackgroundColor(0xFF37474F.toInt())
-                    Traceway.setPrivacyMask(this, TracewayMaskMode.blank(0xFF263238.toInt()))
+                    Traceway.mask(this, TracewayMaskMode.blank(0xFF263238.toInt()))
                 },
             )
             p.add(
@@ -1388,11 +1388,11 @@ internal object GalleryScenes {
                     setPadding(a.dp(12), a.dp(12), a.dp(12), a.dp(12))
                     addView(ImageView(a).apply { setImageDrawable(BitmapDrawable(a.resources, photo())); scaleType = ImageView.ScaleType.CENTER_CROP }.lp(56, 56))
                     addView(label(a, "Balance 12,345.67", 18f, bold = true), LinearLayout.LayoutParams(WRAP, WRAP).apply { marginStart = a.dp(12) })
-                    Traceway.setPrivacyMask(this, TracewayMaskMode.blur())
+                    Traceway.mask(this, TracewayMaskMode.blur())
                 },
             )
             p.add(label(a, "Account QX-0042", 16f).apply { tag = "traceway-mask" })
-            p.add(ImageView(a).apply { setImageDrawable(BitmapDrawable(a.resources, photo())); scaleType = ImageView.ScaleType.CENTER_CROP; Traceway.setPrivacyMask(this, TracewayMaskMode.blank()) }, w = 160, h = 90)
+            p.add(ImageView(a).apply { setImageDrawable(BitmapDrawable(a.resources, photo())); scaleType = ImageView.ScaleType.CENTER_CROP; Traceway.mask(this, TracewayMaskMode.blank()) }, w = 160, h = 90)
             p.add(ImageView(a).apply { setImageDrawable(BitmapDrawable(a.resources, photo(night = true))); scaleType = ImageView.ScaleType.CENTER_CROP }, w = 160, h = 90)
             val layout = TextInputLayout(a, null, com.google.android.material.R.attr.textInputOutlinedStyle).apply { hint = "PIN" }
             pin = TextInputEditText(layout.context).apply { inputType = InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_VARIATION_PASSWORD }

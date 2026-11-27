@@ -11,7 +11,7 @@ import android.widget.ImageView
 import android.widget.LinearLayout
 import com.tracewayapp.traceway.TracewayImagePolicy
 import com.tracewayapp.traceway.TracewayMaskMode
-import com.tracewayapp.traceway.tracewayPrivacyMask
+import com.tracewayapp.traceway.tracewayMask
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -22,7 +22,7 @@ import org.robolectric.annotation.GraphicsMode
 
 /**
  * Pictures in the wireframe: what image views show, recorded as the replay
- * image policy, the connection, privacy masks and the session's budget
+ * image policy, the connection, masks and the session's budget
  * allow, and otherwise placeholders. The screen is 400 x 800 dp at 1 px per
  * dp. Topics 16 (inlined when the policy is always), 17 (`wifi` on a
  * metered network) and 18 (dedup and the session's budget) of the wireframe
@@ -143,7 +143,7 @@ class WireframeImagesTest {
             column(
                 a,
                 FrameLayout(a).apply {
-                    tracewayPrivacyMask = TracewayMaskMode.blur()
+                    tracewayMask = TracewayMaskMode.blur()
                     addView(imageView(a, photo(), 200, 100))
                 },
                 imageView(a, photo(color = Color.GREEN), 50, 50),

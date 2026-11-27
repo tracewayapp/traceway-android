@@ -23,7 +23,7 @@ import androidx.compose.ui.platform.ViewRootForTest
 import androidx.compose.ui.semantics.SemanticsNode
 import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.semantics.getOrNull
-import com.tracewayapp.traceway.PrivacyMasks
+import com.tracewayapp.traceway.TracewayMasks
 import com.tracewayapp.traceway.core.applyOverlay
 import com.tracewayapp.traceway.core.ceilingsFrom
 import com.tracewayapp.traceway.core.clampToCeilings
@@ -590,7 +590,7 @@ internal class GalleryDriver(private val outDir: File) {
         val visible = android.graphics.Rect()
         fun walk(v: View) {
             if (!shown(v)) return
-            if (PrivacyMasks.effective(v) != null) return
+            if (TracewayMasks.effective(v) != null) return
             if (v is ViewRootForTest) {
                 composeBoxes(v, found)
                 return
@@ -630,7 +630,7 @@ internal class GalleryDriver(private val outDir: File) {
         fun walk(n: SemanticsNode, masked: Boolean) {
             val config = n.config
             val tag = config.getOrNull(SemanticsProperties.TestTag)
-            val m = masked || config.getOrNull(TracewayMaskKey) != null || tag == PrivacyMasks.TAG_BLUR || tag == PrivacyMasks.TAG_BLANK
+            val m = masked || config.getOrNull(TracewayMaskKey) != null || tag == TracewayMasks.TAG_BLUR || tag == TracewayMasks.TAG_BLANK
             val text = config.getOrNull(SemanticsProperties.Text)
             if (!m && config.getOrNull(SemanticsProperties.EditableText) == null && !text.isNullOrEmpty() &&
                 n.boundsInRoot.width > 0f && n.boundsInRoot.height > 0f
@@ -674,7 +674,7 @@ internal class GalleryDriver(private val outDir: File) {
             if (v.clipToOutline) b.append(" clipToOutline")
             if (v is ViewGroup && !v.clipChildren) b.append(" noClipChildren")
             if (v is TextView) b.append(" color=").append(color(v.currentTextColor)).append(" size=").append(v.textSize / density)
-            PrivacyMasks.own(v)?.let { b.append(" mask=").append(it.javaClass.simpleName) }
+            TracewayMasks.own(v)?.let { b.append(" mask=").append(it.javaClass.simpleName) }
             lines.add(b.toString())
             if (v is ViewRootForTest) {
                 semanticsLines(v.semanticsOwner.unmergedRootSemanticsNode, depth + 1, lines, v)

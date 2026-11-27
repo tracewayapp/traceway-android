@@ -31,7 +31,7 @@ Error tracking, sessions, wireframe session replay and app performance metrics f
 - **Interactions** — `Traceway.startInteraction("checkout")` traces one user action: the requests it makes are its child spans, and an exception that fails it links to its trace
 - **App performance metrics** — cold, warm and hot start, time to initial and full display per screen, slow and frozen frames, hangs, crashes, sessions, users and HTTP requests, aggregated on the device and sent as OTLP metrics
 - **Taps that name the view** — every tap is recorded with a CSS-like selector (`MaterialButton#pay`, `ImageButton[label="Delete"]`) that click steps of recording triggers match
-- Privacy masking for replays and tap records: `view.tracewayPrivacyMask`, `android:tag="traceway-mask"`, or `Modifier.tracewayPrivacyMask()` in Compose
+- Privacy masking for replays and tap records: `view.tracewayMask`, `android:tag="traceway-mask"`, or `Modifier.tracewayMask()` in Compose
 - Network noise (a lost connection, a timeout, a 4xx) is not reported as an issue by default; `ignoreErrors` and `beforeCapture` filter the rest
 - Sessions, with the breadcrumb timeline of each one
 - **Any OpenTelemetry backend** — send logs, spans and metrics to an OpenTelemetry Collector, Grafana, Honeycomb or any OTLP/HTTP receiver with `telemetry`, next to Traceway or without it (standalone)
@@ -361,7 +361,7 @@ The pictures image views show can be recorded into the wireframe instead of plac
 
 - The lower of the setting and `replayImages` (`ALWAYS` by default) applies, `off` < `wifi` < `always`. Without `screenCapture`, or when the plan's limits turn replay off, there are no pictures. Session events report the policy at the start of the session (`traceway.replay.images`) and the encoded bytes used (`traceway.replay.image_bytes`).
 - The connection is checked when a frame is captured, following the default network as it changes (Android 7+): a picture recorded on Wi-Fi stays in its clip.
-- What is recorded: the bitmap of an `ImageView`'s `BitmapDrawable` (the top bitmap of a layer drawable, as a Glide crossfade shows it) and bitmap backgrounds. Never a screenshot of the window, never anything under a privacy mask. Vector drawables, shapes and animated images keep their usual look, and Jetpack Compose images stay placeholders: the semantics tree holds no pixels.
+- What is recorded: the bitmap of an `ImageView`'s `BitmapDrawable` (the top bitmap of a layer drawable, as a Glide crossfade shows it) and bitmap backgrounds. Never a screenshot of the window, never anything under a mask. Vector drawables, shapes and animated images keep their usual look, and Jetpack Compose images stay placeholders: the semantics tree holds no pixels.
 - Each picture is copied at the size it shows (1.5 pixels per dp, at most 512 pixels on its longest side) and encoded off the main thread as JPEG at quality 0.6 (PNG when it has transparency and is at most 128 pixels); one larger than 96 KiB at half that size is left out. The first frame shows the placeholder, a later one the picture.
 - The same bitmap at the same size is one picture however many views show it; at most 64 pictures per recorder, and 4 MiB of encoded pictures per session. Past those, new pictures are placeholders. A picture's style stays in the recording 30 seconds after its view left the screen.
 
@@ -370,29 +370,29 @@ The pictures image views show can be recorded into the wireframe instead of plac
 Masks change the recording only; the user sees no difference.
 
 ```kotlin
-import com.tracewayapp.traceway.tracewayPrivacyMask
+import com.tracewayapp.traceway.tracewayMask
 
 // Blur: the layout stays, its text becomes * and its images placeholders
-cardNumberView.tracewayPrivacyMask = TracewayMaskMode.blur()
+cardNumberView.tracewayMask = TracewayMaskMode.blur()
 
 // Blank: a box of this color, nothing inside it is recorded
-profileHeader.tracewayPrivacyMask = TracewayMaskMode.blank(Color.BLACK)
+profileHeader.tracewayMask = TracewayMaskMode.blank(Color.BLACK)
 
-cardNumberView.tracewayPrivacyMask = null
+cardNumberView.tracewayMask = null
 ```
 
-From Java: `Traceway.setPrivacyMask(view, TracewayMaskMode.blur())` and `Traceway.setPrivacyMask(view, null)`. `Traceway.mask(view)` and `Traceway.unmask(view)` still work and are deprecated. A mask covers the view and everything inside it.
+From Java: `Traceway.mask(view, TracewayMaskMode.blur())` (blur when the mode is left out) and `Traceway.unmask(view)`. A mask covers the view and everything inside it.
 
 In XML, `android:tag="traceway-mask"` (blur) or `android:tag="traceway-blank"` (blank). In Jetpack Compose:
 
 ```kotlin
-import com.tracewayapp.traceway.compose.tracewayPrivacyMask
+import com.tracewayapp.traceway.compose.tracewayMask
 
-Text(address, Modifier.tracewayPrivacyMask())
-Box(Modifier.tracewayPrivacyMask(TracewayMaskMode.blank())) { ... }
+Text(address, Modifier.tracewayMask())
+Box(Modifier.tracewayMask(TracewayMaskMode.blank())) { ... }
 ```
 
-`Modifier.testTag("traceway-mask")` and `"traceway-blank"` work too (`Modifier.tracewayMask()` still works and is deprecated). A masked view's text and label are also left out of tap records. Text typed into fields is replaced with `*` unless remote settings set `replay.maskAllInputs: false`; password fields always are, as dots.
+`Modifier.testTag("traceway-mask")` and `"traceway-blank"` work too. A masked view's text and label are also left out of tap records. Text typed into fields is replaced with `*` unless remote settings set `replay.maskAllInputs: false`; password fields always are, as dots.
 
 ## Network requests
 
@@ -650,6 +650,20 @@ Below API 26, enable core library desugaring (see [Installation](#installation))
 
 For Flutter apps, use the [`traceway`](https://github.com/tracewayapp/traceway-flutter) package instead.
 
+### Platform differences
+
+The API has the names of the browser, Flutter and iOS SDKs. Where Android differs, it is for these reasons:
+
+- **Start**: `Traceway.init(application, connectionString, options)` takes the `Application`, which the SDK needs to follow activities and fragments, record taps and the wireframe, keep its files and read the network state. It returns the `TracewayClient`, or `null` when the settings are invalid (logged, not thrown); `Traceway.init(application, options)` starts standalone. Flutter starts with `Traceway.run`, iOS with `Traceway.initialize`.
+- **Masks** belong to views: `view.tracewayMask` in Kotlin, `Traceway.mask(view, mode)` / `Traceway.unmask(view)` from Java (an extension property reads poorly there), `Modifier.tracewayMask(mode)` in Compose. The markers that need no code are `android:tag` and Compose `testTag` values (`traceway-mask`, `traceway-blank`), where the browser uses CSS classes and Flutter a `ValueKey`. `TracewayMaskMode.blank(color)` takes an ARGB `Int`.
+- **Blocking, in milliseconds**: `flush(timeoutMs)` and `shutdown(timeoutMs)` (10 s by default) block the calling thread instead of returning a promise or future: call them off the main thread. iOS takes seconds (`flush(timeout:)`).
+- **Properties and Java**: `Traceway.currentSessionId` is a property, as in Flutter and iOS (`getCurrentSessionId()` from Java, a function in the browser); `getInstanceId()` is a method, as in the browser and Flutter (iOS: `instanceId`). Every method is a `@JvmStatic` on `Traceway`, with Java overloads for the optional parameters.
+- **Enum constants in Kotlin case**: `TracewayLogLevel.WARN` (`"warn"` in the browser, `.warn` in Flutter and iOS), `TracewayImagePolicy.WIFI` for the setting `replay.images: "wifi"`.
+- **Throwables carry their stack**: `captureException(error, attributes)` has no stack trace parameter (Flutter's has one), and `log(message, level, attributes)` takes no error.
+- **Navigation**: activities and AndroidX fragments are reported without code; Compose Navigation and other routers call `recordNavigation(path, action, from, route)`, positional in that order from Java (Flutter takes them by name).
+- **Requests** are recorded by `TracewayOkHttpInterceptor` on the app's `OkHttpClient`, or with `Traceway.client?.startRequest` / `endRequest` for another HTTP stack; nothing is patched.
+- **Options**: `TracewayOptions` is a Kotlin constructor; pass its parameters by name. `proguardUuid` and `propagateTraceHeaderUrlPatterns` exist only on Android.
+
 ## Migrating from 1.x
 
 - **Server**: 2.0 sends OTLP to `/api/otel/v1/logs`, `/api/otel/v1/traces` and `/api/otel/v1/metrics`, polls `/api/otel/v1/opamp` and uploads replays to `/api/recordings`. There is no fallback to the 1.x `/api/report` protocol.
@@ -660,7 +674,7 @@ For Flutter apps, use the [`traceway`](https://github.com/tracewayapp/traceway-f
 - **Removed options**: `debounceMs`, `retryDelayMs`, `maxPendingExceptions`, `maxLocalFiles`, `localFileMaxAgeHours`, `eventsWindowMs`, `eventsMaxCount`, `capturePixelRatio`. `fps` and `maxBufferFrames` now apply to the wireframe recording.
 - **Removed API**: `TracewayClient.addException`, `loadPendingFromDisk`, `setDeviceAttributes`, `bufferedLogs`, `bufferedActions`, `pendingExceptionCount` and the other test accessors, `recordNetworkEvent`, `recordNavigationEvent`, the `ReportSender` interface and the 1.x event and report models. Use `captureException`, `Traceway.setAttribute`, `startRequest` / `endRequest`, `recordNavigation` and `flush()`.
 - **Changed API**: `Traceway.init` returns `TracewayClient?` (null when the settings are invalid). `TracewayClient.flush(timeoutMs)` takes a non-null timeout (10 s by default). `TracewayOptions` lists its parameters in the order the other SDKs do: pass them by name.
-- **New API**: `Traceway.track`, `setAttribute(s)`, `removeAttribute`, `clearAttributes`, `recordNavigation`, `setRoute`, `log` with `TracewayLogLevel`, `startInteraction` with `TracewayInteraction`, `currentSessionId`, `reportFullyDisplayed`, `metric`, `count`, `setMetricDimension`, `setPrivacyMask`, `refreshConfig`, `shutdown`, `getInstanceId`; `View.tracewayPrivacyMask`, `Modifier.tracewayPrivacyMask()`; options `replayImages`, `ignoreErrors`, `beforeCapture`; `TracewayTelemetry`, `TracewayTelemetryEndpoint`, `TracewayMaskMode`, `TracewayImagePolicy`, `TracewayCapturedError`. `recordLog`, `mask` / `unmask` and `Modifier.tracewayMask()` remain as deprecated names.
+- **New API**: `Traceway.track`, `setAttribute(s)`, `removeAttribute`, `clearAttributes`, `recordNavigation`, `setRoute`, `log` with `TracewayLogLevel`, `startInteraction` with `TracewayInteraction`, `currentSessionId`, `reportFullyDisplayed`, `metric`, `count`, `setMetricDimension`, `mask` / `unmask`, `refreshConfig`, `shutdown`, `getInstanceId`; `View.tracewayMask`, `Modifier.tracewayMask()`; options `replayImages`, `ignoreErrors`, `beforeCapture`; `TracewayTelemetry`, `TracewayTelemetryEndpoint`, `TracewayMaskMode`, `TracewayImagePolicy`, `TracewayCapturedError`. `recordLog` remains as a deprecated name.
 - **Issues regroup once**: the stack trace now reaches the server as the OpenTelemetry `exception.*` attributes, so the first 2.0 occurrence of an issue may start a new group.
 
 ## Testing

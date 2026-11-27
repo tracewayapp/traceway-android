@@ -66,7 +66,7 @@ The same ids are used by the iOS and Flutter SDKs. `WireframeCssTest` asserts th
 | `im p<N>` | a recorded picture (see [Images](#images)) |
 | `ic`, `ic g<N>` | icon: a tinted rounded square, or its glyph mask |
 | `cp` | a view that draws itself: dashed outline |
-| `mk` | a blank privacy mask (its color inline) |
+| `mk` | a blank mask (its color inline) |
 | `sk`, `sk sm` | skeleton text (iOS) |
 | `pv` | native view placeholder (web view, map, video, camera) with its label |
 
@@ -109,9 +109,9 @@ Pictures are recorded when the replay image policy allows them: the setting `rep
 
 ## Privacy
 
-- `view.tracewayPrivacyMask = TracewayMaskMode.blur()` (or `Traceway.setPrivacyMask(view, mode)`, or `android:tag="traceway-mask"`): the layout stays, every non-space character becomes `*`, images are placeholders, icons get no glyph, pictures are never recorded.
+- `view.tracewayMask = TracewayMaskMode.blur()` (or `Traceway.mask(view, mode)` from Java, or `android:tag="traceway-mask"`): the layout stays, every non-space character becomes `*`, images are placeholders, icons get no glyph, pictures are never recorded.
 - `TracewayMaskMode.blank(color)` (or `android:tag="traceway-blank"`): one `mk` box of that color; nothing inside is walked.
-- Compose: `Modifier.tracewayPrivacyMask(mode)` or `Modifier.testTag("traceway-mask" | "traceway-blank")`.
+- Compose: `Modifier.tracewayMask(mode)` or `Modifier.testTag("traceway-mask" | "traceway-blank")`.
 - A mask covers its subtree. Tap records leave out the text and label of a masked view, and a mask tag never names one.
 - Typed text is masked while `replay.maskAllInputs` is on (the default); passwords (`PasswordTransformationMethod`, password input types, Compose `Password`) are always shown as `•`. Hints are not masked as input.
 
