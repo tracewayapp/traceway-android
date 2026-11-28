@@ -24,16 +24,22 @@ class RunSpec(val values: Map<String, String>) {
     val clear: Boolean? = values["fmClear"]?.let { it == "1" }
     /** How a journey `fling` reads `dir`: `finger` (the journey's rule since shared version 1) or `content`. */
     val flingDir: String = values["fmFlingDir"] ?: "finger"
+    /**
+     * After the standard ending, open the SDK build again this long after Home, under the run id with `-relaunch`:
+     * with a short `fmSessionTimeoutMs` the run's session is over by then, and the SDK ends it at that start
+     * (findings android-003/004). 0: no relaunch.
+     */
+    val relaunchAfterMs: Long = values["fmRelaunchAfterMs"]?.toLongOrNull()?.coerceAtLeast(0) ?: 0
 
     /** The launch settings the app stores (02-APP-SPEC.md §6). */
-    fun launchExtras(scenarioSettings: Map<String, String> = emptyMap()): Map<String, String> {
+    fun launchExtras(scenarioSettings: Map<String, String> = emptyMap(), runId: String = run): Map<String, String> {
         val m = LinkedHashMap<String, String>()
         m.putAll(scenarioSettings)
-        m["fmRun"] = run
+        m["fmRun"] = runId
         m["fmVariant"] = variant
         m["fmScenario"] = scenario
         m["fmEvidence"] = if (evidence) "1" else "0"
-        for (k in listOf("fmBaseUrl", "fmFixtures", "fmToken", "fmFps", "fmToolkit", "fmRemote", "fmTarget", "fmCampaign", "fmChart")) {
+        for (k in listOf("fmBaseUrl", "fmFixtures", "fmToken", "fmFps", "fmToolkit", "fmRemote", "fmTarget", "fmCampaign", "fmChart", "fmSessionTimeoutMs")) {
             values[k]?.let { m[k] = it }
         }
         return m

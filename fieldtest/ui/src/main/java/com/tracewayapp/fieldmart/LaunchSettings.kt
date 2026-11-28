@@ -22,12 +22,16 @@ class LaunchSettings(
     val remote: Boolean,
     val target: String,
     val campaign: String,
+    /** The SDK's session inactivity timeout (`fmSessionTimeoutMs`), or its default: a run that relaunches the app
+     * once its session is over (fix brief, findings android-003/004) sets a short one. */
+    val sessionTimeoutMs: Long? = null,
 ) {
     val feedViews: Boolean get() = toolkit == "views"
 
     fun describe(): String =
         "run=$run variant=$variant scenario=$scenario evidence=${if (evidence) 1 else 0} toolkit=$toolkit fps=${fps ?: "default"} " +
-            "remote=${if (remote) 1 else 0} target=$target campaign=$campaign baseUrl=$baseUrl fixtures=$fixtures"
+            "remote=${if (remote) 1 else 0} target=$target campaign=$campaign baseUrl=$baseUrl fixtures=$fixtures" +
+            (sessionTimeoutMs?.let { " sessionTimeoutMs=$it" } ?: "")
 
     companion object {
         const val PREFS = "fieldmart-launch"
@@ -36,7 +40,7 @@ class LaunchSettings(
         /** Every key the app reads; [ConfigActivity] stores these and nothing else. */
         val KEYS = listOf(
             "fmRun", "fmVariant", "fmScenario", "fmBaseUrl", "fmFixtures", "fmToken", "fmEvidence", "fmFps",
-            "fmChart", "fmToolkit", "fmRemote", "fmAutopilot", "fmTarget", "fmCampaign",
+            "fmChart", "fmToolkit", "fmRemote", "fmAutopilot", "fmTarget", "fmCampaign", "fmSessionTimeoutMs",
         )
 
         fun prefs(context: Context): SharedPreferences = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
@@ -57,6 +61,7 @@ class LaunchSettings(
                 remote = s("fmRemote", "0") == "1",
                 target = s("fmTarget", "unknown"),
                 campaign = s("fmCampaign", "none"),
+                sessionTimeoutMs = p.getString("fmSessionTimeoutMs", null)?.toLongOrNull()?.takeIf { it > 0 },
             )
         }
 

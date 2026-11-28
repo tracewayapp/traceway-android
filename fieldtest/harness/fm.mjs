@@ -2,7 +2,7 @@
 // The Android field-test harness (sdk-field-test AGENT-4 step 3). Same commands on the GitHub runner (emulator,
 // gateway in capture mode) and on this machine (local processing of what the runner captured).
 //
-//   node fieldtest/harness/fm.mjs build [--ci] [--out DIR]          APKs + sizes (M-SIZE-1)
+//   node fieldtest/harness/fm.mjs build [--ci] [--out DIR] [--gradle-props "-Pa=b ..."]   APKs + sizes (M-SIZE-1)
 //   node fieldtest/harness/fm.mjs device-setup [--size 720x1560 --density 280]
 //   node fieldtest/harness/fm.mjs install --apks DIR                adb reverse, install, cmd package compile -m speed
 //   node fieldtest/harness/fm.mjs warmup                            the app once until UiAutomator sees it (not a run)
@@ -85,11 +85,15 @@ function hashes() {
 function build(o) {
   const tasks = [':core:test', ':app-off:assembleBench', ':app-sdk:assembleBench', ':driver:assembleBench'];
   if (o['no-cleartext']) tasks.push(':app-sdk:assembleBenchNoCleartext');
+  // Gradle properties, e.g. the workaround switches off: -Pfm.workaround.symbolsTaskDependency=false
+  // -Pfm.workaround.otelResourceEntities=false (FM_GRADLE_PROPS on the runner).
+  const props = String(o['gradle-props'] || process.env.FM_GRADLE_PROPS || '').split(/\s+/).filter(Boolean);
+  for (const p of props) if (!/^-P[A-Za-z0-9_.-]+=[A-Za-z0-9_.-]*$/.test(p)) throw new Error(`not a Gradle property: ${p}`);
   if (o.ci || !process.env.FM_GRADLE) {
-    sh('./gradlew', ['-p', 'fieldtest', '--no-daemon', '--stacktrace', ...tasks], { cwd: REPO });
+    sh('./gradlew', ['-p', 'fieldtest', '--no-daemon', '--stacktrace', ...props, ...tasks], { cwd: REPO });
   } else {
     const wrapped = process.env.FM_HEAVY ? [process.env.FM_HEAVY, ['-m', '3600M', process.env.FM_GRADLE]] : [process.env.FM_GRADLE, []];
-    sh(wrapped[0], [...wrapped[1], '-p', 'fieldtest', ...tasks], { cwd: REPO });
+    sh(wrapped[0], [...wrapped[1], '-p', 'fieldtest', ...props, ...tasks], { cwd: REPO });
   }
   const out = resolve(o.out || join(FIELDTEST, 'build/apks'));
   mkdirSync(out, { recursive: true });
@@ -99,7 +103,7 @@ function build(o) {
     driver: join(FIELDTEST, 'driver/build/outputs/apk/bench', APKS.driver),
     sdkNoCleartext: join(FIELDTEST, 'app-sdk/build/outputs/apk/benchNoCleartext', 'app-sdk-benchNoCleartext.apk'),
   };
-  const info = { commit: git('rev-parse', '--short=8', 'HEAD'), dirty: !!git('status', '--porcelain', '--', 'traceway', 'gradle-plugin'), apks: {} };
+  const info = { commit: git('rev-parse', '--short=8', 'HEAD'), dirty: !!git('status', '--porcelain', '--', 'traceway', 'gradle-plugin'), gradleProps: props, apks: {} };
   for (const [k, f] of Object.entries(found)) {
     if (!existsSync(f)) continue;
     copyFileSync(f, join(out, basename(f)));
@@ -220,6 +224,12 @@ async function runOne(r, o, ctx) {
   put('fmFps', r.fps || o.fps);
   put('fmRemote', o.remote);
   put('fmFlingDir', o['fling-dir']);
+  // A short session timeout and a relaunch once the session is over (findings android-003/004): FM_SESSION_TIMEOUT_MS
+  // and FM_RELAUNCH_AFTER_MS on the runner. SDK variants only.
+  if (!r.variant.startsWith('off')) {
+    put('fmSessionTimeoutMs', o['session-timeout-ms'] || process.env.FM_SESSION_TIMEOUT_MS);
+    put('fmRelaunchAfterMs', o['relaunch-after-ms'] || process.env.FM_RELAUNCH_AFTER_MS);
+  }
   if (r.mode) put('fmMode', r.mode);
   if (r.repeat) put('fmRepeat', r.repeat);
   if (r.clear != null) put('fmClear', r.clear ? '1' : '0');
