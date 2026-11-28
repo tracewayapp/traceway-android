@@ -83,7 +83,7 @@ class JourneyRun(private val spec: RunSpec, private val scenario: Scenario, priv
         shell.run("dumpsys gfxinfo $pkg reset")
         val s = Sampler(shell, rec.file("samples.raw"), pid)
         sampler = s
-        s.snapshot("t0")
+        // The sampler's first tick is the t0 snapshot, on its own thread, so the first step is not held up.
         s.start()
 
         try {

@@ -207,24 +207,32 @@ class ProductFragment : Fragment() {
         }
     }
 
-    private inner class ReviewAdapter : RecyclerView.Adapter<RecyclerView.ViewHolder>() {
+    /** A review row; its views are kept here because the Helpful button's id is the element id of its review. */
+    private class ReviewHolder(v: View) : RecyclerView.ViewHolder(v) {
+        val avatar: ImageView = v.findViewById(R.id.fm_review_avatar)
+        val author: TextView = v.findViewById(R.id.fm_review_author)
+        val date: TextView = v.findViewById(R.id.fm_review_date)
+        val stars: TextView = v.findViewById(R.id.fm_review_stars)
+        val text: TextView = v.findViewById(R.id.fm_review_text)
+        val helpful: MaterialButton = v.findViewById(R.id.fm_review_helpful)
+    }
+
+    private inner class ReviewAdapter : RecyclerView.Adapter<ReviewHolder>() {
         override fun getItemCount() = reviews.size
 
-        override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): RecyclerView.ViewHolder =
-            object : RecyclerView.ViewHolder(LayoutInflater.from(parent.context).inflate(R.layout.fm_product_review, parent, false)) {}
+        override fun onCreateViewHolder(parent: ViewGroup, viewType: Int) =
+            ReviewHolder(LayoutInflater.from(parent.context).inflate(R.layout.fm_product_review, parent, false))
 
-        override fun onBindViewHolder(holder: RecyclerView.ViewHolder, position: Int) {
+        override fun onBindViewHolder(holder: ReviewHolder, position: Int) {
             val r = reviews[position]
-            val v = holder.itemView
-            v.findViewById<ImageView>(R.id.fm_review_avatar).load(app.api.avatarImage(r.avatarId))
-            v.findViewById<TextView>(R.id.fm_review_author).text = r.author
-            v.findViewById<TextView>(R.id.fm_review_date).text = r.date
-            v.findViewById<TextView>(R.id.fm_review_stars).text = "★".repeat(r.rating.coerceIn(0, 5)) + "☆".repeat(5 - r.rating.coerceIn(0, 5))
-            v.findViewById<TextView>(R.id.fm_review_text).text = r.text
-            val button = v.findViewById<MaterialButton>(R.id.fm_review_helpful)
-            FmIds.set(button, "fm-product-helpful-${r.id}")
-            button.text = getString(R.string.fm_l_product_helpful) + if (r.id in helpful) " (1)" else ""
-            button.setOnClickListener {
+            holder.avatar.load(app.api.avatarImage(r.avatarId))
+            holder.author.text = r.author
+            holder.date.text = r.date
+            holder.stars.text = "★".repeat(r.rating.coerceIn(0, 5)) + "☆".repeat(5 - r.rating.coerceIn(0, 5))
+            holder.text.text = r.text
+            FmIds.set(holder.helpful, "fm-product-helpful-${r.id}")
+            holder.helpful.text = getString(R.string.fm_l_product_helpful) + if (r.id in helpful) " (1)" else ""
+            holder.helpful.setOnClickListener {
                 if (!helpful.add(r.id)) helpful.remove(r.id)
                 notifyItemChanged(holder.bindingAdapterPosition)
             }

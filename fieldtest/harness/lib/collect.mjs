@@ -144,7 +144,9 @@ export function collectRun(rawDir, shellDir, outDir, ctx = {}) {
     const pieces = readJson(join(rawDir, 'screen-pieces.json'), []);
     if (shellDir && pieces.length) {
       try {
-        screen = buildScreen({ rawDir: shellDir, outDir, pieces, checkpoints: cps });
+        const taps = (readJson(join(rawDir, 'actions.json'), []) || []).filter((a) => (a.do || a.kind) === 'tap' && a.x != null);
+        const logical = meta.device ? { width: meta.device.widthDp, height: meta.device.heightDp } : null;
+        screen = buildScreen({ rawDir: shellDir, outDir, pieces, checkpoints: cps, taps, logical });
       } catch (e) {
         flags.add('screen-failed');
         writeFileSync(join(outDir, 'screen-error.txt'), String(e.stack || e));

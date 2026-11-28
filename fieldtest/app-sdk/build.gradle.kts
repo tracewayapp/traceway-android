@@ -30,6 +30,10 @@ android {
             signingConfig = signingConfigs.getByName("debug")
             matchingFallbacks += listOf("release")
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
+            // WORKAROUND for finding android-002: see the file.
+            if (providers.gradleProperty("fm.workaround.otelResourceEntities").getOrElse("true") != "false") {
+                proguardFile("workaround-otel-resource-entities.pro")
+            }
         }
         // The bench build without the cleartext rule for 127.0.0.1 (hypothesis H-A4): what the SDK does when every
         // plain-HTTP post is refused by the platform.

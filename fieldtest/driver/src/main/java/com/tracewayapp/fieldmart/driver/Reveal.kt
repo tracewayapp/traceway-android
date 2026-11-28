@@ -55,6 +55,7 @@ class Reveal(
         var lastSignature: String? = null
         var still = 0
         var nudges = 0
+        var lastSize = 0
         while (SystemClock.uptimeMillis() < deadlineMs) {
             val ime = ime()
             val o = device.findObject(selector(id))
@@ -75,16 +76,20 @@ class Reveal(
                 }
                 val area = Rect(c?.visibleBounds ?: screen())
                 if (ime != null && ime.top < area.bottom) area.bottom = ime.top
-                if (vb.width() > 0 && vb.height() > 0 && inside(vb, area)) return settle(id, vb)
-                // Taller than its container, or it would not move: as visible as it gets.
-                if (c == null || nudges >= 3 || vb.height() >= area.height() - 2) return settle(id, vb)
+                val horizontal = c != null && isHorizontal(c)
+                if (vb.width() > 0 && vb.height() > 0 && inside(vb, area, horizontal)) return settle(id, vb)
+                // Larger than its container, or a nudge did not show more of it: as visible as it gets.
+                val size = if (horizontal) vb.width() else vb.height()
+                if (c == null || nudges >= 2 || size >= (if (horizontal) area.width() else area.height()) - 2 || (nudges > 0 && size <= lastSize + 1)) {
+                    return settle(id, vb)
+                }
                 nudges++
+                lastSize = size
                 // Partly visible: one held drag brings it to the middle of its container.
-                val horizontal = isHorizontal(c)
                 val shift = if (horizontal) vb.exactCenterX() - area.exactCenterX() else vb.exactCenterY() - area.exactCenterY()
                 val limit = (if (horizontal) area.width() else area.height()) * 0.45f
                 val d = shift.coerceIn(-limit, limit)
-                drag(id, area, horizontal, -d, 320, hold = 150)
+                drag(id, area, horizontal, -d, 240, hold = 100)
                 continue
             }
             if (c == null) throw IllegalStateException("$id not on screen and nothing to scroll")
@@ -167,7 +172,12 @@ class Reveal(
 
     private fun screen(): Rect = Rect(0, 0, device.displayWidth, device.displayHeight)
 
-    private fun inside(r: Rect, area: Rect): Boolean = r.top >= area.top + 1 && r.bottom <= area.bottom - 1 && r.left >= area.left && r.right <= area.right
+    /**
+     * Inside its container along the scroll axis (the other axis cannot be scrolled). A row cut by the container's
+     * edge shows only up to that edge, so an element touching it counts as cut unless it is at the content's end.
+     */
+    private fun inside(r: Rect, area: Rect, horizontal: Boolean): Boolean =
+        if (horizontal) r.left > area.left && r.right < area.right else r.top > area.top && r.bottom < area.bottom
 
     companion object {
         /** Checkout elements in dialogs, sheets and popups, not in the form. */

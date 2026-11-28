@@ -174,7 +174,7 @@ test('collect: metrics, ledger, and the screen video calibrated against the scre
   assert.ok(existsSync(join(out, 'screen.mp4')));
   const screen = JSON.parse(readFileSync(join(out, 'screen.json'), 'utf8'));
   const p = screen.pieces[0];
-  assert.equal(p.method, 'calibrated');
+  assert.equal(p.method, 'calibrated (screenshots)');
   assert.ok(Math.abs(p.latencyMs - latency) <= 40, `latency ${p.latencyMs} vs ${latency}`);
   assert.equal(p.matchesUsed, 3);
   assert.ok(Math.abs(screen.startEpochMs - (exec + latency)) <= 40);
@@ -233,4 +233,27 @@ test('two screen pieces: screen.mp4 runs on the device clock across the restart 
     for (let i = 0; i < shot.length; i++) d += Math.abs(frame[i] - shot[i]);
     assert.ok(d / shot.length < 2, `${c.name}: frame at ${c.offsetMs} ms differs by ${(d / shot.length).toFixed(2)}`);
   }
+});
+
+test('taps: the recording latency from the moments the picture changes at tap points', async () => {
+  const { calibrateFromTaps, grayFrames } = await import('../lib/screen.mjs');
+  const root = mkdtempSync(join(scratch, 'taps-'));
+  const file = join(root, 'piece.mp4');
+  // 412 x 892 logical, 360 x 780 video. A white box (a touch and its ripple) shows at each tap's point, starting
+  // 400 ms (the latency) plus one frame after the tap's device time; a grey box elsewhere moves the rest of the time.
+  const latency = 400;
+  const taps = [[2.0, 100, 200], [4.5, 300, 600], [7.0, 200, 400], [9.5, 60, 800], [11.0, 350, 120]].map(([t, x, y]) => ({ epochMs: 1_000_000 + t * 1000, x, y }));
+  const sx = 360 / 412;
+  const sy = 780 / 892;
+  const boxes = taps.map((t) => {
+    const at = (t.epochMs - 1_000_000 - latency + 33) / 1000;
+    return `drawbox=x=${Math.round(t.x * sx) - 20}:y=${Math.round(t.y * sy) - 20}:w=40:h=40:color=white:t=fill:enable='between(t,${at.toFixed(3)},${(at + 0.8).toFixed(3)})'`;
+  });
+  const r = spawnSync(ffmpegPath(), ['-v', 'error', '-y', '-f', 'lavfi', '-i', 'color=c=0x334455:s=360x780:r=30', '-t', '13',
+    '-vf', [...boxes, "drawbox=x='mod(t*40,300)':y=700:w=30:h=30:color=gray:t=fill"].join(','), '-c:v', 'libx264', '-pix_fmt', 'yuv420p', file]);
+  assert.equal(r.status, 0, String(r.stderr));
+  const frames = grayFrames(file);
+  const cal = calibrateFromTaps({ frames, count: Math.floor(frames.length / (72 * 156)), execEpochMs: 1_000_000, taps, logical: { width: 412, height: 892 } });
+  assert.ok(cal.used >= 4, JSON.stringify(cal));
+  assert.ok(Math.abs(cal.latencyMs - latency) <= 40, JSON.stringify(cal));
 });

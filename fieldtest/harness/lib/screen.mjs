@@ -65,8 +65,7 @@ function mae(frames, index, img) {
  * The latency of one piece: for each screenshot taken while it recorded, the best-matching frame within
  * [searchBeforeMs] before and [searchAfterMs] after the frame its exec time predicts.
  */
-export function calibratePiece({ file, execEpochMs, shots, searchBeforeMs = 2500, searchAfterMs = 400 }) {
-  const frames = grayFrames(file);
+export function calibratePiece({ file, execEpochMs, shots, searchBeforeMs = 2500, searchAfterMs = 400, frames = grayFrames(file) }) {
   const count = Math.floor(frames.length / (W * H));
   const matches = [];
   for (const shot of shots) {
@@ -100,11 +99,76 @@ export function calibratePiece({ file, execEpochMs, shots, searchBeforeMs = 2500
   return { latencyMs: latency, spreadMs: spread, used: good.length, matches, frames: count };
 }
 
+export { grayFrames };
+
+/**
+ * The latency of one piece from the taps (evidence runs show touches): every tap changes the picture right around
+ * its point at its device time (the touch spot, the ripple). Each change that starts in a small area around a tap's
+ * point, after a still moment, is a candidate latency; the latency most taps agree on (within 50 ms) is the piece's.
+ * [taps]: { epochMs, x, y } with x and y in logical px; [logical]: { width, height } of the screen.
+ */
+export function calibrateFromTaps({ frames, count, execEpochMs, taps, logical, maxLatencyMs = 3000 }) {
+  if (!frames || !taps.length || !logical?.width) return { latencyMs: null, used: 0, taps: taps.length };
+  const n = W * H;
+  const r = 3;
+  const cands = [];
+  for (const tap of taps) {
+    const cx = Math.round((tap.x / logical.width) * W);
+    const cy = Math.round((tap.y / logical.height) * H);
+    const predicted = tap.epochMs - execEpochMs;
+    const lo = Math.max(1, Math.floor(((predicted - maxLatencyMs - 300) * FPS) / 1000));
+    const hi = Math.min(count - 1, Math.ceil(((predicted + 300) * FPS) / 1000));
+    if (hi - lo < 6) continue;
+    const d = [];
+    for (let i = lo; i <= hi; i++) {
+      let sum = 0;
+      let px = 0;
+      for (let y = Math.max(0, cy - r); y <= Math.min(H - 1, cy + r); y++) {
+        for (let x = Math.max(0, cx - r); x <= Math.min(W - 1, cx + r); x++) {
+          const k = y * W + x;
+          sum += Math.abs(frames[i * n + k] - frames[(i - 1) * n + k]);
+          px++;
+        }
+      }
+      d.push(px ? sum / px : 0);
+    }
+    const sorted = [...d].sort((a, b) => a - b);
+    const quiet = sorted[sorted.length >> 1];
+    const threshold = Math.max(6, 4 * quiet);
+    const mine = [];
+    for (let j = 2; j < d.length; j++) {
+      if (d[j] >= threshold && d[j - 1] < threshold && d[j - 2] < threshold) {
+        const frameMs = ((lo + j) * 1000) / FPS;
+        const lat = predicted - frameMs;
+        if (lat >= -100 && lat <= maxLatencyMs) mine.push(Math.round(lat));
+      }
+    }
+    if (mine.length) cands.push(mine);
+  }
+  if (!cands.length) return { latencyMs: null, used: 0, taps: taps.length };
+  let best = null;
+  let bestScore = 0;
+  for (let L = -100; L <= maxLatencyMs; L += 10) {
+    let score = 0;
+    for (const c of cands) if (c.some((x) => Math.abs(x - L) <= 50)) score++;
+    // On a tie the earlier onset wins (a larger latency): a press starts with the touch, its end comes later.
+    if (score >= bestScore && score > 0) {
+      bestScore = score;
+      best = L;
+    }
+  }
+  const near = cands.map((c) => c.filter((x) => Math.abs(x - best) <= 50)).filter((c) => c.length).map((c) => c.reduce((a, b) => (Math.abs(a - best) < Math.abs(b - best) ? a : b)));
+  near.sort((a, b) => a - b);
+  const latency = near[near.length >> 1];
+  const spread = near.length >= 2 ? near[Math.floor(near.length * 0.75)] - near[Math.floor(near.length * 0.25)] : null;
+  return { latencyMs: latency, used: near.length, taps: taps.length, withCandidates: cands.length, spreadMs: spread };
+}
+
 /**
  * Builds `<outDir>/screen.mp4` and `screen.json` from the pieces (`screen-pieces.json` from the driver) in [rawDir].
  * [checkpoints] are the run's checkpoints with `shot` and `shotStartEpochMs`/`shotEndEpochMs`.
  */
-export function buildScreen({ rawDir, outDir, pieces, checkpoints, bitrate = '2M', defaultLatencyMs = 300 }) {
+export function buildScreen({ rawDir, outDir, pieces, checkpoints, taps = [], logical = null, bitrate = '2M', defaultLatencyMs = 0 }) {
   mkdirSync(outDir, { recursive: true });
   const parts = [];
   for (const p of pieces) {
@@ -116,7 +180,16 @@ export function buildScreen({ rawDir, outDir, pieces, checkpoints, bitrate = '2M
       .filter((c) => c.shot && c.shotStartEpochMs >= p.execEpochMs && c.shotEndEpochMs <= p.endEpochMs)
       .map((c) => ({ name: c.name, png: join(outDir, c.shot), epochMs: (c.shotStartEpochMs + c.shotEndEpochMs) / 2 }))
       .filter((s) => existsSync(s.png));
-    const cal = shots.length ? calibratePiece({ file, execEpochMs: p.execEpochMs, shots }) : { latencyMs: null, used: 0, matches: [] };
+    const frames = grayFrames(file);
+    const count = Math.floor(frames.length / (W * H));
+    const shot = shots.length ? calibratePiece({ file, execEpochMs: p.execEpochMs, shots, frames }) : { latencyMs: null, used: 0, matches: [] };
+    const inPiece = taps.filter((t) => t.epochMs >= p.execEpochMs + 300 && t.epochMs <= p.endEpochMs - 300);
+    const tap = calibrateFromTaps({ frames, count, execEpochMs: p.execEpochMs, taps: inPiece, logical });
+    // Taps first (a change at a known instant); screenshots of still screens are the fallback.
+    const useTaps = tap.latencyMs != null && tap.used >= 3 && tap.used >= 0.4 * tap.withCandidates;
+    const cal = useTaps
+      ? { latencyMs: tap.latencyMs, spreadMs: tap.spreadMs, used: tap.used, source: 'taps', matches: shot.matches, taps: tap, shots: { latencyMs: shot.latencyMs, used: shot.used, spreadMs: shot.spreadMs } }
+      : { ...shot, source: shot.latencyMs != null ? 'screenshots' : null, taps: tap };
     parts.push({ ...p, file, info, cal });
   }
   if (!parts.length) return null;
@@ -124,7 +197,7 @@ export function buildScreen({ rawDir, outDir, pieces, checkpoints, bitrate = '2M
   const fallback = known.length ? known[known.length >> 1] : defaultLatencyMs;
   for (const p of parts) {
     p.latencyMs = p.cal.latencyMs ?? fallback;
-    p.method = p.cal.latencyMs != null ? 'calibrated' : known.length ? 'other-pieces' : 'assumed';
+    p.method = p.cal.latencyMs != null ? `calibrated (${p.cal.source})` : known.length ? 'other-pieces' : 'assumed';
     p.startEpochMs = p.execEpochMs + p.latencyMs;
   }
   const start = parts[0].startEpochMs;
@@ -164,6 +237,8 @@ export function buildScreen({ rawDir, outDir, pieces, checkpoints, bitrate = '2M
       method: p.method,
       spreadMs: p.cal.spreadMs ?? null,
       matchesUsed: p.cal.used,
+      taps: p.cal.taps ? { used: p.cal.taps.used, of: p.cal.taps.taps, latencyMs: p.cal.taps.latencyMs, spreadMs: p.cal.taps.spreadMs } : null,
+      screenshots: p.cal.shots || null,
       startEpochMs: Math.round(p.startEpochMs),
       durationMs: p.info.durationMs,
       gapAfterMs: Math.round(p.gapAfterMs),
