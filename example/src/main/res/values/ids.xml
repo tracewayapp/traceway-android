@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <item name="email" type="id" />
+    <item name="card_number" type="id" />
+    <item name="pay" type="id" />
+    <item name="record_action" type="id" />
+    <item name="send_message" type="id" />
+    <item name="open_compose" type="id" />
+    <item name="crash" type="id" />
+</resources>

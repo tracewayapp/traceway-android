@@ -7,6 +7,10 @@ on:
         description: 'Plugin version (e.g. 0.0.2).'
         required: true
         type: string
+      published_sha:
+        description: 'For recovery only. Full source SHA of this version already released on Maven Central.'
+        required: false
+        type: string
       dry_run:
         description: 'Validate only: build, test, sign, and publish to the runner''s local repo. No Central upload, no commit, no tag. Uncheck to release for real.'
         required: false
@@ -14,7 +18,7 @@ on:
         default: true
 
 concurrency:
-  group: publish-plugin
+  group: android-maven-release-${{ github.ref }}
   cancel-in-progress: false
 
 permissions:
@@ -36,16 +40,6 @@ jobs:
         run: |
           if ! echo "$VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9.]+)?$'; then
             echo "::error::Invalid version '$VERSION' — expected semver like 0.0.2 or 1.0.0-rc1"
-            exit 1
-          fi
-
-      - name: Check tag does not already exist
-        if: ${{ !inputs.dry_run }}
-        env:
-          VERSION: ${{ inputs.version }}
-        run: |
-          if git rev-parse "plugin-v$VERSION" >/dev/null 2>&1; then
-            echo "::error::Tag plugin-v$VERSION already exists — bump the version"
             exit 1
           fi
 
@@ -93,17 +87,9 @@ jobs:
           ORG_GRADLE_PROJECT_mavenCentralPassword: ${{ secrets.MAVEN_CENTRAL_PASSWORD }}
           ORG_GRADLE_PROJECT_signingInMemoryKey: ${{ secrets.SIGNING_KEY }}
           ORG_GRADLE_PROJECT_signingInMemoryKeyPassword: ${{ secrets.SIGNING_PASSWORD }}
-        run: ./scripts/publish-plugin.sh "${{ inputs.version }}" --release
-
-      - name: Commit version bump and push tag
-        if: ${{ !inputs.dry_run }}
-        env:
           VERSION: ${{ inputs.version }}
+          PUBLISHED_SHA: ${{ inputs.published_sha }}
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add gradle-plugin/build.gradle.kts
-          git commit -m "Release plugin v$VERSION"
-          git tag -a "plugin-v$VERSION" -m "Release plugin v$VERSION"
-          git push origin "HEAD:${{ github.ref_name }}"
-          git push origin "plugin-v$VERSION"
+          ./scripts/release-maven.sh plugin

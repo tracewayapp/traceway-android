@@ -2,11 +2,17 @@
 .gradle/
 build/
 
+# Kotlin 2 compiler session data
+.kotlin/
+
 # Local configuration file (sdk path, etc)
 local.properties
 
 # Log/OS Files
 *.log
+
+# Python bytecode (scripts/tests)
+__pycache__/
 
 # Android Studio generated files and folders
 captures/

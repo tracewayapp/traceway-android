@@ -9,13 +9,19 @@ class ExampleApp : Application() {
         super.onCreate()
 
         Traceway.init(
-            application = this,
-            connectionString = BuildConfig.TRACEWAY_DSN,
-            options = TracewayOptions(
-                version = "1.0.0",
+            this,
+            TracewayOptions(
+                // The project token, from TRACEWAY_TOKEN (see build.gradle.kts).
+                token = BuildConfig.TRACEWAY_TOKEN,
+                // Traceway Cloud unless TRACEWAY_URL names a self-hosted server.
+                baseUrl = BuildConfig.TRACEWAY_URL,
+                environment = "example",
                 debug = true,
-                proguardUuid = BuildConfig.TRACEWAY_PROGUARD_UUID,
+                // Wireframe session replay: the last seconds on screen go up with every exception.
+                screenCapture = true,
+                propagateTraceHeaderUrls = listOf("https://httpbin.org/"),
             ),
         )
+        Traceway.setAttribute("user.id", "example-user")
     }
 }

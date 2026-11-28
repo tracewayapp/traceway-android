@@ -1,0 +1,143 @@
+package com.tracewayapp.traceway.session
+
+import com.tracewayapp.traceway.core.Ids
+import com.tracewayapp.traceway.internal.Cancellable
+import com.tracewayapp.traceway.internal.TaskScheduler
+import com.tracewayapp.traceway.internal.asJsonObject
+import com.tracewayapp.traceway.internal.asLongExact
+import com.tracewayapp.traceway.persistence.StateStore
+
+internal class SessionInfo(val id: String, val startedAtMs: Long)
+
+/**
+ * One session per app run, ended after [inactivityMs] without user activity
+ * or [maxDurationMs] in total. A restart or a return from the background
+ * inside the inactivity window continues the same session.
+ *
+ * Not thread-safe: the client calls it under its lock, and the 30 s check
+ * runs through [locked], which takes that lock. The callbacks run on the
+ * caller's thread, inside that lock.
+ */
+internal class SessionManager(
+    private val store: StateStore,
+    private val scheduler: TaskScheduler,
+    private val onStart: (session: SessionInfo, resumed: Boolean) -> Unit,
+    private val onEnd: (session: SessionInfo, endedAtMs: Long) -> Unit,
+    val inactivityMs: Long = DEFAULT_INACTIVITY_MS,
+    val maxDurationMs: Long = DEFAULT_MAX_DURATION_MS,
+    /** Runs the periodic check; the client passes one that takes its lock. */
+    private val locked: (() -> Unit) -> Unit = { it() },
+    private val now: () -> Long = scheduler::now,
+) {
+    companion object {
+        const val DEFAULT_INACTIVITY_MS = 15L * 60 * 1000
+        const val DEFAULT_MAX_DURATION_MS = 60L * 60 * 1000
+        const val CHECK_INTERVAL_MS = 30_000L
+        private const val STORE_KEY = "session"
+    }
+
+    private var session: SessionInfo? = null
+    private var lastActivityMs = 0L
+    private var segmentIndex = 0
+    private var lastPersistMs = 0L
+    private var timer: Cancellable? = null
+    private var generation = 0
+    private var started = false
+
+    val current: SessionInfo? get() = session
+    val currentId: String? get() = session?.id
+
+    fun start() {
+        if (started) return
+        started = true
+        open()
+        scheduleCheck(++generation)
+    }
+
+    fun stop() {
+        started = false
+        generation++
+        timer?.cancel()
+        timer = null
+        persist()
+        session = null
+    }
+
+    private fun scheduleCheck(gen: Int) {
+        timer = scheduler.schedule(CHECK_INTERVAL_MS) {
+            locked {
+                if (started && gen == generation) {
+                    check()
+                    scheduleCheck(gen)
+                }
+            }
+        }
+    }
+
+    /** Next index for a replay segment of this session. */
+    fun nextSegmentIndex(): Int {
+        val index = segmentIndex++
+        persist()
+        return index
+    }
+
+    /** Notes user activity; an expired session is replaced first. */
+    fun markActivity() {
+        if (!started) return
+        check()
+        if (session == null) open()
+        lastActivityMs = now()
+        if (lastActivityMs - lastPersistMs > 5000) persist()
+    }
+
+    /** Ends an expired session. The next activity starts its successor. */
+    fun check() {
+        val current = session ?: return
+        val now = now()
+        val idle = now - lastActivityMs >= inactivityMs
+        val tooLong = now - current.startedAtMs >= maxDurationMs
+        if (!idle && !tooLong) return
+        val endedAt = if (idle) lastActivityMs else now
+        session = null
+        store.set(STORE_KEY, null)
+        onEnd(current, endedAt)
+    }
+
+    private fun open() {
+        val now = now()
+        val stored = store.get(STORE_KEY).asJsonObject()
+        var resumed: SessionInfo? = null
+        if (stored != null) {
+            val id = stored["id"] as? String
+            val startedAt = stored["startedAtMs"].asLongExact()
+            val lastActivity = stored["lastActivityMs"].asLongExact()
+            if (id != null && startedAt != null && lastActivity != null &&
+                now - lastActivity < inactivityMs &&
+                now - startedAt < maxDurationMs
+            ) {
+                resumed = SessionInfo(id, startedAt)
+                segmentIndex = stored["segmentIndex"].asLongExact()?.toInt()?.coerceAtLeast(0) ?: 0
+            }
+        }
+        if (resumed == null) segmentIndex = 0
+        val next = resumed ?: SessionInfo(Ids.uuidv4(), now)
+        session = next
+        lastActivityMs = now
+        persist()
+        onStart(next, resumed != null)
+    }
+
+    private fun persist() {
+        val current = session ?: return
+        lastPersistMs = now()
+        store.set(
+            STORE_KEY,
+            linkedMapOf(
+                "id" to current.id,
+                "startedAtMs" to current.startedAtMs,
+                "lastActivityMs" to lastActivityMs,
+                "segmentIndex" to segmentIndex,
+            ),
+        )
+    }
+}

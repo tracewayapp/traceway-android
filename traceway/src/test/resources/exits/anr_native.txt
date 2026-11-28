@@ -1,0 +1,14 @@
+----- pid 977 at 2026-11-21 08:00:00.000000000+0000 -----
+Cmd line: com.example.shop
+DALVIK THREADS (12):
+"main" prio=5 tid=1 Native
+  | group="main" sCount=1 ucsCount=0 flags=1 obj=0x72a8e5b8 self=0xb400007a2bc10380
+  | sysTid=977 nice=-10 cgrp=top-app sched=0/0 handle=0x7b7d3d34f8
+  native: #00 pc 000000000009e3c8  /apex/com.android.runtime/lib64/bionic/libc.so (__epoll_pwait+8) (BuildId: a87908b48b368e6282bcc9f34bcfc28c)
+  native: #01 pc 0000000000017e84  /system/lib64/libutils.so (android::Looper::pollInner(int)+184) (BuildId: 8ccb4f5d1e5f2c4fa1c41d5b53e7c01a)
+  native: #02 pc 00000000001a2b4c  /data/app/~~kXy1Qw==/com.example.shop-Qp9zR2==/lib/arm64/libshop.so (shop::Db::query()+40)
+  at android.os.MessageQueue.nativePollOnce(Native method)
+  at android.os.MessageQueue.next(MessageQueue.java:335)
+  at android.os.Looper.loop(Looper.java:294)
+  at android.app.ActivityThread.main(ActivityThread.java:8177)
+----- end 977 -----

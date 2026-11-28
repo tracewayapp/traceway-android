@@ -1,0 +1,18 @@
+// Gradle init script for tools/e2e/run.py: builds what :traceway:testDebugUnitTest needs and writes
+// its classpath, JVM arguments and working directory to the directory named by
+// -PtracewayE2eOut, so the scripted app runs in a plain JVM whose output streams as it runs.
+gradle.projectsEvaluated {
+    def p = gradle.rootProject.findProject(':traceway')
+    if (p == null) return
+    def out = new File(gradle.startParameter.projectProperties['tracewayE2eOut'] ?: "${p.buildDir}/e2e")
+    def test = p.tasks.getByName('testDebugUnitTest')
+    p.tasks.register('e2eClasspath') {
+        dependsOn test.taskDependencies
+        doLast {
+            out.mkdirs()
+            new File(out, 'classpath.txt').text = test.classpath.asPath
+            new File(out, 'jvmargs.txt').text = test.allJvmArgs.join('\n')
+            new File(out, 'workdir.txt').text = test.workingDir.absolutePath
+        }
+    }
+}
