@@ -17,8 +17,11 @@ import kotlin.math.ceil
  * The first time a vector icon shows at a size, it is drawn once into a
  * small PNG (encoded off the main thread); the replay uses it as a CSS mask
  * over the icon's color, so one picture serves every color the icon takes.
- * Until it is ready the icon is a square. Bitmaps (photos, avatars) are
- * never drawn.
+ * Until it is ready the icon is a square. The PNG holds the icon's
+ * coverage only, black at the drawing's alpha: a mask reads nothing else,
+ * and a small picture taken for an icon (an avatar in a drawable class of
+ * the app's own) leaves the device as a silhouette, never as its pixels.
+ * Drawables known to be bitmaps (photos, avatars) are never drawn.
  */
 internal class WireframeGlyphs(
     private val onReady: () -> Unit,
@@ -79,7 +82,7 @@ internal class WireframeGlyphs(
         if (g == null) {
             if (all.size >= maxGlyphs) return null
             val bitmap = draw(d, wPx, hPx, density)
-            val shape = bitmap?.let { shapeOf(it) }
+            val shape = bitmap?.let { shapeOnly(it) }
             g = shape?.let { byShape[it] }
             if (g != null) {
                 bitmap?.recycle()
@@ -87,7 +90,8 @@ internal class WireframeGlyphs(
                 g = Glyph("g${all.size}", wPx, hPx)
                 all.add(g)
                 if (shape != null) byShape[shape] = g
-                if (bitmap != null) encode(g, bitmap)
+                // Only a bitmap whose colors were removed is encoded.
+                if (bitmap != null && shape != null) encode(g, bitmap) else bitmap?.recycle()
             }
             byKey[key] = g
         }
@@ -114,8 +118,12 @@ internal class WireframeGlyphs(
         }
     }
 
-    /** A hash of where [bitmap] is opaque: its shape, whatever its color. */
-    private fun shapeOf(bitmap: Bitmap): Long {
+    /**
+     * Leaves only [bitmap]'s shape in it, every pixel black at its alpha,
+     * and returns a hash of that shape, whatever its color was; null when
+     * the pixels cannot be rewritten, and then the bitmap is not encoded.
+     */
+    private fun shapeOnly(bitmap: Bitmap): Long? = try {
         val w = bitmap.width
         val h = bitmap.height
         val row = IntArray(w)
@@ -124,9 +132,16 @@ internal class WireframeGlyphs(
         hash = hash * 31 + h
         for (y in 0 until h) {
             bitmap.getPixels(row, 0, w, 0, y, w, 1)
-            for (p in row) hash = hash * 31 + ((p ushr 24) shr 3)
+            for (x in 0 until w) {
+                val alpha = row[x] ushr 24
+                hash = hash * 31 + (alpha shr 3)
+                row[x] = alpha shl 24
+            }
+            bitmap.setPixels(row, 0, w, 0, y, w, 1)
         }
-        return hash
+        hash
+    } catch (_: Throwable) {
+        null
     }
 
     /** Encodes [bitmap] as [g]'s picture, off the main thread. */

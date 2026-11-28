@@ -34,9 +34,16 @@ jobs:
       - name: Run unit tests
         run: ./gradlew :traceway:testDebugUnitTest --stacktrace
 
+      # The plugin is an included build: the SDK's test task does not run its tests.
+      - name: Run Gradle plugin tests
+        if: always()
+        run: ./gradlew -p gradle-plugin test --stacktrace
+
       - name: Upload test report
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: traceway-unit-test-report
-          path: traceway/build/reports/tests/testDebugUnitTest/
+          path: |
+            traceway/build/reports/tests/testDebugUnitTest/
+            gradle-plugin/build/reports/tests/test/

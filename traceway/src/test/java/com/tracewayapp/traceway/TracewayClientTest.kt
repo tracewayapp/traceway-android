@@ -17,6 +17,11 @@ import com.tracewayapp.traceway.otel.FakeHttp
 import com.tracewayapp.traceway.otel.Otlp
 import com.tracewayapp.traceway.otel.SeenRequest
 import com.tracewayapp.traceway.replay.FakeReplaySource
+import com.tracewayapp.traceway.wireframe.FakeSource
+import com.tracewayapp.traceway.wireframe.ManualMainThread
+import com.tracewayapp.traceway.wireframe.VNode
+import com.tracewayapp.traceway.wireframe.WireframeRecorder
+import com.tracewayapp.traceway.wireframe.screenNodeId
 import io.opentelemetry.api.common.AttributeKey
 import io.opentelemetry.api.logs.Severity
 import io.opentelemetry.api.trace.StatusCode
@@ -589,6 +594,152 @@ class TracewayClientTest {
         assertEquals(1, named(null).size)
     }
 
+    // ---------------------------------------------------------------- replay: stricter masking
+
+    private val unmasked = mapOf("replay" to mapOf("maskAllInputs" to false))
+    private val maskedDocument = """{"schemaVersion":1,"replay":{"maskAllInputs":true}}"""
+
+    private fun screenShowing(text: String): VNode =
+        VNode.element(screenNodeId, "div", mapOf("id" to "tw"), listOf(VNode.text(900, text)))
+
+    private fun uploadedClips(): String = http.to(RECORDINGS_URL).joinToString("\n") { String(gunzip(it.body)) }
+
+    @Test
+    fun stricterMaskingDropsTheFramesHeldAndCapturesTheScreenAgain() {
+        val client = start(TracewayOptions(screenCapture = true, collection = unmasked))
+        val frames = FakeSource()
+        val recorder = WireframeRecorder(50, 10, frames, ManualMainThread(scheduler), scheduler::now)
+        client.setReplaySource(recorder)
+        frames.screen = screenShowing("4111 1111")
+        scheduler.advance(100)
+        frames.screen = screenShowing("4111 1111 1111 1111")
+        frames.draw()
+        scheduler.advance(200)
+        assertFalse("the settings switched masking off", frames.maskAllInputs)
+        assertEquals(2, recorder.bufferedFrameCount)
+        val captures = frames.captures
+        val resets = frames.resets
+
+        // What a capture gives once typed text is masked.
+        frames.screen = screenShowing("**** **** **** ****")
+        remoteDocument = maskedDocument
+        client.refreshConfig()
+        scheduler.runDue()
+        assertTrue(frames.maskAllInputs)
+        assertEquals("the screen is captured again at once, though nothing drew", captures + 1, frames.captures)
+        assertEquals("sharing nothing with the frames dropped", resets + 1, frames.resets)
+        assertEquals("only the masked frame is held", 1, recorder.bufferedFrameCount)
+
+        scheduler.advance(50)
+        client.captureException(IllegalStateException("after the change"))
+        client.flush(2000)
+        val uploaded = uploadedClips()
+        assertTrue(uploaded, uploaded.contains("**** **** **** ****"))
+        assertFalse("what was typed before masking never goes up", uploaded.contains("4111"))
+    }
+
+    @Test
+    fun stricterMaskingDropsTheClipsNotSentYetSpooledOnesIncluded() {
+        val state = tmp.newFolder("replay")
+        val spool = File(recoveryDirectory(state), "recordings").apply { mkdirs() }
+        val spooled = File(spool, "${scheduler.now()}-0-1.json.gz").apply { writeBytes(byteArrayOf(1)) }
+        // The server is down for replays: clips wait for a retry.
+        http.handler = { request -> if (request.url == RECORDINGS_URL) HttpResponse(503) else serve(request) }
+        val client = start(TracewayOptions(screenCapture = true, collection = unmasked), stateDir = state)
+        client.setReplaySource(FakeReplaySource())
+        client.captureException(IllegalStateException("typed"))
+        val tried = http.to(RECORDINGS_URL).size
+        assertTrue("the spooled clip was tried and waits", tried >= 1)
+        assertTrue(spooled.exists())
+
+        remoteDocument = maskedDocument
+        client.refreshConfig()
+        assertFalse("the spooled clip is removed", spooled.exists())
+        http.handler = { request -> serve(request) }
+        scheduler.advance(6000)
+        client.flush(2000)
+        assertEquals("neither clip goes up once the server answers", tried, http.to(RECORDINGS_URL).size)
+    }
+
+    @Test
+    fun aClipStillBeingAssembledWhenMaskingBecomesStricterIsNotSent() {
+        val client = start(TracewayOptions(screenCapture = true, collection = unmasked))
+        client.setReplaySource(FakeReplaySource())
+        scheduler.ioInline = false
+        client.captureException(IllegalStateException("typed"))
+        scheduler.ioInline = true
+        remoteDocument = maskedDocument
+        client.refreshConfig()
+        scheduler.runIo()
+        client.flush(2000)
+        assertTrue(http.to(RECORDINGS_URL).isEmpty())
+    }
+
+    @Test
+    fun aStricterImagePolicyDropsWhatWasRecordedAndALooserSettingNothing() {
+        val client = start(
+            TracewayOptions(screenCapture = true, collection = mapOf("replay" to mapOf("images" to "always", "maskAllInputs" to true))),
+        )
+        val source = FakeReplaySource()
+        client.setReplaySource(source)
+        val before = source.clears
+        fun apply(replay: String) {
+            remoteDocument = """{"schemaVersion":1,"replay":$replay}"""
+            client.refreshConfig()
+        }
+        apply("""{"images":"wifi"}""")
+        assertEquals("always to wifi", before + 1, source.clears)
+        apply("""{"images":"off"}""")
+        assertEquals("wifi to off", before + 2, source.clears)
+        apply("""{"images":"always","maskAllInputs":false}""")
+        assertEquals("looser: nothing is dropped", before + 2, source.clears)
+        apply("""{"images":"always","maskAllInputs":false}""")
+        assertEquals("unchanged: nothing is dropped", before + 2, source.clears)
+        apply("""{"images":"off","maskAllInputs":false}""")
+        assertEquals("always to off", before + 3, source.clears)
+        assertTrue("the recorder keeps running", source.running)
+    }
+
+    // ---------------------------------------------------------------- an issue goes before its breadcrumbs
+
+    @Test
+    fun theIssueThatFlushesTheBufferReachesTheExporterBeforeItsBreadcrumbs() {
+        val client = start()
+        repeat(3) { client.log("breadcrumb $it") }
+        client.captureException(IllegalStateException("boom"))
+        client.flush(2000)
+        val order = exported().filter { it.eventName == "exception" || it.eventName == null }
+            .map { if (it.eventName == "exception") "exception" else it.bodyValue?.asString() }
+        assertEquals(listOf("exception", "breadcrumb 0", "breadcrumb 1", "breadcrumb 2"), order)
+        val issue = named("exception").single()
+        assertEquals("what its triggers found is on it", "disabled", issue.attr("traceway.replay.status"))
+        assertEquals(600.0, issue.attr("traceway.context.lookback_seconds"))
+    }
+
+    @Test
+    fun theIssueIsWrittenToTheOutboxAndPostedBeforeItsBreadcrumbs() {
+        val dir = tmp.newFolder("state")
+        val onDiskWhenPosted = ArrayList<Boolean>()
+        http.handler = { request ->
+            if (request.url == LOGS_URL && Otlp.logs(request.plain).any { it.eventName == "exception" }) {
+                onDiskWhenPosted.add(File(dir, "outbox").listFiles().orEmpty().any { it.name.endsWith(".logs.pb") })
+            }
+            serve(request)
+        }
+        val client = start(stateDir = dir, inMemory = false)
+        repeat(3) { client.log("breadcrumb $it") }
+        client.captureException(IllegalStateException("boom"))
+        client.flush(2000)
+        val posts = http.to(LOGS_URL).map { request -> Otlp.logs(request.plain) }
+        val issueAt = posts.indexOfFirst { records -> records.any { it.eventName == "exception" } }
+        val breadcrumbsAt = posts.indexOfFirst { records -> records.any { it.body == "breadcrumb 0" } }
+        assertTrue("both were posted: $issueAt, $breadcrumbsAt", issueAt >= 0 && breadcrumbsAt >= 0)
+        assertTrue("the issue's request ($issueAt) comes before its breadcrumbs' ($breadcrumbsAt)", issueAt < breadcrumbsAt)
+        assertEquals("sent once", 1, posts.flatten().count { it.eventName == "exception" })
+        assertEquals("each breadcrumb once", 3, posts.flatten().count { it.body?.startsWith("breadcrumb") == true })
+        assertEquals("it was on disk before it was sent", listOf(true), onDiskWhenPosted)
+    }
+
     // ---------------------------------------------------------------- remote config
 
     @Test
@@ -883,6 +1034,30 @@ class TracewayClientTest {
     }
 
     @Test
+    fun recoveryDirectoriesOfOtherDestinationsExpireUnsent() {
+        val state = tmp.newFolder("recovery-expiry")
+        val day = 24 * 60 * 60_000L
+        fun leftBy(token: String, ageMs: Long): File {
+            val dir = recoveryDirectory(state, token)
+            val files = listOf(
+                File(File(dir, "recordings").apply { mkdirs() }, "${scheduler.now() - ageMs}-0-1.json.gz").apply { writeBytes(byteArrayOf(1)) },
+                File(File(dir, "hangs").apply { mkdirs() }, "run.json").apply { writeText("{}") },
+                File(dir, "crash.json").apply { writeText("{}") },
+            )
+            for (f in files + listOf(File(dir, "recordings"), File(dir, "hangs"), dir)) f.setLastModified(scheduler.now() - ageMs)
+            return dir
+        }
+        val stale = leftBy("rotated-out", day + 60_000)
+        val recent = leftBy("rotated-yesterday", day - 60_000)
+        start(TracewayOptions(screenCapture = true), stateDir = state).shutdown(2000)
+        assertFalse("kept for a day after its last write, then removed", stale.exists())
+        assertTrue("within the day it waits for its own project", File(recent, "crash.json").exists())
+        assertTrue(File(recent, "recordings").listFiles()!!.isNotEmpty())
+        assertTrue("nothing of another destination is delivered", http.to(RECORDINGS_URL).isEmpty())
+        assertTrue(named("exception").isEmpty())
+    }
+
+    @Test
     fun aCrashFromBeforeTheStartIsReportedAtTheNextOne() {
         val dir = tmp.newFolder("state")
         val crashFile = File(recoveryDirectory(dir), "crash.json")
@@ -1052,6 +1227,112 @@ class TracewayClientTest {
         assertEquals(true, hang.attr("exception.unhandled"))
         assertEquals(Severity.FATAL, hang.severity)
         assertEquals("taken once", 0, File(recoveryDirectory(dir), "hangs").listFiles()?.size ?: 0)
+    }
+
+    private fun leftBehindHang(dir: File, pid: Int, blockedMs: Long) = AppHangs(
+        thresholdMs = 2000,
+        directory = File(recoveryDirectory(dir), "hangs"),
+        pid = pid,
+        mainStack = { arrayOf(StackTraceElement("com.example.shop.Cart", "total", "Cart.kt", 88)) },
+        screen = { mapOf("app.screen.name" to "/cart") },
+        sessionId = { "session-$pid" },
+        now = { scheduler.nowMs },
+        background = { it() },
+        report = { },
+    ).stalled(blockedMs)
+
+    @Test
+    fun aCrashThatFollowsABlockIsNotAlsoAFatalHangAtTheNextStart() {
+        val dir = tmp.newFolder("state")
+        val first = start(stateDir = dir, pid = 123)
+        val hangs = first.hangsForTest!!
+        val files = File(recoveryDirectory(dir), "hangs")
+        // The main thread blocks for 2.1 s in a call that then throws.
+        hangs.stalled(2100)
+        assertEquals(1, files.listFiles()!!.size)
+        first.simulateCrash(Thread.currentThread(), IllegalStateException("after the block"))
+        assertEquals("the crash is how the run ended", 0, files.listFiles().orEmpty().size)
+        // The watchdog still sees the main thread busy, now in the crash handlers.
+        hangs.stalled(2600)
+        assertEquals(0, files.listFiles().orEmpty().size)
+        first.flush(2000)
+        assertEquals(listOf("java.lang.IllegalStateException"), named("exception").map { it.attr("exception.type") })
+        first.shutdown(2000)
+
+        logs.reset()
+        start(stateDir = dir, pid = 124).flush(2000)
+        assertEquals("no second issue for the crash", emptyList<Any?>(), named("exception").map { it.attr("exception.type") })
+    }
+
+    @Test
+    fun aProcessThatSurvivedItsCrashReportsItsNextHang() {
+        val client = start()
+        val hangs = client.hangsForTest!!
+        hangs.stalled(2100)
+        client.simulateCrash(Thread.currentThread(), IllegalStateException("swallowed by the app's handler"))
+        // The main thread answered again: the block during the crash is over, unreported.
+        hangs.stalled(2600)
+        hangs.ended(2700, report = true)
+        hangs.stalled(2400)
+        hangs.ended(3000, report = true)
+        client.flush(2000)
+        assertEquals(
+            listOf("java.lang.IllegalStateException", "AppHang"),
+            named("exception").map { it.attr("exception.type") },
+        )
+        assertEquals("Main thread blocked for 3.0 s", named("exception").last().attr("exception.message"))
+    }
+
+    @Test
+    fun aLeftoverHangOfARunAndroidRecordedAsACrashIsNotAFatalHang() {
+        val dir = tmp.newFolder("state")
+        val exits = ArrayList<ExitRecord>()
+        val source = ExitSource { exits.sortedByDescending { it.timestampMs } }
+        start(TracewayOptions(), stateDir = dir, exitSource = source, pid = 1).shutdown(2000)
+        // Three runs left a hang behind: one died of a Java crash, one of a native crash, one was killed frozen.
+        leftBehindHang(dir, 4321, 2100)
+        leftBehindHang(dir, 5555, 2600)
+        leftBehindHang(dir, 6666, 5000)
+        exits.add(ExitRecord(ExitReasons.REASON_CRASH, scheduler.nowMs + 1_000, 4321, "shop", "its handler reported it"))
+        exits.add(ExitRecord(ExitReasons.REASON_CRASH_NATIVE, scheduler.nowMs + 2_000, 5555, "shop", "Segmentation fault"))
+        scheduler.advance(10_000)
+        logs.reset()
+        start(TracewayOptions(), stateDir = dir, exitSource = source, pid = 9999).flush(2000)
+
+        val issues = named("exception")
+        assertEquals(listOf("NativeCrash", "AppHang"), issues.map { it.attr("exception.type") })
+        assertEquals("the run nothing explains is still a fatal hang", "session-6666", issues[1].attr("session.id"))
+        assertEquals(true, issues[1].attr("app.hang.fatal"))
+        assertEquals("taken once", 0, File(recoveryDirectory(dir), "hangs").listFiles().orEmpty().size)
+    }
+
+    @Test
+    fun aFatalHangPassesIgnoreErrorsAndBeforeCaptureLikeOneThatEnded() {
+        val dir = tmp.newFolder("state")
+        start(stateDir = dir, pid = 1).shutdown(2000)
+
+        leftBehindHang(dir, 2, 5000)
+        start(TracewayOptions(ignoreErrors = listOf("AppHang: Main thread blocked")), stateDir = dir, pid = 3).flush(2000)
+        assertEquals("ignoreErrors", emptyList<Any?>(), named("exception").map { it.attr("exception.type") })
+
+        leftBehindHang(dir, 4, 5000)
+        val seen = ArrayList<TracewayCapturedError>()
+        start(TracewayOptions(beforeCapture = { seen.add(it); false }), stateDir = dir, pid = 5).flush(2000)
+        assertEquals("beforeCapture", emptyList<Any?>(), named("exception").map { it.attr("exception.type") })
+        val captured = seen.single()
+        assertEquals("AppHang", captured.type)
+        assertEquals("Main thread blocked for 5.0 s", captured.message)
+        assertEquals(true, captured.attributes["app.hang.fatal"])
+        assertEquals("/cart", captured.attributes["app.screen.name"])
+        assertTrue(captured.stackTrace!!.contains("at com.example.shop.Cart.total(Cart.kt:88)"))
+
+        // A dropped hang is gone; one that is kept is reported as before.
+        leftBehindHang(dir, 6, 5000)
+        start(TracewayOptions(beforeCapture = { true }), stateDir = dir, pid = 7).flush(2000)
+        val hang = named("exception").single()
+        assertEquals("AppHang", hang.attr("exception.type"))
+        assertEquals(true, hang.attr("app.hang.fatal"))
+        assertEquals(Severity.FATAL, hang.severity)
     }
 
     @Test

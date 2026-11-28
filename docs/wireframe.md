@@ -13,10 +13,10 @@ The files, in `traceway/src/main/java/com/tracewayapp/traceway/wireframe/`:
 | `WireframeRoots.kt` | `WireframeRoots` (the windows on screen), `WindowList`, `ViewFrameSource` (draw listeners, polling), `ForegroundTracker` |
 | `WireframeCapture.kt` | `WireframeCapture`: the view walk and the per-kind converters |
 | `WireframeComposeCapture.kt` | `WireframeComposeCapture`: Jetpack Compose semantics to nodes |
-| `VNode.kt` | `VNode`, `WireframeFrame`, the fixed ids, `serializeDocument` |
+| `VNode.kt` | `VNode`, `WireframeFrame`, the fixed ids, `serializeDocument`, `ClipImageBudget` (the inline image allowance of one clip) |
 | `WireframeCss.kt` | `wireframeCss` and the inline-style builders |
 | `WireframeDiff.kt` | `diffScreens`: two frames to an rrweb mutation |
-| `WireframeGlyphs.kt` | `WireframeGlyphs`: vector icons as PNG masks |
+| `WireframeGlyphs.kt` | `WireframeGlyphs`: vector icons as PNG masks (coverage only, no colors) |
 | `WireframeImages.kt` | `WireframeImages`: the pictures image views show |
 | `WireframeRecorder.kt` | `WireframeRecorder` (cadence, frame ring, `WireframePointer` log, clips) |
 
@@ -80,7 +80,7 @@ The converters use the same words on every platform.
 |-----------|---------------|---------|
 | `text` | `TextView`, buttons, `CompoundButton`s | the text's box where its layout draws it, with size, line height, color, weight, italic, underline, strike-through, letter spacing, monospace, direction and alignment; spans as `<span>` runs (up to 60); compound drawables as icons |
 | `field` | `EditText` (and `TextInputEditText`) | like `text`, with typed text masked, passwords as dots, the hint shown, a Material field's label floated over its top edge when focused or filled; an underline background as an inset shadow |
-| `image` | `ImageView` | a `ColorDrawable` as a fill, a `GradientDrawable` as its shape, a small (≤ 64 dp) non-picture drawable as an `ic` icon with its glyph, anything else as `im` or a recorded picture; scale type, image matrix and `cropToPadding` give its place |
+| `image` | `ImageView` | a `ColorDrawable` as a fill, a `GradientDrawable` as its shape, a small (≤ 64 dp) non-picture drawable as an `ic` icon with its glyph (a PNG that is black at the drawing's alpha: the player uses it as a CSS `mask`, which reads alpha only, over the icon's `color`, so no pixel of the drawable's colors is recorded), anything else as `im` or a recorded picture; scale type, image matrix and `cropToPadding` give its place |
 | `toggle` | `CheckBox`, `RadioButton`, `Switch`, `SwitchCompat`, `MaterialSwitch` | drawn from its checked and enabled state |
 | `slider` | `SeekBar` (`AbsSeekBar`) | track, filled part and thumb at its value |
 | `progress` | `ProgressBar` | a bar when wider than 2.5 times its height, a ring otherwise; indeterminate ones as a third of a bar or a partial ring |
@@ -100,13 +100,14 @@ Compose (`WireframeComposeCapture`) walks `semanticsOwner.unmergedRootSemanticsN
 
 ## Images
 
-Pictures are recorded when the replay image policy allows them: the setting `replay.images` (`off`, `wifi`, `always`; `wifi` by default) under the ceiling `TracewayOptions.replayImages` (`ALWAYS` by default), the lower of the two. `wifi` means an unmetered connection (`NetworkState`: `ConnectivityManager.isActiveNetworkMetered()` false, followed with a default-network callback on Android 7+, read at most every 5 s below). The policy is decided when a frame is captured.
+Pictures are recorded when the replay image policy allows them: the setting `replay.images` (`off`, `wifi`, `always`; `wifi` by default) under the ceiling `TracewayOptions.replayImages` (`ALWAYS` by default), the lower of the two. `wifi` means an unmetered connection (`NetworkState`: `ConnectivityManager.isActiveNetworkMetered()` false, followed with a default-network callback on Android 7+, read at most every 5 s below). The policy is decided when a frame is captured: a frame captured while pictures are not allowed has no picture style at all, those of pictures recorded in the last 30 s included.
 
 - What: the bitmap of an `ImageView`'s `BitmapDrawable` (the top bitmap of a layer drawable), and `BitmapDrawable` backgrounds. Never a screenshot, never under a blur or blank mask. Compose images stay placeholders: the semantics tree holds no pixels.
 - Encoding: copied at the size it shows × 1 (px per dp), the longest side ≤ 384 px (≤ 192 px for a bitmap with alpha), never larger than the bitmap. The copy is drawn on the main thread, during the capture: image loaders recycle and reuse their pooled bitmaps at any time, and a bitmap recycled while another thread reads it aborts the process, so the encoder only ever reads the SDK's own copy. A hardware bitmap is drawn through a `Picture` at the copy's size (API 28+; on API 26–27 it is left out). At most 8 new copies per frame and 4 MiB of copies waiting for the encoder; past either, a picture waits for a later frame. JPEG at quality 0.45; always PNG when the bitmap has alpha (JPEG would replay its clear pixels as black). An image whose encoding is > 48 KiB at that size and at half of it is left out, as is one that cannot be copied (out of memory). The encoding runs on a `TracewayImages` thread; the first frame shows `im`, the frame after the encoder finished shows the picture.
 - DOM: one `style` node per picture first in the screen (after the glyph styles), `.im.p<N>{background:url(data:image/jpeg;base64,…) center/cover no-repeat}` (`image/png` for a picture with alpha). The image node gets the classes `im p<N>` and inline `background-size` and `background-position` that put the whole picture where the view draws it (fill, fit, center and crop alike; a cropped picture has a negative position). A bitmap background is a child node `im p<N>` at the background's bounds with `background-size:100% 100%`, and its placeholder tint is dropped.
 - Dedup: by bitmap identity, its generation id (a pooled bitmap that holds another picture is a new one) and the copy's size.
 - Limits: ≤ 128 pictures kept; past that, pictures not shown for 30 s (whose styles are off the page) make room, else the one shown longest ago (not one on the screen being captured, nor one still encoding; its style leaves the page, and shown again it is a new picture), and a new session starts the set again. 4 MiB of encoded data per session, counted in the replay budget (`CollectionBudget`, persisted under `budget`); past it, new pictures are placeholders and pictures already recorded keep showing. A picture's style stays 30 s after its view left the screen. Class numbers (`p<N>`) are never reused within a recorder.
+- Per clip: each exception clip or streamed segment carries at most 128 KiB (131,072 characters) of inline image data URLs, pictures and icon glyphs together (`ClipImageBudget`). The characters of every `data:image/…;base64,…` URL count each time a FullSnapshot or a mutation writes its style, so a picture in two snapshots counts twice. A clip that would go over it is written with every picture and glyph style empty: pictures show the `im` placeholder and icons their square for the whole clip, while text, layout, masks and pointer events stay. The frames in the ring are not changed, and the next clip starts with a fresh allowance.
 - Reported: `traceway.replay.images` (the policy at the session's start) and `traceway.replay.image_bytes` on session events.
 
 ## Privacy
@@ -116,6 +117,8 @@ Pictures are recorded when the replay image policy allows them: the setting `rep
 - Compose: `Modifier.tracewayMask(mode)` or `Modifier.testTag("traceway-mask" | "traceway-blank")`.
 - A mask covers its subtree. Tap records leave out the text and label of a masked view, and a mask tag never names one.
 - Typed text is masked while `replay.maskAllInputs` is on (the default); passwords (`PasswordTransformationMethod`, password input types, Compose `Password`) are always shown as `•`. Hints are not masked as input.
+- A stricter setting applies to what was already recorded. When `replay.maskAllInputs` goes from false to true, or `replay.images` to a stricter value (`always` to `wifi` or `off`, `wifi` to `off`), `ReplayController.apply` drops the recorder's frames and pointers (`clearBuffer`: the capture is reset, a frame still being captured is not kept, and the screen is captured again at once without waiting for a draw), the clips being assembled and the clips waiting in `RecordingsTransport`, spooled ones included. A looser setting drops nothing. The browser SDK and the Flutter and iOS wireframe recorders do the same.
+- An icon glyph holds the icon's coverage only. A small picture that the capture takes for an icon (a drawable class it does not know as a bitmap, not opaque, ≤ 64 dp) is therefore recorded as a silhouette, never as its pixels, whatever the image policy; a mask leaves it out.
 
 ## Scrolling
 
@@ -148,11 +151,12 @@ A tap is an up within the touch slop (4 dp for a mouse) and before `ViewConfigur
 - The recorder keeps the last `maxBufferFrames` frames (150 by default); an identical frame is not stored again.
 - `ReplayController` cuts clips: in buffer mode the default trigger uploads the last 30 seconds with an exception (at most one clip per 5 s, 20 per session); in stream mode (captures, `recordAllSessions`, `replay.mode: stream`) consecutive segments of `0.8 × maxBufferFrames / fps` seconds, at most 10 s, each starting with Meta + FullSnapshot. Segments are gzipped JSON `{"segments":[…]}` posted to `/api/recordings`.
 - Budget: 50 MiB and 10,000 rrweb events per session, then nothing more is uploaded for it; the counts are on the session events.
+- Images: 128 KiB of inline image data URLs per clip or segment; one that would carry more is written with placeholders instead of its pictures and icon glyphs (see [Images](#images)).
 
 ## Limits
 
 - At most `fps` captures a second, only after draws. A capture walks at most 3000 views, 128 deep (the iOS SDK's budget); the rest of the screen is left out. A frame shares every unchanged subtree with the previous one, so a still screen costs nothing.
-- 300 icon glyphs (vector icons up to 256 × 256 px at 2 px per dp), 128 pictures, 4 MiB of pictures per session.
+- 300 icon glyphs (vector icons up to 256 × 256 px at 2 px per dp), 128 pictures, 4 MiB of pictures per session, 128 KiB of inline image data URLs (pictures and glyphs) per clip or segment.
 - The browser draws text in its own font: line breaks can differ from the device.
 - Not read: Compose `graphicsLayer` alpha and transforms, Compose surface colors, `WebView` contents, `SurfaceView`/`TextureView` pixels (video, camera, maps, games), custom `onDraw` output, animated drawables.
 

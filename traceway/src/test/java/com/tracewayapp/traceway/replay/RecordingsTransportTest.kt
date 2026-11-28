@@ -175,4 +175,35 @@ class RecordingsTransportTest {
         assertFalse(odd.exists())
         assertTrue(http.requests.isEmpty())
     }
+
+    @Test
+    fun whatWasRecordedBeforeADiscardIsNeverQueuedAfterIt() {
+        val spool = tmp.newFolder("recordings")
+        val left = File(spool, "${scheduler.now()}-0-1.json.gz").apply { writeBytes(byteArrayOf(1)) }
+        val http = FakeHttp()
+        val transport = RecordingsTransport(url, "tok", http, scheduler, spoolDirectory = spool)
+        // A clip was being assembled when the discard came.
+        val before = transport.discards
+        transport.discard(unloadedSpool = true)
+        transport.send(listOf(segment("assembled before")), ifDiscards = before)
+        assertEquals(0, transport.pending)
+        // What an earlier run spooled is from before it too, read or not.
+        transport.loadSpooled()
+        assertFalse(left.exists())
+        transport.send(listOf(segment("recorded after")), ifDiscards = transport.discards)
+        assertTrue(transport.flushBlocking(1000))
+        assertEquals(listOf("recorded after"), http.requests.flatMap { r -> segmentsOf(r).map { it["exceptionId"] } })
+    }
+
+    @Test
+    fun switchingReplayOffKeepsWhatAnEarlierRunSpooledForLoadSpooledToDecide() {
+        val spool = tmp.newFolder("recordings")
+        File(spool, "${scheduler.now()}-0-1.json.gz").writeBytes(RecordingsTransport.encode(listOf(segment("spooled"))))
+        val http = FakeHttp()
+        val transport = RecordingsTransport(url, "tok", http, scheduler, spoolDirectory = spool)
+        transport.discard()
+        transport.loadSpooled()
+        assertTrue(transport.flushBlocking(1000))
+        assertEquals(listOf("spooled"), http.requests.flatMap { r -> segmentsOf(r).map { it["exceptionId"] } })
+    }
 }

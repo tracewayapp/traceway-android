@@ -611,4 +611,22 @@ class WireframeImagesTest {
         assertPlaced("FIT_END", listOf(0f, 60f, 100f, 40f), s.placed(screen, nodes[3], views[3]))
         assertTrue(style(nodes[3]), style(nodes[3]).contains("background-size:100px 40px;background-position:0px 0px;"))
     }
+
+    @Test
+    fun aFrameCapturedWithoutPicturesCarriesNoneOfTheOnesRecordedBefore() {
+        val s = RealScreen.open { a -> column(a, imageView(a, photo(), 200, 100)) }.policy(TracewayImagePolicy.ALWAYS)
+        assertEquals(1, pictureStyles(s.settled()).size)
+
+        // The policy went to off: the picture's style would linger for 30 s.
+        s.policy(TracewayImagePolicy.OFF)
+        val off = s.screen()
+        assertEquals(listOf("im"), classes(off))
+        assertTrue("no picture data in a frame captured with images off", pictureStyles(off).isEmpty())
+
+        // Wi-Fi only, on a metered connection: the same.
+        s.policy(TracewayImagePolicy.ALWAYS)
+        assertEquals("allowed again, it is the picture already encoded", 1, pictureStyles(s.screen()).size)
+        s.policy(TracewayImagePolicy.WIFI, unmetered = false)
+        assertTrue(pictureStyles(s.screen()).isEmpty())
+    }
 }

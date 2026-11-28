@@ -104,6 +104,9 @@ internal class RecordingsTransport(
     private var generation = 0
     private var spoolSequence = 0
     private var spoolLoaded = false
+
+    /** What an earlier run spooled was discarded before [loadSpooled] read it. */
+    private var spoolDiscarded = false
     private var failed = 0
     private var sent = 0
     private val drainer = SingleFlight(scheduler) { drainNow() }
@@ -125,11 +128,15 @@ internal class RecordingsTransport(
     /** Segments waiting to be sent. */
     val pending: Int get() = synchronized(lock) { queue.sumOf { it.count } }
 
-    fun send(segments: List<RecordingSegment>) {
+    /** How many times [discard] ran: a clip assembled before one is not sent after it. */
+    val discards: Int get() = synchronized(lock) { generation }
+
+    /** Queues [segments]; with [ifDiscards], only when nothing was discarded since [discards] had that value. */
+    fun send(segments: List<RecordingSegment>, ifDiscards: Int? = null) {
         if (segments.isEmpty()) return
         var bytes = 0L
         for (s in segments) bytes += s.bytes
-        enqueue(Batch(segments, null, segments.size, bytes))
+        enqueue(Batch(segments, null, segments.size, bytes), ifDiscards)
         kick()
     }
 
@@ -159,11 +166,17 @@ internal class RecordingsTransport(
         drainer.run()
     }
 
-    /** Drops everything waiting (replay was switched off), spooled batches included. */
-    fun discard() {
+    /**
+     * Drops everything waiting, spooled batches included: replay was
+     * switched off, or what was recorded may not go up any more. With
+     * [unloadedSpool], what an earlier run spooled and [loadSpooled] has not
+     * read yet is removed as well, when it is read.
+     */
+    fun discard(unloadedSpool: Boolean = false) {
         val dropped: List<Batch>
         synchronized(lock) {
             generation++
+            if (unloadedSpool && !spoolLoaded) spoolDiscarded = true
             dropped = ArrayList(queue)
             queue.clear()
             queuedBytes = 0
@@ -335,9 +348,11 @@ internal class RecordingsTransport(
      */
     fun loadSpooled(allowed: () -> Boolean = { true }) {
         val dir = spoolDirectory ?: return
+        val discarded: Boolean
         val fromGeneration = synchronized(lock) {
             if (spoolLoaded) return
             spoolLoaded = true
+            discarded = spoolDiscarded
             generation
         }
         val files = try {
@@ -370,7 +385,7 @@ internal class RecordingsTransport(
         }
         found.sortWith(compareBy<Spooled>({ it.timeMs }, { it.seq }))
         for (s in found) {
-            if (!allowed()) {
+            if (discarded || !allowed()) {
                 s.file.delete()
                 continue
             }

@@ -220,4 +220,12 @@ class WireframeGlyphsTest {
         assertNull("a new drawable past the limit is not drawn, even of a known shape", glyphs.lookup(again, 24, 24, 1f))
         assertEquals(0, again.draws)
     }
+
+    @Test
+    fun `the picture holds coverage only, never the drawable's colors`() {
+        val bitmap = picture(drawn(glyphs().lookup(icon(Shape.LEFT_HALF, Color.rgb(200, 40, 90)), 24, 24, 1f)!!))
+        val seen = HashSet<Int>()
+        for (y in 0 until bitmap.height) for (x in 0 until bitmap.width) seen.add(bitmap.getPixel(x, y))
+        assertEquals("black where the icon covers, clear elsewhere", setOf(Color.BLACK, Color.TRANSPARENT), seen)
+    }
 }

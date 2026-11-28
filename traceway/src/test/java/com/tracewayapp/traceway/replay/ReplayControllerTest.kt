@@ -5,6 +5,10 @@ import com.tracewayapp.traceway.internal.ManualScheduler
 import com.tracewayapp.traceway.internal.Rfc3339
 import com.tracewayapp.traceway.otel.FakeHttp
 import com.tracewayapp.traceway.persistence.StateStore
+import com.tracewayapp.traceway.wireframe.FakeSource
+import com.tracewayapp.traceway.wireframe.ManualMainThread
+import com.tracewayapp.traceway.wireframe.RowScreens
+import com.tracewayapp.traceway.wireframe.WireframeRecorder
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -328,5 +332,51 @@ class ReplayControllerTest {
         assertFalse("a restart inside the session goes on counting", b.hasImageRoom("s1"))
         assertTrue(b.hasImageRoom("s2"))
         assertEquals(0L, b.snapshot("s2")["traceway.replay.image_bytes"])
+    }
+
+    @Test
+    fun stricterMaskingOrImagesDropWhatWasRecordedAndLooserOnesNothing() {
+        val source = FakeReplaySource()
+        val c = controller()
+        c.attach(source)
+        val always = com.tracewayapp.traceway.TracewayImagePolicy.ALWAYS
+        val wifi = com.tracewayapp.traceway.TracewayImagePolicy.WIFI
+        val off = com.tracewayapp.traceway.TracewayImagePolicy.OFF
+        c.apply(Mode.BUFFER, maxAgeMs = 600_000, maskAllInputs = false, images = always)
+        val first = source.clears
+        c.apply(Mode.BUFFER, maxAgeMs = 600_000, maskAllInputs = false, images = always)
+        assertEquals("unchanged", first, source.clears)
+        c.apply(Mode.BUFFER, maxAgeMs = 600_000, maskAllInputs = true, images = always)
+        assertEquals("masking on", first + 1, source.clears)
+        c.apply(Mode.BUFFER, maxAgeMs = 600_000, maskAllInputs = true, images = wifi)
+        assertEquals("always to wifi", first + 2, source.clears)
+        c.apply(Mode.BUFFER, maxAgeMs = 600_000, maskAllInputs = false, images = always)
+        assertEquals("both looser", first + 2, source.clears)
+        c.apply(Mode.STREAM, maxAgeMs = 600_000, maskAllInputs = false, images = off)
+        assertEquals("always to off, whatever else changes", first + 3, source.clears)
+        assertTrue(source.running)
+        assertTrue(http.requests.isEmpty())
+    }
+
+    @Test
+    fun theSegmentCutWhenStreamingEndsWithStricterMaskingIsNotUploaded() {
+        val scheduler = ManualScheduler()
+        val frames = FakeSource().apply {
+            maskAllInputs = false
+            screen = RowScreens().screen(2)
+        }
+        val recorder = WireframeRecorder(50, 10, frames, ManualMainThread(scheduler), scheduler::now)
+        val c = controller(scheduler)
+        c.attach(recorder)
+        c.apply(Mode.STREAM, maxAgeMs = 600_000, maskAllInputs = false)
+        scheduler.advance(3000)
+        assertEquals(1, recorder.bufferedFrameCount)
+        // One settings change ends the stream and switches masking on: what the last segment would hold is from before it.
+        frames.maskAllInputs = true
+        c.apply(Mode.BUFFER, maxAgeMs = 600_000, maskAllInputs = true)
+        assertTrue(c.drainBlocking(1000))
+        assertTrue(segments().isEmpty())
+        scheduler.runDue()
+        assertEquals("the screen as it is masked", 1, recorder.bufferedFrameCount)
     }
 }

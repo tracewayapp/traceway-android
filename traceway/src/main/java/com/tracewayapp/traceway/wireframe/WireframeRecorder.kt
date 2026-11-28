@@ -98,6 +98,9 @@ internal class WireframeRecorder(
     private val frames = ArrayList<WireframeFrame>()
     private val pointers = ArrayList<WireframePointer>()
 
+    /** [clearBuffer]s whose reset has not run yet: a frame captured meanwhile may share nodes with the ones dropped. */
+    private var pendingResets = 0
+
     @Volatile
     private var running = false
 
@@ -172,12 +175,30 @@ internal class WireframeRecorder(
         onMain { (source as? ViewFrameSource)?.dispose() }
     }
 
+    /**
+     * Forgets the frames and touches held. While recording, the screen is
+     * captured again at once, without waiting for the app to draw, in a
+     * frame that shares nothing with the ones dropped: the caller changed
+     * what a capture may show (masking, pictures) before calling this.
+     */
     override fun clearBuffer() {
         synchronized(lock) {
             frames.clear()
             pointers.clear()
+            pendingResets++
         }
-        onMain { source.reset() }
+        onMain {
+            try {
+                source.reset()
+            } finally {
+                synchronized(lock) { pendingResets-- }
+            }
+            if (running && !paused) {
+                timer?.cancel()
+                timer = null
+                schedule(immediately = true)
+            }
+        }
     }
 
     /**
@@ -274,6 +295,8 @@ internal class WireframeRecorder(
     /** Adds a frame the source made; tests call it with frames of their own. */
     fun push(frame: WireframeFrame) {
         synchronized(lock) {
+            // Captured across a clearBuffer: it may show what the frames dropped showed.
+            if (pendingResets > 0) return
             val last = frames.lastOrNull()
             if (last != null && last.screen === frame.screen && last.sameSize(frame)) return
             frames.add(frame)

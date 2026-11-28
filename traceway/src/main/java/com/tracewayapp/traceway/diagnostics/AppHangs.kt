@@ -82,7 +82,8 @@ internal class Hang(
  *
  * [stalled] runs on the watchdog's thread and writes the file there, at
  * once: the system may kill the process a few seconds later. [ended] runs
- * on the main thread and only hands the rest to [background]. Never throws.
+ * on the main thread and only hands the rest to [background]. A crash is
+ * reported as the crash: [crashed] drops the pending hang. Never throws.
  */
 internal class AppHangs(
     override val thresholdMs: Long,
@@ -104,11 +105,15 @@ internal class AppHangs(
     private var pending: Hang? = null
     private var lastWriteMs = 0L
 
+    /** A crash is being handled: what the watchdog sees until the main thread answers again is no hang. */
+    private var crashing = false
+
     private val file: File? get() = directory?.let { File(it, "$runId.json") }
 
     override fun stalled(blockedMs: Long) {
         guarded("hang stalled") {
             synchronized(lock) {
+                if (crashing) return
                 val p = pending
                 if (p == null) {
                     val frames = guarded("hang stack", emptyList()) {
@@ -135,7 +140,10 @@ internal class AppHangs(
 
     override fun ended(blockedMs: Long, report: Boolean) {
         guarded("hang ended") {
-            val hang = synchronized(lock) { pending.also { pending = null } } ?: return
+            val hang = synchronized(lock) {
+                crashing = false
+                pending.also { pending = null }
+            } ?: return
             hang.blockedMs = blockedMs
             background {
                 guarded("hang report") {
@@ -143,6 +151,23 @@ internal class AppHangs(
                     synchronized(lock) { if (pending == null) delete() }
                     if (report) this.report(hang)
                 }
+            }
+        }
+    }
+
+    /**
+     * An uncaught exception is ending the process and is reported itself:
+     * the pending hang goes, with its file, or the next start would report
+     * the same end again as a fatal hang. The main thread stays busy in the
+     * crash handlers, so nothing is recorded until a block ends, which only
+     * a process that survived the crash sees. On the crashing thread.
+     */
+    fun crashed() {
+        guarded("hang crashed") {
+            synchronized(lock) {
+                crashing = true
+                pending = null
+                delete()
             }
         }
     }

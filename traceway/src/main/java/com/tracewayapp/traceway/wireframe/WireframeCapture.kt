@@ -337,9 +337,12 @@ internal class WireframeCapture(context: Context?, onAssetReady: () -> Unit = {}
 
     /**
      * A style node for each picture shown in the last [WireframeImages.LINGER_MS],
-     * after the glyphs' (from [at]), in a stable order.
+     * after the glyphs' (from [at]), in a stable order. None in a frame that
+     * may not record pictures: one recorded before the policy changed, or on
+     * Wi-Fi, must not ride along in it.
      */
     private fun imageStyles(children: ArrayList<VNode>, at: Int) {
+        if (!images.allowed) return
         for (image in images.shown) image.lastShownMs = nowMs
         var i = at
         for (image in images.all) {

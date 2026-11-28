@@ -208,4 +208,26 @@ class AppHangsTest {
         assertEquals("Main thread blocked for 125.3 s", Hang.message(125_300))
         assertFalse(Hang.message(3200).contains(','))
     }
+
+    @Test
+    fun aCrashDropsThePendingHangUntilTheMainThreadAnswersAgain() {
+        val h = hangs()
+        h.stalled(2100)
+        assertEquals(1, files().size)
+        h.crashed()
+        assertTrue("the crash is the issue", files().isEmpty())
+        // The crash handlers keep the main thread busy: still no hang.
+        h.stalled(2600)
+        h.stalled(3100)
+        assertTrue(files().isEmpty())
+        // A process that survived: the block is over, unreported, and the next one counts.
+        h.ended(3200, report = true)
+        runLater()
+        assertTrue(reported.isEmpty())
+        h.stalled(2000)
+        assertEquals(1, files().size)
+        h.ended(2500, report = true)
+        runLater()
+        assertEquals(listOf(2500L), reported.map { it.blockedMs })
+    }
 }

@@ -45,7 +45,7 @@ Error tracking, sessions, wireframe session replay and app performance metrics f
 - `opentelemetry-api` (1.68) comes with the SDK on the app's compile classpath: `Traceway.tracer` is an OpenTelemetry `Tracer`. The SDK itself stays private to Traceway.
 - Network access. The library's manifest declares `INTERNET` and `ACCESS_NETWORK_STATE` (which the `wifi` replay image policy reads); the manifest merger adds both to your app.
 - A Traceway project (Traceway Cloud, or a self-hosted server with OTLP/OpAMP support for Android projects), or any OTLP/HTTP receiver for [standalone](#standalone-without-traceway) use.
-- The Gradle plugin needs the Android Gradle Plugin 8.0 or newer and JDK 17 (tested with AGP 8.7).
+- The Gradle plugin needs the Android Gradle Plugin 8.0 or newer and JDK 17 (tested with AGP 8.7). The `traceway { }` snippets below assign with `=`, which a Kotlin build script accepts from Gradle 8.2 (the Gradle that AGP 8.2 and newer require); on Gradle 8.0 or 8.1 write `uploadToken.set(…)`, `autoUpload.set(true)` and so on.
 
 ## Installation
 
@@ -202,7 +202,7 @@ TracewayOptions(
 
 - `ignoreErrors = null` (the default) uses `DEFAULT_IGNORE_ERRORS`: `UnknownHostException`, `SocketTimeoutException`, `ConnectException`, `SSLHandshakeException`, `NoRouteToHostException`, `Connection reset`, `/timeout/i`, `/status code (of )?4\d{2}/` and `/failed: 4\d{2}/`. A phone losing its connection, a request timing out or a server saying no is the network's doing, not a bug in the app. An empty list reports everything. Stack frames are never matched: a method named like a pattern does not silence the errors that pass through it.
 - `beforeCapture` sees a `TracewayCapturedError` (`error`, `type`, `message`, `isMessage`, `attributes`, `stackTrace`) and returns false to drop it. A callback that throws keeps the record and logs the throwable in debug.
-- Crashes (uncaught exceptions that end the process) are always reported and pass through neither.
+- Crashes (uncaught exceptions that end the process) are always reported and pass through neither; nor do the native crashes and ANRs of earlier runs. An `AppHang` passes through both, the one the process did not survive included.
 
 ### Logs
 
@@ -322,7 +322,7 @@ Every record is an OpenTelemetry log record or span and belongs to a *signal*. E
 | `custom` | `Traceway.recordAction`, `Traceway.track` | buffer |
 | replay | wireframe recording | buffer |
 
-The built-in trigger fires on every exception: it uploads the buffered breadcrumbs of the last 10 minutes and the replay of the last 30 seconds, at most the frames the replay ring holds (`maxBufferFrames`). An app that never throws sends only its session and control records (`session.start`, `session.end`, `traceway.session.update`, `traceway.config.applied`) and its metrics. Clips are rationed to one per 5 seconds and 20 per session; breadcrumbs are still sent for the exceptions in between.
+The built-in trigger fires on every exception: it uploads the buffered breadcrumbs of the last 10 minutes and the replay of the last 30 seconds, at most the frames the replay ring holds (`maxBufferFrames`). An app that never throws sends only its session and control records (`session.start`, `session.end`, `traceway.session.update`, `traceway.config.applied`) and its metrics. Clips are rationed to one per 5 seconds and 20 per session; breadcrumbs are still sent for the exceptions in between. The exception is handed to the exporter before the breadcrumbs it brings up, written to disk first as always: a server that takes a limited number of log records from a device at a time then leaves out old breadcrumbs, never the issue.
 
 `recordAllSessions = true` streams every breadcrumb signal and the replay instead. The signal names, modes, triggers and limits are the browser and Flutter SDKs', so one rule can target all of them.
 
@@ -477,8 +477,8 @@ The pictures image views show can be recorded into the wireframe instead of plac
 | `always` | on any connection |
 
 - The lower of the setting and `replayImages` (`ALWAYS` by default) applies, `off` < `wifi` < `always`. Without `screenCapture`, or when the plan's limits turn replay off, there are no pictures. Session events report the policy at the start of the session (`traceway.replay.images`) and the encoded bytes used (`traceway.replay.image_bytes`).
-- The connection is checked when a frame is captured, following the default network as it changes (Android 7+): a picture recorded on Wi-Fi stays in its clip.
-- What is recorded: the bitmap of an `ImageView`'s `BitmapDrawable` (the top bitmap of a layer drawable, as a Glide crossfade shows it) and bitmap backgrounds. Never a screenshot of the window, never anything under a mask. Vector drawables, shapes and animated images keep their usual look, and Jetpack Compose images stay placeholders: the semantics tree holds no pixels.
+- The connection is checked when a frame is captured, following the default network as it changes (Android 7+): a picture recorded on Wi-Fi stays in its clip. A frame captured while pictures are not allowed carries none, the ones recorded a moment earlier included.
+- What is recorded: the bitmap of an `ImageView`'s `BitmapDrawable` (the top bitmap of a layer drawable, as a Glide crossfade shows it) and bitmap backgrounds. Never a screenshot of the window, never anything under a mask. Vector drawables, shapes and animated images keep their usual look (a small icon, 64 dp or less, is recorded as its shape alone: a mask of where it is opaque, without its colors, so a small picture in a drawable class the SDK does not know as a bitmap leaves the device as a silhouette at most, whatever the image policy), and Jetpack Compose images stay placeholders: the semantics tree holds no pixels.
 - Each picture is copied at the size it shows (one pixel per dp, at most 384 pixels on its longest side) and encoded off the main thread as JPEG at quality 0.45; a picture with transparency is always PNG, at most 192 pixels on its longest side, so it never replays as a black box. One larger than 48 KiB at half that size is left out. The first frame shows the placeholder, a later one the picture.
 - Each replay segment or exception clip allows 128 KiB of inline raster data URLs. Repeated URLs in snapshots and mutations count each time they are exported. When a segment exceeds the limit, its pictures and raster icons use layout placeholders throughout. Text, dimensions, masks and interaction events remain available. The next segment gets a fresh allowance.
 - The same bitmap at the same size is one picture however many views show it. At most 128 pictures are kept per recorder: past that, the one shown longest ago makes room (shown again, it is recorded again). At most 4 MiB of encoded pictures per session; past it, new pictures are placeholders. A picture's style stays in the recording 30 seconds after its view left the screen.
@@ -511,6 +511,8 @@ Box(Modifier.tracewayMask(TracewayMaskMode.blank())) { ... }
 ```
 
 `Modifier.testTag("traceway-mask")` and `"traceway-blank"` work too. A masked view's text and label are also left out of tap records. Text typed into fields is replaced with `*` unless remote settings set `replay.maskAllInputs: false`; password fields always are, as dots.
+
+When the settings become stricter during a session (`replay.maskAllInputs` back to `true`, or `replay.images` from `always` to `wifi` or `off`, or from `wifi` to `off`), what was recorded under the looser setting does not go up any more: the frames held on the device are dropped, and so are the clips being assembled and the clips not uploaded yet, the ones a crash spooled to disk included. The screen is captured again at once, as the new setting shows it. A setting that becomes looser drops nothing. The browser, Flutter and iOS SDKs do the same.
 
 ## Network requests
 
@@ -687,7 +689,7 @@ TracewayOptions(
 
 ## Crashes and symbolication
 
-Uncaught exceptions on every thread are caught through the default `UncaughtExceptionHandler`. The exception (`exception.unhandled = true`, with its thread and screen), its breadcrumbs and its replay clip are written to disk before the handler that was installed before (normally the platform's) ends the process. On any thread but the main one the SDK then tries to send them, holding the crashing thread for at most 2.5 seconds in all; a crash on the main thread is not sent then, so the frozen screen does not wait. What is left goes at the next start. The crash is never swallowed. A crash before the SDK finished starting is kept on disk and reported at the next start (`traceway.crash.before_start = true`).
+Uncaught exceptions on every thread are caught through the default `UncaughtExceptionHandler`. The exception (`exception.unhandled = true`, with its thread and screen), its breadcrumbs and its replay clip are written to disk before the handler that was installed before (normally the platform's) ends the process. On any thread but the main one the SDK then tries to send them, holding the crashing thread for at most 2.5 seconds in all; a crash on the main thread is not sent then, so the frozen screen does not wait. What is left goes at the next start. The crash is never swallowed. A crash before the SDK finished starting is kept on disk and reported at the next start (`traceway.crash.before_start = true`). What waits on disk for the next start (that crash, a hang, replay clips a crash spooled) is kept per token and server, and only ever sent there: after the token or the server changed it stays for 24 hours since its last write, in case the app returns to them, and is then deleted unsent.
 
 Release builds run R8, which renames classes and methods and rewrites line numbers, so crashes arrive obfuscated. Traceway reverses them with the build's `mapping.txt`, matched to the crashing build by a ProGuard UUID that the SDK sends as the `app.debug.proguard_uuid` resource attribute of every record.
 
@@ -757,7 +759,7 @@ Android keeps a record of how each process of the app ended (`ApplicationExitInf
 
 These issues carry `exception.unhandled = true`, `app.exit.reason` (`crash_native`, `anr`), the time the process died and its previous session when known (`session.id`, kept per process id). `traceway.previous_run = true` marks them: this run's breadcrumbs and replay are not their context. They need `persistToDisk`.
 
-**Hangs.** The watchdog behind `app.hang` posts a probe to the main thread every 500 ms. When one has waited `appHangThresholdMs` (2 s) in the foreground, not under a debugger, the watchdog's thread takes the main thread's stack (`Looper.getMainLooper().thread.stackTrace`) while it is still blocked, and keeps the hang on disk. When the main thread runs again the hang is an issue of type `AppHang`, message `Main thread blocked for 3.2 s`, with that stack, the screen it happened on, `app.hang.duration_ms` and `app.hang.fatal = false`; `ignoreErrors` and `beforeCapture` see it like an exception. A hang the process does not survive (the system or the user kills it) is reported at the next start with `app.hang.fatal = true`, unless Android recorded that run's end as an ANR: then the ANR is the issue, with the hang's stack when its dump has none. `captureAppHangs = false` turns hang issues off (the metric stays).
+**Hangs.** The watchdog behind `app.hang` posts a probe to the main thread every 500 ms. When one has waited `appHangThresholdMs` (2 s) in the foreground, not under a debugger, the watchdog's thread takes the main thread's stack (`Looper.getMainLooper().thread.stackTrace`) while it is still blocked, and keeps the hang on disk. When the main thread runs again the hang is an issue of type `AppHang`, message `Main thread blocked for 3.2 s`, with that stack, the screen it happened on, `app.hang.duration_ms` and `app.hang.fatal = false`; `ignoreErrors` and `beforeCapture` see it like an exception. A hang the process does not survive (the system or the user kills it) is reported at the next start with `app.hang.fatal = true`, through the same two filters, unless that run ended in an ANR or a crash: then the ANR is the issue (with the hang's stack when its dump has none), or the crash. An uncaught exception drops the hang it follows, so a main thread that blocks for 2 s and then throws is one issue, the crash; a leftover hang of a run that Android recorded as a crash (`REASON_CRASH`, `REASON_CRASH_NATIVE`, Android 11+) is dropped at the next start too. `captureAppHangs = false` turns hang issues off (the metric stays).
 
 There is no in-process native signal handler: it would compete with the other native crash reporters an app may have and needs native builds of the SDK. Below Android 11 native crashes and ANRs are not reported.
 
@@ -765,7 +767,7 @@ There is no in-process native signal handler: it would compete with the other na
 
 - **Uncaught exceptions** on every thread (see [Crashes and symbolication](#crashes-and-symbolication)).
 - **Native crashes, ANRs and low-memory kills** of earlier runs, Android 11+, and **app hangs** (see [Native crashes, ANRs and hangs](#native-crashes-anrs-and-hangs)).
-- **Sessions**: `session.start`, `session.end` and `traceway.session.update` (a session that goes on after a restart), with the session's collection counters. A session ends after 15 minutes without activity or after 60 minutes.
+- **Sessions**: `session.start`, `session.end` and `traceway.session.update` (a session that goes on after a restart), with the session's collection counters. A session ends after 15 minutes without activity or after 60 minutes. Activity is any touch on the app's windows (a tap, a scroll, a drag, a long press; also with `captureUserActions = false`, and nothing more is recorded for it), a screen change, `recordAction`, the app coming to the foreground and `TracewayClient.markActivity()`.
 - **Screens**: activities and AndroidX fragments, as `browser.navigation`.
 - **Taps** in the app's activity windows, with the selector, type, id, shown text and label of the view, and the screen (`browser.user_action.click`, with `app.widget.*` and `app.screen.*` attributes). Taps in dialogs, bottom sheets and menus are not recorded yet (their screens are in the replay).
 - **Logs**: `System.out` / `System.err` lines, and `android.util.Log` calls with the Gradle plugin.
@@ -787,7 +789,7 @@ For Flutter apps, use the [`traceway`](https://github.com/tracewayapp/traceway-f
 
 The API has the names of the browser, Flutter and iOS SDKs. Where Android differs, it is for these reasons:
 
-- **Start**: `Traceway.init(application, TracewayOptions(token = …, baseUrl = …))` takes the `Application`, which the SDK needs to follow activities and fragments, record taps and the wireframe, keep its files and read the network state, and the token and server inside the options (Flutter and iOS take them as parameters of `Traceway.run` and `Traceway.initialize`). It returns the `TracewayClient`, or `null` when the settings are invalid (logged, not thrown).
+- **Start**: `Traceway.init(application, TracewayOptions(token = …, baseUrl = …))` takes the `Application`, which the SDK needs to follow activities and fragments, record taps and the wireframe, keep its files and read the network state, and the token and server inside the options (Flutter and iOS take them as parameters of `Traceway.run` and `Traceway.initialize`). It returns the `TracewayClient`, or `null` when the settings are invalid (logged, not thrown). A second `init` returns the running client; one called while `shutdown` is still flushing on another thread starts a new client, as one called after it does (so do Flutter and iOS).
 - **Masks** belong to views: `view.tracewayMask` in Kotlin, `Traceway.mask(view, mode)` / `Traceway.unmask(view)` from Java (an extension property reads poorly there), `Modifier.tracewayMask(mode)` in Compose. The markers that need no code are `android:tag` and Compose `testTag` values (`traceway-mask`, `traceway-blank`), where the browser uses CSS classes and Flutter a `ValueKey`. `TracewayMaskMode.blank(color)` takes an ARGB `Int`.
 - **Blocking, in milliseconds**: `flush(timeoutMs)` and `shutdown(timeoutMs)` (10 s by default) block the calling thread instead of returning a promise or future. On the main thread `flush` waits 2 s at most whatever it is asked (an ANR comes at 5 s), and what is not sent by then goes later; off it, the whole timeout. iOS takes seconds (`flush(timeout:)`).
 - **Exit reasons** come from Android's `ApplicationExitInfo` (API 30+; tombstones from API 31), read at the next start; iOS reads MetricKit. There is no native signal handler, so native crashes before Android 11 are not reported (iOS has one, on an alternate stack).
@@ -862,7 +864,7 @@ python3 tools/wireframe/run.py --dir traceway/build/wireframe-sessions/views    
 ./gradlew :traceway:connectedDebugAndroidTest
 ```
 
-CI runs the JVM tests via [`unit-tests.yml`](.github/workflows/unit-tests.yml) and the instrumented tests on a Pixel 8 in Firebase Test Lab via [`instrumented-tests.yml`](.github/workflows/instrumented-tests.yml).
+CI runs the JVM tests, the Gradle plugin's tests (`./gradlew -p gradle-plugin test`) and the release scripts' offline tests via [`unit-tests.yml`](.github/workflows/unit-tests.yml), and the instrumented tests on a Pixel 8 in Firebase Test Lab via [`instrumented-tests.yml`](.github/workflows/instrumented-tests.yml).
 
 ### The example app
 

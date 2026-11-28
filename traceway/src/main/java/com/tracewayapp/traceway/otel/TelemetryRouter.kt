@@ -95,8 +95,13 @@ internal class TelemetryRouter(
     private val logExporter: LogRecordExporter,
     private val spanExporter: SpanExporter,
     private val hooks: RouterHooks,
-    /** Writes an issue to disk before it is sent: the app may not live to see the answer. True when it did. */
-    private val persistIssue: ((LogRecordData) -> Boolean)? = null,
+    /**
+     * Writes an issue to disk before it is sent: the app may not live to see
+     * the answer. True when it took the issue; it then calls its second
+     * argument once, on any thread, when the issue is on disk and its send
+     * was started.
+     */
+    private val persistIssue: ((LogRecordData, () -> Unit) -> Boolean)? = null,
     /**
      * While true (the app is crashing), a streamed issue is written to disk
      * before its triggers run: they flush the buffer and assemble a clip,
@@ -109,6 +114,9 @@ internal class TelemetryRouter(
     private val flushedLogs = ArrayList<LogRecordData>()
     private val flushedSpans = ArrayList<SpanData>()
     private val inFlight = ArrayList<CompletableResultCode>()
+
+    /** Records whose triggers are running, one inside the other (an `emit` action re-enters). */
+    private var observing = 0
 
     /**
      * The dashboard's captures running now. Captures a trigger started on
@@ -147,16 +155,24 @@ internal class TelemetryRouter(
     }
 
     /**
-     * Triggers see a record before it is handed to the batch processor. A
-     * buffered record is already in the buffer then, so a flush it triggers
-     * includes it; a streamed one follows the flushed breadcrumbs.
+     * Triggers see a record before it is handed over: the exporters get a
+     * copy, and what the triggers set on it (the replay status) would be
+     * missing. A buffered record is already in the buffer then, so a flush it
+     * triggers includes it. What the triggers of a streamed record flush
+     * is exported after that record was handed over, as the browser SDK
+     * does: the server admits a limited number of log records per device
+     * and time window, and an issue must not be the record left out because
+     * its own breadcrumbs used them up.
      */
     private fun observeAndSend(observed: ObservedRecord, sent: Boolean = false) {
+        observing++
         try {
             hooks.observe(observed)
         } finally {
+            observing--
             // A trigger that fails (out of memory while crashing, say) must not cost the record itself.
-            if (observed.routed == Routed.STREAM && !sent) send(observed.item)
+            if (observed.routed == Routed.STREAM && !sent) send(observed.item, leading = observing == 0)
+            if (observing == 0) exportFlushed()
         }
     }
 
@@ -210,18 +226,58 @@ internal class TelemetryRouter(
                 is TelemetryItem.Span -> flushedSpans.add(item.span)
             }
         }
-        exportFlushed()
+        // Inside a record's triggers the export waits for that record: see observeAndSend.
+        if (observing == 0) exportFlushed()
         return entries.size
     }
 
     private fun exportFlushed() {
-        while (flushedLogs.isNotEmpty()) {
-            val batch = takeBatch(flushedLogs)
-            track(runCatching { logExporter.export(batch) }.getOrNull())
+        if (flushedLogs.isEmpty() && flushedSpans.isEmpty()) return
+        val logs = ArrayList(flushedLogs)
+        val spans = ArrayList(flushedSpans)
+        flushedLogs.clear()
+        flushedSpans.clear()
+        export(logs, spans)
+    }
+
+    /** Exports [logs] and [spans], a batch after the other; completes when every export did. Any thread. */
+    private fun export(logs: MutableList<LogRecordData>, spans: MutableList<SpanData>): CompletableResultCode {
+        val results = ArrayList<CompletableResultCode>()
+        while (logs.isNotEmpty()) {
+            val batch = takeBatch(logs)
+            runCatching { logExporter.export(batch) }.getOrNull()?.let { results.add(it) }
         }
-        while (flushedSpans.isNotEmpty()) {
-            val batch = takeBatch(flushedSpans)
-            track(runCatching { spanExporter.export(batch) }.getOrNull())
+        while (spans.isNotEmpty()) {
+            val batch = takeBatch(spans)
+            runCatching { spanExporter.export(batch) }.getOrNull()?.let { results.add(it) }
+        }
+        for (result in results) track(result)
+        return CompletableResultCode.ofAll(results)
+    }
+
+    /**
+     * Hands [issue] over ahead of what its triggers flushed. When it is
+     * written to the outbox, the flushed records are exported once it is
+     * there and its send was started; otherwise it leaves as the first
+     * record of their first export.
+     */
+    private fun sendBeforeFlushed(issue: LogRecordData) {
+        val logs = ArrayList(flushedLogs)
+        val spans = ArrayList(flushedSpans)
+        flushedLogs.clear()
+        flushedSpans.clear()
+        // What settle() waits for until the exports below were started and are done.
+        val exported = CompletableResultCode()
+        track(exported)
+        val follow = { export(logs, spans).whenComplete { exported.succeed() } }
+        val persisted = try {
+            persistIssue?.invoke(issue) { follow() } == true
+        } catch (_: Throwable) {
+            false
+        }
+        if (!persisted) {
+            logs.add(0, issue)
+            follow()
         }
     }
 
@@ -289,14 +345,20 @@ internal class TelemetryRouter(
 
     /** An issue written to disk first is sent from there; the outbox drains it. */
     private fun persistedAsIssue(data: LogRecordData): Boolean =
-        isIssue(data.eventName) && persistIssue?.invoke(data) == true
+        isIssue(data.eventName) && persistIssue?.invoke(data) { } == true
 
-    private fun send(item: TelemetryItem) {
+    /** [leading]: the record's triggers just ran, and what they flushed has not been exported yet. */
+    private fun send(item: TelemetryItem, leading: Boolean = false) {
         when (item) {
             is TelemetryItem.Log -> {
                 val live = item.mutable
                 if (live != null && isIssue(live.eventName)) {
-                    if (persistedAsIssue(live.toLogRecordData())) return
+                    val data = live.toLogRecordData()
+                    if (leading && (flushedLogs.isNotEmpty() || flushedSpans.isNotEmpty())) {
+                        sendBeforeFlushed(data)
+                        return
+                    }
+                    if (persistedAsIssue(data)) return
                 }
                 if (live != null) {
                     logSink.onEmit(Context.root(), live)

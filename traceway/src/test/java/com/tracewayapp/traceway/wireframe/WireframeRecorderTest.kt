@@ -472,4 +472,61 @@ class WireframeRecorderTest {
         assertEquals(listOf("row 0", "row 1", "row 2", "row 3"), Mirror().apply { play(clip.events.take(2)) }.texts())
         assertEquals(listOf(4, 2, 4, 2, 5), clip.events.map { it["type"] })
     }
+
+    @Test
+    fun `clearing the buffer while recording captures the screen again at once`() {
+        val recorder = recorder()
+        source.screen = rows.screen(2)
+        recorder.start()
+        scheduler.advance(100)
+        source.screen = rows.screen(3)
+        source.draw()
+        scheduler.advance(100)
+        assertEquals(2, recorder.bufferedFrameCount)
+        val captures = source.captures
+        val resets = source.resets
+
+        recorder.clearBuffer()
+        assertEquals("nothing older is held", 0, recorder.bufferedFrameCount)
+        assertEquals("the next frame shares nothing with the ones dropped", resets + 1, source.resets)
+        scheduler.runDue()
+        assertEquals("without waiting for a draw", captures + 1, source.captures)
+        assertEquals(1, recorder.bufferedFrameCount)
+
+        // Stopped or in the background there is nothing to capture.
+        recorder.setForeground(false)
+        recorder.clearBuffer()
+        scheduler.runDue()
+        assertEquals(captures + 1, source.captures)
+        recorder.setForeground(true)
+        recorder.stop()
+        recorder.clearBuffer()
+        scheduler.advance(1000)
+        assertEquals(0, recorder.bufferedFrameCount)
+    }
+
+    @Test
+    fun `a frame captured while the buffer is cleared from another thread is dropped`() {
+        // The settings thread clears; the reset reaches the main thread a moment later.
+        val posted = ArrayList<() -> Unit>()
+        val elsewhere = object : MainThread {
+            override fun isCurrent(): Boolean = false
+            override fun post(delayMs: Long, task: () -> Unit): com.tracewayapp.traceway.internal.Cancellable {
+                posted.add(task)
+                return com.tracewayapp.traceway.internal.Cancellable { posted.remove(task) }
+            }
+        }
+        val recorder = WireframeRecorder(50, 10, source, elsewhere, scheduler::now)
+        recorder.push(frame(rows.screen(1)))
+        recorder.clearBuffer()
+        // A capture that was under way on the main thread ends now, with what it read before the change.
+        scheduler.advance(100)
+        recorder.push(frame(rows.screen(2)))
+        assertEquals("it may show what the dropped frames showed", 0, recorder.bufferedFrameCount)
+        ArrayList(posted).forEach { it() }
+        assertEquals(1, source.resets)
+        scheduler.advance(100)
+        recorder.push(frame(rows.screen(3)))
+        assertEquals("frames after the reset are kept", 1, recorder.bufferedFrameCount)
+    }
 }

@@ -650,6 +650,52 @@ class ViewWireframeTest {
         assertEquals('P'.code.toByte(), png[1])
     }
 
+    /** A small avatar the way an app's own drawable class shows one: a photo that is not a `BitmapDrawable` and not opaque. */
+    private class Avatar(private val photo: Bitmap) : android.graphics.drawable.Drawable() {
+        private val paint = android.graphics.Paint(android.graphics.Paint.FILTER_BITMAP_FLAG)
+        override fun draw(canvas: Canvas) = canvas.drawBitmap(photo, null, bounds, paint)
+        override fun setAlpha(alpha: Int) {}
+        override fun setColorFilter(colorFilter: android.graphics.ColorFilter?) {}
+        override fun getIntrinsicWidth(): Int = photo.width
+        override fun getIntrinsicHeight(): Int = photo.height
+
+        @Deprecated("Deprecated in Java")
+        override fun getOpacity(): Int = android.graphics.PixelFormat.TRANSLUCENT
+    }
+
+    @Test
+    fun withImagesOffASmallPictureTakenForAnIconUploadsNoColor() {
+        val photo = Bitmap.createBitmap(48, 48, Bitmap.Config.ARGB_8888).apply {
+            // A face would do: two colors, and a clear corner so the picture is not a plain square.
+            for (y in 0 until 48) for (x in 0 until 48) {
+                setPixel(x, y, if (x + y < 12) Color.TRANSPARENT else if (x < 24) Color.RED else Color.rgb(0, 160, 255))
+            }
+        }
+        val s = RealScreen.open { a -> column(a, sized(ImageView(a).apply { setImageDrawable(Avatar(photo)) }, 48, 48)) }
+        assertEquals("images are off", com.tracewayapp.traceway.TracewayImagePolicy.OFF, s.capture.images.policy)
+        val deadline = System.currentTimeMillis() + 5000
+        var screen = s.screen()
+        while (screen.children.none { it.tag == "style" } && System.currentTimeMillis() < deadline) {
+            Thread.sleep(20)
+            screen = s.screen()
+        }
+        val css = screen.children.single { it.tag == "style" }.attributes["_cssText"]!!
+        assertTrue(css, css.startsWith(".ic.g0::before{") && css.contains("mask:url(data:image/png;base64,"))
+        val png = android.util.Base64.decode(Regex("base64,([^)]+)\\)").find(css)!!.groupValues[1], 0)
+        val uploaded = android.graphics.BitmapFactory.decodeByteArray(png, 0, png.size)
+        val colors = HashSet<Int>()
+        var covered = 0
+        for (y in 0 until uploaded.height) for (x in 0 until uploaded.width) {
+            val p = uploaded.getPixel(x, y)
+            if (Color.alpha(p) == 0) continue
+            covered++
+            colors.add(p and 0xFFFFFF)
+        }
+        assertTrue("the shape is there for the replay's mask", covered > uploaded.width * uploaded.height / 2)
+        assertEquals("transparent where the picture is", 0, Color.alpha(uploaded.getPixel(1, 1)))
+        assertEquals("no pixel carries the picture's color: " + colors.map { "#%06x".format(it) }, setOf(0), colors)
+    }
+
     @Test
     fun togglesAreDrawnFromTheirState() {
         lateinit var check: CheckBox

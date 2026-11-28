@@ -1,6 +1,10 @@
 package com.tracewayapp.traceway
 
+import android.app.Activity
 import android.app.Application
+import android.os.Looper
+import android.os.SystemClock
+import android.view.MotionEvent
 import com.tracewayapp.traceway.internal.HttpResponse
 import com.tracewayapp.traceway.internal.Json
 import com.tracewayapp.traceway.internal.ManualScheduler
@@ -16,13 +20,16 @@ import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNotSame
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Rule
 import org.junit.Test
 import org.junit.rules.TemporaryFolder
 import org.junit.runner.RunWith
+import org.robolectric.Robolectric
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.RuntimeEnvironment
 import org.robolectric.Shadows.shadowOf
@@ -31,6 +38,8 @@ import java.io.File
 import java.lang.reflect.InvocationTargetException
 import java.lang.reflect.Modifier
 import java.net.SocketTimeoutException
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 
 /**
  * CONTRACT §16 and the ease-of-use findings of the second Android review:
@@ -359,6 +368,94 @@ class StartApiTest {
     fun startRequestHasAJavaOverloadWithoutTheTraceparentFlag() {
         val m = TracewayClient::class.java.getMethod("startRequest", String::class.java, String::class.java)
         assertNotNull(m)
+    }
+
+    // ---- sessions follow every touch, and a start during a shutdown ---------------------------
+
+    /**
+     * The session before and after seventeen minutes with one touch a minute and nothing else: a finger
+     * dragged [dragPx] down the screen (a scroll), or with 0 a tap.
+     */
+    private fun sessionAcrossTouches(options: TracewayOptions, dragPx: Float): Pair<String?, String?> {
+        val client = TracewayClient.initialize(app, options, overrides(startThread = { it.run() }))
+        val controller = Robolectric.buildActivity(Activity::class.java).setup()
+        shadowOf(Looper.getMainLooper()).idle()
+        val window = controller.get().window
+        val before = client.currentSessionId
+        repeat(17) {
+            scheduler.advance(60_000)
+            val at = SystemClock.uptimeMillis()
+            window.callback.dispatchTouchEvent(MotionEvent.obtain(at, at, MotionEvent.ACTION_DOWN, 200f, 300f, 0))
+            if (dragPx != 0f) {
+                window.callback.dispatchTouchEvent(MotionEvent.obtain(at, at + 20, MotionEvent.ACTION_MOVE, 200f, 300f + dragPx, 0))
+            }
+            window.callback.dispatchTouchEvent(MotionEvent.obtain(at, at + 40, MotionEvent.ACTION_UP, 200f, 300f + dragPx, 0))
+        }
+        val after = client.currentSessionId
+        client.shutdown(2000)
+        controller.pause().stop().destroy()
+        return before to after
+    }
+
+    private val streamedTaps = mapOf("signals" to mapOf("userActions" to mapOf("mode" to "stream")))
+
+    @Test
+    fun anyTouchKeepsTheSessionAliveNotOnlyATap() {
+        val options = TracewayOptions(token = "tok", baseUrl = "https://traceway.test", remoteConfig = false, collection = streamedTaps)
+        val (before, after) = sessionAcrossTouches(options, dragPx = 400f)
+        assertNotNull(before)
+        assertEquals("scrolling for a quarter of an hour is one session", before, after)
+        assertTrue("a scroll records no user action", logs.all.none { it.eventName == "browser.user_action.click" })
+    }
+
+    @Test
+    fun touchesKeepTheSessionAliveWithUserActionsOff() {
+        val options = TracewayOptions(
+            token = "tok", baseUrl = "https://traceway.test", remoteConfig = false, captureUserActions = false, collection = streamedTaps,
+        )
+        val (before, after) = sessionAcrossTouches(options, dragPx = 0f)
+        assertNotNull(before)
+        assertEquals(before, after)
+        assertTrue("taps are still not recorded", logs.all.none { it.eventName == "browser.user_action.click" })
+    }
+
+    @Test
+    fun initWhileAShutdownIsStillFlushingStartsANewClient() {
+        val options = TracewayOptions(token = "tok", baseUrl = "https://traceway.test", remoteConfig = false)
+        val flushing = CountDownLatch(1)
+        val release = CountDownLatch(1)
+        val slow = java.util.concurrent.atomic.AtomicBoolean(false)
+        val server = FakeHttp { request ->
+            if (slow.get() && request.url.endsWith("/v1/logs")) {
+                flushing.countDown()
+                release.await(10, TimeUnit.SECONDS)
+            }
+            HttpResponse(200)
+        }
+        val first = TracewayClient.initialize(app, options, overrides(inMemory = false, transport = server, startThread = { it.run() }))
+        first.captureException(RuntimeException("sent by the last flush"))
+        slow.set(true)
+        val stopping = Thread { first.shutdown(8000) }.apply { start() }
+        try {
+            assertTrue("the shutdown is in its flush", flushing.await(5, TimeUnit.SECONDS))
+            val second = TracewayClient.initialize(
+                app,
+                options,
+                TracewayTestOverrides(logExporter = logs, http = http, scheduler = ManualScheduler(), startThread = { it.run() }, random = { 0.5 }),
+            )
+            assertNotSame("the stopping client is not handed out again", first, second)
+            assertSame(second, TracewayClient.instance)
+            release.countDown()
+            stopping.join(10_000)
+            assertFalse(stopping.isAlive)
+            assertSame("the first client's shutdown leaves the new one running", second, TracewayClient.instance)
+            second.captureException(RuntimeException("recorded by the new client"))
+            second.flush(2000)
+            assertTrue(logs.all.any { it.eventName == "exception" && it.attr("exception.message") == "recorded by the new client" })
+        } finally {
+            release.countDown()
+            stopping.join(10_000)
+        }
     }
 
     // ---- defaults that need no code ----------------------------------------------------------

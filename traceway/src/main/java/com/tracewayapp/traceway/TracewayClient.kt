@@ -41,6 +41,7 @@ import com.tracewayapp.traceway.diagnostics.ExitRecord
 import com.tracewayapp.traceway.diagnostics.ExitSource
 import com.tracewayapp.traceway.diagnostics.Hang
 import com.tracewayapp.traceway.interaction.HoverTracker
+import com.tracewayapp.traceway.interaction.PointerListener
 import com.tracewayapp.traceway.interaction.TapListener
 import com.tracewayapp.traceway.interaction.TouchTracker
 import com.tracewayapp.traceway.interaction.ViewPath
@@ -149,6 +150,9 @@ internal const val MAIN_THREAD_FLUSH_MS = 2_000L
 
 /** The processes whose session ids are kept for their exit reasons, newest last. */
 private const val MAX_PROCESS_SESSIONS = 8
+
+/** How long the recovery files of another token or server are kept after their last write: as long as a spooled clip. */
+private const val RECOVERY_MAX_AGE_MS = RecordingsTransport.SPOOL_MAX_AGE_MS
 
 /** An issue from an earlier run of the process (an exit reason, a hang it did not survive): no trigger of this run is its. */
 private const val ATTR_PREVIOUS_RUN = "traceway.previous_run"
@@ -590,6 +594,13 @@ class TracewayClient private constructor(
                 override fun onTap(root: View, xPx: Float, yPx: Float, xDp: Float, yDp: Float) = recordTap(root, xPx, yPx, xDp, yDp)
                 override fun onHover(root: View, xPx: Float, yPx: Float, xDp: Float, yDp: Float) = recordHover(root, xPx, yPx)
             })
+            // Any touch is the user being there, whatever it becomes (a scroll, a drag, a long press) and
+            // whether taps are recorded: the session stays alive, as in the browser, iOS and Flutter SDKs.
+            tracker.addPointerListener(object : PointerListener {
+                override fun pointerDown(pointerId: Int, xDp: Float, yDp: Float, touch: Boolean) {
+                    if (!isShutdown) markActivity()
+                }
+            })
             tracker.install(app)
         }
 
@@ -724,6 +735,7 @@ class TracewayClient private constructor(
                     File(it, "crash.json").delete()
                     File(it, "hangs").deleteRecursively()
                 }
+                guarded("recovery expiry") { pruneOtherRecoveries() }
                 if (!isShutdown) recordings.loadSpooled { synchronized(lock) { recordsScreen && control.replayMode != Mode.OFF } }
             }
             // How the earlier runs ended: a binder call and trace files, so off the start path too.
@@ -918,6 +930,22 @@ class TracewayClient private constructor(
     private val recoveryDirectory: File?
         get() = stateDir?.let { File(it, "recovery/${routes.traceway?.key ?: routes.logs.key}") }
 
+    /**
+     * Removes what was kept for another token or server (a crash before the
+     * start, hangs, spooled replay clips) once nothing in it was written for
+     * [RECOVERY_MAX_AGE_MS]: it waits that long for its own destination to
+     * come back, and is never sent anywhere else. On the I/O pool.
+     */
+    private fun pruneOtherRecoveries() {
+        val own = recoveryDirectory ?: return
+        val cutoff = scheduler.now() - RECOVERY_MAX_AGE_MS
+        for (dir in own.parentFile?.listFiles() ?: return) {
+            if (!dir.isDirectory || dir.name == own.name) continue
+            val newest = dir.walkTopDown().maxOfOrNull { it.lastModified() } ?: 0L
+            if (newest < cutoff) dir.deleteRecursively()
+        }
+    }
+
     // Accessed under the client lock, only while emitting a disk-backed previous-run issue.
     private val recoveringIssues = HashMap<String, File>()
 
@@ -1005,7 +1033,7 @@ class TracewayClient private constructor(
             logExporter = lx,
             spanExporter = sx,
             hooks = hooks,
-            persistIssue = { data ->
+            persistIssue = { data, onItsWay ->
                 val id = data.attributes.get(AttributeKey.stringKey(Events.ATTR_EXCEPTION_ID))
                 val source = recoveringIssues[id]
                 when {
@@ -1017,13 +1045,20 @@ class TracewayClient private constructor(
                             source.delete()
                             issueBox.drain()
                         }
+                        onItsWay()
                         true // On failure the source file remains available for the next start.
                     }
                     stateDir == null || overrides?.logExporter != null -> false
-                    crashing -> issueBox.persistLog(data)
+                    crashing -> issueBox.persistLog(data).also { if (it) onItsWay() }
                     else -> {
                         // Off the caller's thread and the lock: the caller may be the main thread.
-                        scheduler.disk { if (issueBox.persistLog(data)) issueBox.drain() else lx.export(listOf(data)) }
+                        scheduler.disk {
+                            try {
+                                if (issueBox.persistLog(data)) issueBox.drain() else lx.export(listOf(data))
+                            } finally {
+                                onItsWay()
+                            }
+                        }
                         true
                     }
                 }
@@ -1618,7 +1653,6 @@ class TracewayClient private constructor(
     /** A tap on [root] at ([xPx], [yPx]) in the root's coordinates: a click record and a click for recording triggers. */
     private fun recordTap(root: View, xPx: Float, yPx: Float, xDp: Float, yDp: Float) {
         if (isShutdown || !options.captureUserActions) return
-        markActivity()
         val wantsTriggers = ready && "click" in sequenceKinds
         if (!wantsTriggers && synchronized(lock) { control.modeFor("userActions") } == Mode.OFF) return
         val path = try {
@@ -1781,6 +1815,8 @@ class TracewayClient private constructor(
     }
 
     private val shutdownLock = Any()
+
+    @Volatile
     private var shuttingDown = false
 
     /** Whether the exporters can write what they hold to the outbox, to be sent at the next start. */
@@ -1813,6 +1849,9 @@ class TracewayClient private constructor(
         // An interrupted thread would skip every wait below; the flag is put back for the next handler.
         val interrupted = Thread.interrupted()
         try {
+            // The crash is how this run ends: a block that led to it, or the time its handlers take, is not a
+            // fatal hang as well.
+            appHangs?.crashed()
             if (!awaitQuietly(readyLatch, 300) || logger == null) {
                 // Not started yet: nothing can be emitted, so the crash waits on disk for the next start.
                 saveCrashBeforeStart(thread, error)
@@ -1987,18 +2026,20 @@ class TracewayClient private constructor(
     private fun reportHang(hang: Hang) {
         if (isShutdown) return
         val attrs = hangAttributes(hang, fatal = false)
-        val captured = TracewayCapturedError(
-            error = null,
-            type = Hang.TYPE,
-            message = hang.message,
-            isMessage = false,
-            attributes = readOnly(attrs),
-            stackTrace = attrs["exception.stacktrace"] as String,
-        )
-        if (!reports(captured)) return
+        if (!reports(capturedHang(hang, attrs))) return
         attrs[Events.ATTR_EXCEPTION_ID] = Ids.uuidv4()
         emit(eventName = Events.EXCEPTION, severity = Severity.ERROR, severityText = "ERROR", attributes = attrs)
     }
+
+    /** [hang] as `ignoreErrors` and `beforeCapture` see it. */
+    private fun capturedHang(hang: Hang, attrs: Map<String, Any>) = TracewayCapturedError(
+        error = null,
+        type = Hang.TYPE,
+        message = hang.message,
+        isMessage = false,
+        attributes = readOnly(attrs),
+        stackTrace = attrs["exception.stacktrace"] as String,
+    )
 
     private fun hangAttributes(hang: Hang, fatal: Boolean): LinkedHashMap<String, Any> {
         val attrs = LinkedHashMap<String, Any>(hang.screen)
@@ -2028,15 +2069,26 @@ class TracewayClient private constructor(
      * once per start on the I/O pool: the exits Android recorded since the
      * last one seen (a native crash and an ANR as issues, a low-memory kill
      * as `app.oom`), and the hangs a run did not survive, unless Android
-     * recorded that run's end as an ANR.
+     * recorded that run's end as an ANR or as a crash: the ANR or the crash
+     * is the issue then. A fatal hang passes `ignoreErrors` and
+     * `beforeCapture` like a hang that ended.
      */
     private fun reportPreviousRuns() {
         if (isShutdown) return
         val hangs = appHangs?.takePrevious() ?: emptyList()
-        val exits = if (options.captureExitReasons) newExits() else emptyList()
+        val unseen = if (options.captureExitReasons) newExits() else emptyList()
+        val exits = unseen.filter { ExitReasons.isReportable(it.reason) }
+            .sortedByDescending { it.timestampMs }
+            .take(ExitReasons.MAX_REPORTS)
+            .sortedBy { it.timestampMs }
         val sdkInt = overrides?.sdkInt ?: android.os.Build.VERSION.SDK_INT
         val sessionsByPid = synchronized(lock) { previousProcessSessions }
         val answered = HashSet<Hang>()
+        // A run that died of a crash has its issue: from the crash handler, or the native crash below.
+        for (exit in unseen) {
+            if (exit.reason != ExitReasons.REASON_CRASH && exit.reason != ExitReasons.REASON_CRASH_NATIVE) continue
+            hangs.filterTo(answered) { it.pid == exit.pid && it.startedAtMs <= exit.timestampMs }
+        }
         for (exit in exits) {
             guarded("exit reason") {
                 when (exit.reason) {
@@ -2069,12 +2121,14 @@ class TracewayClient private constructor(
         for (hang in hangs) {
             if (hang in answered) continue
             guarded("fatal hang") {
-                emitPreviousRun(hangAttributes(hang, fatal = true), hang.startedAtMs + hang.blockedMs, hang.sessionId ?: sessionsByPid[hang.pid.toString()])
+                val attrs = hangAttributes(hang, fatal = true)
+                if (!reports(capturedHang(hang, attrs))) return@guarded
+                emitPreviousRun(attrs, hang.startedAtMs + hang.blockedMs, hang.sessionId ?: sessionsByPid[hang.pid.toString()])
             }
         }
     }
 
-    /** The exits newer than the newest one seen before, oldest first; the newest is remembered. None on a first start. */
+    /** The exits newer than the newest one seen before, of any reason; the newest is remembered. None on a first start. */
     private fun newExits(): List<ExitRecord> {
         val source = overrides?.exitSource ?: if (overrides == null) ExitReasons.sourceFor(application) else null
         if (source == null) return emptyList()
@@ -2085,13 +2139,10 @@ class TracewayClient private constructor(
         if (seen == null || newest > seen) synchronized(lock) { store.set(KEY_EXITS_SEEN, maxOf(newest, seen ?: 0L)) }
         // The first start keeps no state yet: what Android kept is from before the SDK, or from an earlier install.
         if (seen == null) return emptyList()
-        return all.filter { it.timestampMs > seen && ExitReasons.isReportable(it.reason) }
-            .sortedByDescending { it.timestampMs }
-            .take(ExitReasons.MAX_REPORTS)
-            .sortedBy { it.timestampMs }
+        return all.filter { it.timestampMs > seen }
     }
 
-    /** An issue of an earlier run: always reported (it ended the process), in its own session, no trigger of this run's. */
+    /** An issue of an earlier run, in its own session, with no trigger of this run's. */
     private fun emitPreviousRun(attrs: LinkedHashMap<String, Any>, timeMs: Long, sessionId: String?) {
         attrs["exception.unhandled"] = true
         attrs[ATTR_PREVIOUS_RUN] = true
@@ -2559,6 +2610,7 @@ class TracewayClient private constructor(
     private fun applyReplay() {
         val session = sessions?.currentId
         val settings = control.settings
+        // The recorder first: when a setting became stricter the controller has it capture again, masked already.
         (screenRecorder as? WireframeRecorder)?.let { recorder ->
             recorder.maskAllInputs = settings.replayMaskAllInputs
             recorder.images?.policy = settings.replayImages
@@ -2567,6 +2619,8 @@ class TracewayClient private constructor(
             control.replayMode,
             maxAgeMs = settings.bufferMaxAgeMs,
             sessionSampled = session != null && Ids.unitHash(session) < settings.replaySessionSampleRate,
+            maskAllInputs = settings.replayMaskAllInputs,
+            images = settings.replayImages,
         )
     }
 
@@ -2939,7 +2993,8 @@ class TracewayClient private constructor(
         internal var platformCheck: () -> Unit = { Context.current() }
 
         /**
-         * Starts the SDK, or returns the running client. Without a
+         * Starts the SDK, or returns the running client; one that is shutting
+         * down is not running any more. Without a
          * [TracewayOptions.token] it runs standalone and sends everything to
          * [TracewayOptions.telemetry]. Nothing is left installed when it
          * fails: [instance] stays null.
@@ -2953,7 +3008,12 @@ class TracewayClient private constructor(
             legacyReportUrl: String? = options.baseUrl,
         ): TracewayClient {
             synchronized(this) {
-                current?.let { if (!it.isShutdown) return it }
+                current?.let { stopping ->
+                    if (!stopping.isShutdown && !stopping.shuttingDown) return stopping
+                    // A shutdown still flushing on another thread: this start is a new client, as after it. The old
+                    // one's hooks go now, so that a tap or a crash meanwhile is recorded once, by the new client.
+                    if (!stopping.isShutdown) stopping.uninstallHooks()
+                }
                 try {
                     platformCheck()
                 } catch (e: LinkageError) {

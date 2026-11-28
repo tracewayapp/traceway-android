@@ -12,6 +12,16 @@ import unittest
 ROOT = Path(__file__).resolve().parents[2]
 
 
+def checked_in(build_file, pattern):
+    """The version a build file declares; the release script rewrites the same line."""
+    return re.search(pattern, (ROOT / build_file).read_text(), re.M).group(1)
+
+
+SDK_VERSION = checked_in("traceway/build.gradle.kts", r'^val sdkVersion = "([^"]+)"')
+PLUGIN_VERSION = checked_in("gradle-plugin/build.gradle.kts",
+                            r'coordinates\("com\.tracewayapp", "traceway-symbols-plugin", "([^"]+)"\)')
+
+
 class WorkflowTests(unittest.TestCase):
     def setUp(self):
         tmp = tempfile.TemporaryDirectory()
@@ -21,7 +31,7 @@ class WorkflowTests(unittest.TestCase):
         self.bin = Path(tmp.name) / "bin"
         self.bin.mkdir()
         self.env = dict(os.environ, PATH=str(self.bin) + os.pathsep + os.environ["PATH"],
-                        GITHUB_REF_NAME="main", GITHUB_REF_TYPE="branch", VERSION="2.1.0")
+                        GITHUB_REF_NAME="main", GITHUB_REF_TYPE="branch", VERSION=SDK_VERSION)
         self.run_cmd("git", "init", "-qb", "main")
         self.run_cmd("git", "config", "user.name", "CI")
         self.run_cmd("git", "config", "user.email", "ci@example.test")
@@ -55,7 +65,8 @@ class WorkflowTests(unittest.TestCase):
     def release(self, kind, ok=True):
         self.run_cmd("bash", str(ROOT / "scripts/release-maven.sh"), kind, ok=ok)
 
-    def no_change(self, kind, tag):
+    def no_change(self, kind, version, tag):
+        self.env["VERSION"] = version
         sha = self.run_cmd("git", "rev-parse", "HEAD")
         self.release(kind)
         self.assertEqual(self.run_cmd("git", "rev-parse", tag + "^{}"), sha)
@@ -65,19 +76,22 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(len((self.repo / "publish-calls").read_text().splitlines()), 1)
 
     def test_sdk_prebumped(self):
-        self.no_change("sdk", "v2.1.0")
+        self.no_change("sdk", SDK_VERSION, "v" + SDK_VERSION)
 
     def test_plugin_prebumped(self):
-        self.no_change("plugin", "plugin-v2.1.0")
+        self.no_change("plugin", PLUGIN_VERSION, "plugin-v" + PLUGIN_VERSION)
 
     def test_resume_published_coordinates_at_confirmed_revision(self):
-        self.env.update(CENTRAL_STATUS="200", VERSION="2.1.1")
+        # A version the checked-in build file does not have yet: the release commit sets it.
+        major, minor, patch = re.match(r"(\d+)\.(\d+)\.(\d+)", SDK_VERSION).groups()
+        published = f"{major}.{minor}.{int(patch) + 1}"
+        self.env.update(CENTRAL_STATUS="200", VERSION=published)
         self.release("sdk", ok=False)
         self.env["PUBLISHED_SHA"] = self.run_cmd("git", "rev-parse", "HEAD")
         self.release("sdk")
         self.assertFalse((self.repo / "publish-calls").exists())
-        self.assertIn('val sdkVersion = "2.1.1"', (self.repo / "traceway/build.gradle.kts").read_text())
-        self.assertEqual(self.run_cmd("git", "rev-parse", "v2.1.1^{}"), self.run_cmd("git", "rev-parse", "HEAD"))
+        self.assertIn(f'val sdkVersion = "{published}"', (self.repo / "traceway/build.gradle.kts").read_text())
+        self.assertEqual(self.run_cmd("git", "rev-parse", f"v{published}^{{}}"), self.run_cmd("git", "rev-parse", "HEAD"))
 
     def test_incomplete_plugin_release_cannot_be_tagged_or_republished(self):
         self.mock(self.bin / "curl", 'case "$*" in *gradle.plugin*) echo 404 ;; *) echo 200 ;; esac')
