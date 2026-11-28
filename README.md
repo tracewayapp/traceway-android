@@ -675,6 +675,7 @@ No Traceway account or token is required. `telemetry` must have a shared `url` o
 | `appHangThresholdMs` | `2000` | How long the main thread must be blocked for an `AppHang` issue (at least 250 ms) |
 | `reportHangsInDebug` | `false` | Report hangs (`app.hang` and `AppHang` issues) while a debugger is attached too, to try them from Android Studio's Debug run |
 | `allProcesses` | `false` | Run in every process of the app, not only the main one; each keeps its own state |
+| `sessionTimeoutMs` | `900000` (15 min) | How long without user activity ends a session (at least 1 s) |
 
 To turn a channel off entirely:
 
@@ -767,7 +768,7 @@ There is no in-process native signal handler: it would compete with the other na
 
 - **Uncaught exceptions** on every thread (see [Crashes and symbolication](#crashes-and-symbolication)).
 - **Native crashes, ANRs and low-memory kills** of earlier runs, Android 11+, and **app hangs** (see [Native crashes, ANRs and hangs](#native-crashes-anrs-and-hangs)).
-- **Sessions**: `session.start`, `session.end` and `traceway.session.update` (a session that goes on after a restart), with the session's collection counters. A session ends after 15 minutes without activity or after 60 minutes. Activity is any touch on the app's windows (a tap, a scroll, a drag, a long press; also with `captureUserActions = false`, and nothing more is recorded for it), a screen change, `recordAction`, the app coming to the foreground and `TracewayClient.markActivity()`.
+- **Sessions**: `session.start`, `session.end` and `traceway.session.update`, with the session's collection counters. An update goes up when a session goes on after a restart, when the app goes to the background and at a flush (when the counters changed), so a session whose app is never opened again still has its counts. A session ends after 15 minutes without activity (`sessionTimeoutMs`) or after 60 minutes. Most apps end by being killed in the background: the next launch then ends the session they left, with `session.end` at its last activity, the counts kept with it and its `app.memory.peak`, before it starts a new one. Activity is any touch on the app's windows (a tap, a scroll, a drag, a long press; also with `captureUserActions = false`, and nothing more is recorded for it), a screen change, `recordAction`, the app coming to the foreground and `TracewayClient.markActivity()`.
 - **Screens**: activities and AndroidX fragments, as `browser.navigation`.
 - **Taps** in the app's activity windows, with the selector, type, id, shown text and label of the view, and the screen (`browser.user_action.click`, with `app.widget.*` and `app.screen.*` attributes). Taps in dialogs, bottom sheets and menus are not recorded yet (their screens are in the replay).
 - **Logs**: `System.out` / `System.err` lines, and `android.util.Log` calls with the Gradle plugin.

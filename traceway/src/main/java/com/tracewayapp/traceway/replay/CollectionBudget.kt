@@ -113,6 +113,27 @@ internal class CollectionBudget(
         return events > 0
     }
 
+    /**
+     * The counts the store holds for [sessionId], as session event
+     * attributes, or null when it holds another session's: what an earlier
+     * run counted for a session it left open. Does not change the session
+     * counted.
+     */
+    @Synchronized
+    fun savedSnapshot(sessionId: String): Map<String, Long>? {
+        val saved = store?.get(STORE_KEY).asJsonObject() ?: return null
+        if (saved["sessionId"] != sessionId) return null
+        fun read(key: String): Long = saved[key].asLongExact()?.takeIf { it >= 0 } ?: 0L
+        return linkedMapOf(
+            "traceway.collection.bytes" to read("bytes"),
+            "traceway.collection.events" to read("events"),
+            "traceway.collection.dropped" to read("dropped"),
+            "traceway.collection.max_bytes" to maxBytes,
+            "traceway.collection.max_events" to maxEvents,
+            "traceway.replay.image_bytes" to read("imageBytes"),
+        )
+    }
+
     /** The counts of [sessionId], as session event attributes. */
     @Synchronized
     fun snapshot(sessionId: String?): Map<String, Long> {

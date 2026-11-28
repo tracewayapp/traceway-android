@@ -39,6 +39,22 @@ internal class MemoryPeaks(
         }
     }
 
+    /**
+     * [session], left open by an earlier run, was found over at this start:
+     * the peak that run remembered for it, if any. This process's memory is
+     * not that session's.
+     */
+    fun endedEarlier(session: String) {
+        guarded("memory peak") {
+            val storage = store()
+            val record = storage.get(key).asJsonObject() ?: return@guarded
+            val bytes = record["b"].asLongExact()
+            if (record["s"] != session || bytes == null) return@guarded
+            storage.set(key, null)
+            recorder.memoryPeak(session, bytes)
+        }
+    }
+
     /** A session started: one that ended while the app was not running is reported now. */
     fun settle(current: String) {
         guarded("memory peak") {

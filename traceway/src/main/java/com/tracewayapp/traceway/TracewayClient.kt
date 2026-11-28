@@ -142,6 +142,9 @@ private const val CRASH_BUDGET_MS = 2500L
 private const val HEALTH_DELAY_MS = 1_000L
 private const val MAX_HEALTH_DELAY_MS = 300_000L
 
+/** The shortest [TracewayOptions.sessionTimeoutMs] taken. */
+private const val MIN_SESSION_TIMEOUT_MS = 1_000L
+
 /** The shortest block [TracewayOptions.appHangThresholdMs] can make an `AppHang`. */
 private const val MIN_HANG_THRESHOLD_MS = 250L
 
@@ -444,6 +447,9 @@ class TracewayClient private constructor(
 
     /** Sessions whose start (or resumption) was reported in this run: their end is reported too, and only theirs. */
     private val reportedSessions = HashSet<String>()
+
+    /** The budget's counts in the last session record sent: a flush sends a `traceway.session.update` only for new ones. */
+    private var lastSessionCounts: Map<String, Long>? = null
     private val requestSpans = LinkedHashMap<String, Span>()
 
     // Android instrumentation, installed by [Traceway.init].
@@ -793,6 +799,7 @@ class TracewayClient private constructor(
                 scheduler = scheduler,
                 onStart = { session, resumed -> synchronized(lock) { onSessionStart(session, resumed) } },
                 onEnd = { session, endedAt -> synchronized(lock) { onSessionEnd(session, endedAt) } },
+                inactivityMs = options.sessionTimeoutMs.coerceAtLeast(MIN_SESSION_TIMEOUT_MS),
                 locked = { block -> synchronized(lock) { block() } },
             )
             sessions = manager
@@ -1746,6 +1753,16 @@ class TracewayClient private constructor(
             guarded("flush logs") { logExporter?.flush()?.join(left(), TimeUnit.MILLISECONDS) }
             guarded("flush spans") { spanExporter?.flush()?.join(left(), TimeUnit.MILLISECONDS) }
             replay.drainBlocking(left())
+            // The session's counts so far, its last segments' included, and its memory peak, kept with it.
+            synchronized(lock) {
+                if (!isShutdown) {
+                    reportSessionProgress()
+                    if (options.captureMetrics && started) {
+                        val session = sessions?.currentId
+                        scheduler.disk { memoryPeaks.remember(session) }
+                    }
+                }
+            }
             logSink?.let { flushBatchQueue(left(), it::forceFlush) }
             guarded("flush logs") { logExporter?.flush()?.join(left(), TimeUnit.MILLISECONDS) }
             metrics.flush()
@@ -2230,7 +2247,49 @@ class TracewayClient private constructor(
 
     private fun emitSessionEnd(session: SessionInfo, endedAtMs: Long) {
         if (!reportedSessions.remove(session.id)) return
+        lastSessionCounts = null
         emit(eventName = Events.SESSION_END, severity = Severity.INFO, timeMs = endedAtMs, attributes = sessionAttributes(session))
+    }
+
+    /**
+     * Going to the background, or a flush: what the session used so far
+     * (its `traceway.collection.*` counts, picture bytes, drops) is sent in
+     * a `traceway.session.update` when it changed since the session's last
+     * record, and kept with the stored session. A session whose app is
+     * never opened again then still has its counts on the server, and the
+     * next launch ends it with them. Called with the lock held.
+     */
+    private fun reportSessionProgress() {
+        val manager = sessions ?: return
+        val session = manager.current ?: return
+        val attributes = sessionAttributes(session)
+        manager.save(attributes.filterKeys { it != Events.ATTR_SESSION_ID && it != Events.ATTR_SESSION_STARTED_AT })
+        val counts = replay.budget.snapshot(session.id)
+        if (control.settings.sessionsEnabled && session.id in reportedSessions && counts != lastSessionCounts) {
+            lastSessionCounts = counts
+            emit(eventName = Events.SESSION_UPDATE, severity = Severity.INFO, attributes = attributes)
+        }
+    }
+
+    /**
+     * Ends a session an earlier run left open, found over at this start
+     * (the app was killed in the background): `session.end` at its last
+     * activity, with the counts kept with it and the replay budget's own,
+     * and its memory peak. Nothing of this process is its.
+     */
+    private fun endEarlierSession(session: SessionInfo, endedAtMs: Long) {
+        if (options.captureMetrics) {
+            val id = session.id
+            scheduler.disk { memoryPeaks.endedEarlier(id) }
+        }
+        if (!control.settings.sessionsEnabled) return
+        val attributes = LinkedHashMap<String, Any>()
+        attributes[Events.ATTR_SESSION_ID] = session.id
+        attributes[Events.ATTR_SESSION_STARTED_AT] = session.startedAtMs
+        session.saved?.forEach { (k, v) -> if (v != null && k != Events.ATTR_SESSION_ID && k != Events.ATTR_SESSION_STARTED_AT) attributes[k] = v }
+        // The budget saves its counts as it counts: newer than the session's, when they are for this session.
+        replay.budget.savedSnapshot(session.id)?.let { attributes.putAll(it) }
+        emit(eventName = Events.SESSION_END, severity = Severity.INFO, timeMs = endedAtMs, attributes = attributes)
     }
 
     /** What every session event carries: the session, how much of its diagnostic budget replay used and what was dropped. */
@@ -2274,11 +2333,13 @@ class TracewayClient private constructor(
         }
         if (control.settings.sessionsEnabled) {
             reportedSessions.add(session.id)
+            val attributes = sessionAttributes(session)
+            lastSessionCounts = replay.budget.snapshot(session.id)
             emit(
                 eventName = if (resumed) Events.SESSION_UPDATE else Events.SESSION_START,
                 severity = Severity.INFO,
                 timeMs = if (resumed) null else session.startedAtMs,
-                attributes = sessionAttributes(session),
+                attributes = attributes,
             )
         }
         applyReplay()
@@ -2286,6 +2347,10 @@ class TracewayClient private constructor(
     }
 
     private fun onSessionEnd(session: SessionInfo, endedAtMs: Long) {
+        if (session.earlierRun) {
+            endEarlierSession(session, endedAtMs)
+            return
+        }
         replay.onSessionEnd(session.id)
         if (options.captureMetrics) {
             val id = session.id
@@ -2390,6 +2455,7 @@ class TracewayClient private constructor(
             attrs["traceway.replay.failed_segments"] = recordings.failedSegments.toLong()
             emit(eventName = Events.COLLECTION_HEALTH, severity = Severity.INFO, attributes = attrs)
             if (session != null && updateSession && session.id in reportedSessions) {
+                lastSessionCounts = replay.budget.snapshot(session.id)
                 emit(eventName = Events.SESSION_UPDATE, severity = Severity.INFO, attributes = sessionAttributes(session))
             }
         }
@@ -2900,10 +2966,23 @@ class TracewayClient private constructor(
                         metrics.flush(final = true)
                     }
                     saveTriggerProgress(now = true)
+                    // The last activity, on disk for a next launch that finds the session over.
+                    sessions?.save()
                 }
                 scheduler.io {
                     persistBuffer()
                     store.flush()
+                }
+                // The process may be killed in the background: the session's counts go up (and are kept with it)
+                // once the last segment just cut is counted.
+                replay.whenEncoded {
+                    scheduler.io {
+                        guarded("background session") {
+                            synchronized(lock) { if (!isShutdown) reportSessionProgress() }
+                            store.flush()
+                            logSink?.forceFlush()
+                        }
+                    }
                 }
                 (tracewayOutbox ?: outbox)?.drain()
                 logSink?.forceFlush()
