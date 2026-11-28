@@ -43,6 +43,7 @@ import android.view.SurfaceView
 import android.view.TextureView
 import android.view.View
 import android.view.ViewGroup
+import android.view.WindowManager
 import android.webkit.WebView
 import android.widget.AbsSeekBar
 import android.widget.CheckBox
@@ -220,9 +221,18 @@ internal class WireframeCapture(context: Context?, onAssetReady: () -> Unit = {}
         if (sw <= 0f || sh <= 0f) return null
         glyphs.shown.clear()
         images.beginCapture(nowMs)
+        // The keyboard, when one shows, sits right over the window it types into, as Android places it: over the
+        // windows that may take it, under those that say they do not (a dialog without a text field).
+        val imeIndex = roots.indexOfFirst { it.ime > 0 }
+        var keyboardAfter = imeIndex
+        if (imeIndex >= 0) {
+            for (i in imeIndex + 1 until roots.size) if (takesKeyboard(roots[i])) keyboardAfter = i
+        } else {
+            keyboardPrev = null
+        }
         val children = lists.acquire()
         try {
-            for (root in roots) {
+            for ((i, root) in roots.withIndex()) {
                 val v = root.view
                 val rec = rec(v)
                 if (root.dim > 0f) children.add(dim(rec, sw, sh, root.dim))
@@ -232,11 +242,7 @@ internal class WireframeCapture(context: Context?, onAssetReady: () -> Unit = {}
                     v, children, 0f, 0f, x - v.left, y - v.top,
                     max(0f, x), max(0f, y), min(sw, x + v.width), min(sh, y + v.height), MASK_NONE,
                 )
-            }
-            if (base.ime > 0) {
-                children.add(keyboard(base, sw, sh))
-            } else {
-                keyboardPrev = null
+                if (i == keyboardAfter) children.add(keyboard(roots[imeIndex], base, sw, sh))
             }
             imageStyles(children, glyphStyles(children))
             val screen = screenNode(children, sw * inv, sh * inv)
@@ -249,13 +255,27 @@ internal class WireframeCapture(context: Context?, onAssetReady: () -> Unit = {}
     }
 
     /**
-     * The keyboard as a neutral box over the bottom of [base], where its
-     * inset says it is, the same box the iOS SDK draws: the keyboard is
-     * another app's window, and its keys are never recorded.
+     * Whether [root]'s window may take the keyboard, so that Android places
+     * the keyboard over it: an application window or a popup that is not
+     * marked as one that does not need it (`FLAG_ALT_FOCUSABLE_IM`, which an
+     * `AlertDialog` without a text field sets, inverts `FLAG_NOT_FOCUSABLE`).
      */
-    private fun keyboard(base: WireframeRoots.Root, sw: Float, sh: Float): VNode {
+    private fun takesKeyboard(root: WireframeRoots.Root): Boolean {
+        val type = root.type
+        if (type !in 1..99 && type !in WindowManager.LayoutParams.FIRST_SUB_WINDOW..WindowManager.LayoutParams.LAST_SUB_WINDOW) return false
+        val params = root.view.layoutParams as? WindowManager.LayoutParams ?: return true
+        return WindowManager.LayoutParams.mayUseInputMethod(params.flags)
+    }
+
+    /**
+     * The keyboard as a neutral box over the bottom of the screen, its top
+     * where [imeRoot]'s inset says, across [base], the same box the iOS SDK
+     * draws: the keyboard is another app's window, and its keys are never
+     * recorded.
+     */
+    private fun keyboard(imeRoot: WireframeRoots.Root, base: WireframeRoots.Root, sw: Float, sh: Float): VNode {
         val v = base.view
-        val top = (base.y + v.height - base.ime).toFloat().coerceIn(0f, sh)
+        val top = (imeRoot.y + imeRoot.view.height - imeRoot.ime).toFloat().coerceIn(0f, sh)
         val left = base.x.toFloat().coerceIn(0f, sw)
         val right = min(sw, (base.x + v.width).toFloat())
         val bottom = min(sh, (base.y + v.height).toFloat())
