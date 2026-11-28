@@ -115,11 +115,35 @@ class CheckoutFragment : Fragment() {
             countries = withContext(Dispatchers.IO) { runCatching { app.api.countries() }.getOrDefault(emptyList()) }
         }
         field.setOnClickListener {
-            val items = countries.toTypedArray()
-            MaterialAlertDialogBuilder(requireContext())
-                .setTitle(R.string.fm_l_checkout_countryPicker)
-                .setItems(items) { _, which -> field.setText(items[which]) }
-                .show()
+            // A titled dialog with a search field over the list, as country pickers usually are.
+            val ctx = requireContext()
+            val adapter = ArrayAdapter(ctx, android.R.layout.simple_list_item_1, ArrayList(countries))
+            val search = TextInputEditText(ctx).apply {
+                id = R.id.fm_checkout_country_search
+                hint = getString(R.string.fm_l_checkout_country)
+                maxLines = 1
+                inputType = android.text.InputType.TYPE_CLASS_TEXT or android.text.InputType.TYPE_TEXT_FLAG_CAP_WORDS
+            }
+            val list = android.widget.ListView(ctx).apply {
+                id = R.id.fm_checkout_country_list
+                this.adapter = adapter
+            }
+            val body = LinearLayout(ctx).apply {
+                orientation = LinearLayout.VERTICAL
+                setPadding(ctx.dp(16), 0, ctx.dp(16), 0)
+                addView(search)
+                addView(list, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ctx.dp(380)))
+            }
+            val dialog = MaterialAlertDialogBuilder(ctx).setTitle(R.string.fm_l_checkout_countryPicker).setView(body).show()
+            search.addTextChangedListener(object : android.text.TextWatcher {
+                override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
+                override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {}
+                override fun afterTextChanged(s: android.text.Editable?) = adapter.filter.filter(s)
+            })
+            list.setOnItemClickListener { _, _, position, _ ->
+                field.setText(adapter.getItem(position))
+                dialog.dismiss()
+            }
         }
     }
 

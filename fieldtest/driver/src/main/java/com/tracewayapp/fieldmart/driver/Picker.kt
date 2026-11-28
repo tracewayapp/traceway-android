@@ -26,6 +26,10 @@ class Picker(
     private val t0: Long,
 ) {
     fun pick(id: String, field: BySelector, value: String, budgetMs: Long): String {
+        // The journey taps the field just before: give the picker it opens a moment to show (a Material date
+        // picker takes over a second on the emulator) before tapping the field again.
+        val shown = SystemClock.uptimeMillis() + minOf(1500L, budgetMs / 2)
+        while (!open() && SystemClock.uptimeMillis() < shown) SystemClock.sleep(100)
         if (!open()) {
             val o = device.findObject(field) ?: throw IllegalStateException("$id not on screen")
             val r = o.visibleBounds
@@ -50,8 +54,36 @@ class Picker(
 
     private fun key(s: String) = s.lowercase(Locale.ROOT)
 
-    /** Flings through the list towards [value], halving the throw after each overshoot; taps its row. */
+    /**
+     * A list picker: with a search field over the list (the country dialog), the first letters of [value] typed into it
+     * through the keyboard path, then its row tapped; without one, flung towards [value].
+     */
     private fun list(value: String): String {
+        val search = device.findObjects(By.clazz("android.widget.EditText")).firstOrNull { it.resourceName?.endsWith("_search") == true }
+        if (search != null) {
+            val b = search.visibleBounds
+            tap(null, b.exactCenterX(), b.exactCenterY())
+            SystemClock.sleep(150)
+            for (c in value.take(3)) {
+                input.type(c)
+                SystemClock.sleep(120)
+            }
+            val until = SystemClock.uptimeMillis() + 1500
+            while (SystemClock.uptimeMillis() < until) {
+                val row = device.findObject(By.text(value))?.takeIf { it.className != "android.widget.EditText" }
+                if (row != null) {
+                    val r = row.visibleBounds
+                    tap(null, r.exactCenterX(), r.exactCenterY())
+                    return "picked '$value' through the search field"
+                }
+                SystemClock.sleep(100)
+            }
+        }
+        return fling(value)
+    }
+
+    /** Flings through the list towards [value], halving the throw after each overshoot; taps its row. */
+    private fun fling(value: String): String {
         var strength = 0.9f
         var lastDir = 0
         var gestures = 0

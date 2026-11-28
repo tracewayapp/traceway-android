@@ -31,19 +31,20 @@ class Input(private val ui: UiAutomation) {
     fun swipe(x1: Float, y1: Float, x2: Float, y2: Float, durationMs: Long, stepMs: Long, holdMs: Long = 0, released: (() -> Boolean)? = null) {
         val down = SystemClock.uptimeMillis()
         touch(down, down, MotionEvent.ACTION_DOWN, x1, y1)
-        val steps = (durationMs / stepMs).coerceAtLeast(2)
-        for (i in 1..steps) {
-            val target = down + i * durationMs / steps
-            val wait = target - SystemClock.uptimeMillis()
-            if (wait > 0) SystemClock.sleep(wait)
-            val f = i.toFloat() / steps
-            touch(down, SystemClock.uptimeMillis(), MotionEvent.ACTION_MOVE, x1 + (x2 - x1) * f, y1 + (y2 - y1) * f)
+        // The finger follows the clock: each move goes where the finger is at that moment, without waiting for the
+        // app to take the one before (a busy screen would otherwise put the gesture behind its schedule).
+        while (true) {
+            SystemClock.sleep(stepMs)
+            val now = SystemClock.uptimeMillis()
+            val f = ((now - down).toFloat() / durationMs).coerceAtMost(1f)
+            touch(down, now, MotionEvent.ACTION_MOVE, x1 + (x2 - x1) * f, y1 + (y2 - y1) * f, sync = false)
+            if (f >= 1f) break
         }
         if (holdMs > 0) {
             val end = SystemClock.uptimeMillis() + holdMs
             while (SystemClock.uptimeMillis() < end) {
                 SystemClock.sleep(minOf(50L, end - SystemClock.uptimeMillis()).coerceAtLeast(1))
-                touch(down, SystemClock.uptimeMillis(), MotionEvent.ACTION_MOVE, x2, y2)
+                touch(down, SystemClock.uptimeMillis(), MotionEvent.ACTION_MOVE, x2, y2, sync = false)
             }
         }
         // A held drag: the finger stays down (still, as a person's would) until the journey's `release`.
@@ -51,7 +52,7 @@ class Input(private val ui: UiAutomation) {
             val limit = SystemClock.uptimeMillis() + 120_000
             while (!released() && SystemClock.uptimeMillis() < limit) {
                 SystemClock.sleep(50)
-                touch(down, SystemClock.uptimeMillis(), MotionEvent.ACTION_MOVE, x2, y2)
+                touch(down, SystemClock.uptimeMillis(), MotionEvent.ACTION_MOVE, x2, y2, sync = false)
             }
         }
         touch(down, SystemClock.uptimeMillis(), MotionEvent.ACTION_UP, x2, y2)
@@ -74,11 +75,11 @@ class Input(private val ui: UiAutomation) {
         ui.injectInputEvent(KeyEvent(now, SystemClock.uptimeMillis(), KeyEvent.ACTION_UP, code, 0, meta, KeyCharacterMap.VIRTUAL_KEYBOARD, 0, 0, InputDevice.SOURCE_KEYBOARD), true)
     }
 
-    private fun touch(down: Long, time: Long, action: Int, x: Float, y: Float) {
+    private fun touch(down: Long, time: Long, action: Int, x: Float, y: Float, sync: Boolean = true) {
         val e = MotionEvent.obtain(down, time, action, x, y, 0)
         e.source = InputDevice.SOURCE_TOUCHSCREEN
         try {
-            ui.injectInputEvent(e, true)
+            ui.injectInputEvent(e, sync)
         } finally {
             e.recycle()
         }

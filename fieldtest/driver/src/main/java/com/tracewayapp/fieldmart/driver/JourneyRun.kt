@@ -191,10 +191,11 @@ class JourneyRun(private val spec: RunSpec, private val scenario: Scenario, priv
             val due = t0 + step.t
             val wait = due - System.currentTimeMillis()
             if (wait > 0) SystemClock.sleep(wait)
-            // A `release` ends the held drag the gesture thread is in; anything else of input waits for it.
-            if (step.action == "release") released = true
+            // A `release` ends the held drag the gesture thread is in (on time: its lateness is when the finger is
+            // let go); anything else of input waits for the gesture before it.
+            val releasedAt = if (step.action == "release") System.currentTimeMillis().also { released = true } else null
             if (step.action in INPUT || step.action in PROCESS || step.action == "release") waitGesture()
-            val startAt = System.currentTimeMillis()
+            val startAt = releasedAt ?: System.currentTimeMillis()
             val late = startAt - due
             if (late > maxLate) maxLate = late
             var ok = true

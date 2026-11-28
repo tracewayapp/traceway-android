@@ -47,7 +47,7 @@ abstract class GenerateFmIds : DefaultTask() {
         for (n in listOf("form", "name", "email", "phone", "account", "password", "address", "city", "postcode",
             "country", "date", "door", "gift", "giftnote", "card", "expiry", "cvv", "cardname", "savecard", "tip",
             "promo", "terms", "terms_agree", "terms_text", "menu", "edit", "edit_done", "notes", "place", "success",
-            "loyalty", "order")) add("fm_checkout_$n")
+            "loyalty", "order", "country_search", "country_list")) add("fm_checkout_$n")
         range("fm_checkout_window_", 0, 2)
         range("fm_checkout_promo_option_", 0, 7)
         range("fm_checkout_menu_item_", 0, 3)
