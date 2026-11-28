@@ -442,13 +442,21 @@ class JourneyRun(private val spec: RunSpec, private val scenario: Scenario, priv
             val after = System.currentTimeMillis()
             shot = before to after
             if (bitmap != null) writer.execute {
-                rec.file("app/$name.png").outputStream().use { bitmap.compress(Bitmap.CompressFormat.PNG, 100, it) }
-                bitmap.recycle()
+                try {
+                    rec.file("app/$name.png").outputStream().use { bitmap.compress(Bitmap.CompressFormat.PNG, 100, it) }
+                } catch (e: Throwable) {
+                    rec.log("screenshot $name not written: $e")
+                } finally {
+                    bitmap.recycle()
+                }
             }
             val shows = s.shows
             val masked = s.masked
             val listId = s.list
             boxer.execute {
+            // Read while the app keeps changing: any element may go stale; a failure costs this checkpoint's boxes,
+            // never the run (an exception on this thread would end the instrumentation).
+            try {
             val readAt = System.currentTimeMillis()
             val result = buildJsonArray {
                 fun box(o: androidx.test.uiautomator.UiObject2?, extra: kotlinx.serialization.json.JsonObjectBuilder.() -> Unit) {
@@ -490,19 +498,9 @@ class JourneyRun(private val spec: RunSpec, private val scenario: Scenario, priv
                     rows.firstOrNull()?.let { r -> label(r)?.let { t -> box(r) { put("text", t); put("role", "first-row") } } }
                     rows.lastOrNull()?.takeIf { rows.size > 1 }?.let { r -> label(r)?.let { t -> box(r) { put("text", t); put("role", "last-row") } } }
                 }
-                val texts = if (shows.isEmpty()) emptyList() else try {
-                    device.findObjects(By.text(Pattern.compile("(?s).*\\S.*")))
-                } catch (_: Throwable) {
-                    emptyList()
-                }
+                // Where each text is drawn (its characters), as the replay's text box is compared with it (R-13).
                 for (text in shows) {
-                    val found = texts.filter { o -> (try { o.text } catch (_: Throwable) { null })?.contains(text) == true }
-                    for (o in found.take(5)) {
-                        val r = try {
-                            o.visibleBounds
-                        } catch (_: Throwable) {
-                            continue
-                        }
+                    for (r in finder.drawnText(text)) {
                         add(buildJsonObject {
                             put("text", text)
                             put("x", r.left / density); put("y", r.top / density)
@@ -513,12 +511,15 @@ class JourneyRun(private val spec: RunSpec, private val scenario: Scenario, priv
             }
             synchronized(boxes) { boxes[name] = result }
             boxesAt[name] = readAt
+            } catch (e: Throwable) {
+                rec.log("boxes of $name failed: $e")
+            }
             }
         }
         if (s.meminfo) {
             val n = ++meminfoCount
             val text = shell.run("dumpsys meminfo $pkg")
-            writer.execute { rec.write("meminfo-$n.txt", text) }
+            writer.execute { runCatching { rec.write("meminfo-$n.txt", text) } }
         }
         checkpoints += buildJsonObject {
             put("name", name)
