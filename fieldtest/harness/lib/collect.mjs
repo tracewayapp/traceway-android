@@ -174,7 +174,8 @@ export function collectRun(rawDir, shellDir, outDir, ctx = {}) {
     t0EpochMs: t0,
     endEpochMs: end,
     valid,
-    flags: [...flags],
+    // run.schema.json's flag words; the harness's own reasons (step-failed, driver-error, …) go to android.reasons.
+    flags: schemaFlags(flags, valid),
     sessionId: null,
     projectId: null,
     metrics,
@@ -184,6 +185,7 @@ export function collectRun(rawDir, shellDir, outDir, ctx = {}) {
     fixturesHash: ctx.fixturesHash || null,
     android: {
       package: meta.package,
+      reasons: [...flags].filter((f) => !RUN_FLAGS.has(f)),
       device: meta.device,
       maxLateMs: meta.maxLateMs,
       launches: (meta.launches || []).map(({ amStart, ...rest }) => rest),
@@ -194,6 +196,16 @@ export function collectRun(rawDir, shellDir, outDir, ctx = {}) {
   };
   writeFileSync(join(outDir, 'run.json'), JSON.stringify(run, null, 2));
   return run;
+}
+
+/** The flag words of run.schema.json. */
+export const RUN_FLAGS = new Set(['late', 'noisy', 'crashed', 'retry', 'budget-exhausted', 'capture-mode', 'warmup', 'invalid']);
+
+/** Schema flags only; `invalid` when the run is not valid and no schema flag says why (a step failed, …). */
+export function schemaFlags(flags, valid) {
+  const out = [...flags].filter((f) => RUN_FLAGS.has(f));
+  if (!valid && !out.some((f) => ['late', 'crashed', 'invalid'].includes(f))) out.push('invalid');
+  return out;
 }
 
 function copyIf(src, dst) {

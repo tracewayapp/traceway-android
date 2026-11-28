@@ -355,7 +355,8 @@ async function startup(o) {
     const valid = !!(res.ok && l?.totalTimeMs != null);
     writeFileSync(join(dst, 'run.json'), JSON.stringify({
       runId, campaign: ctx.campaign, platform: PLATFORM, target: ctx.target, scenario, variant: r.variant,
-      block: r.block, orderInBlock: r.orderInBlock, evidence: false, t0EpochMs: l?.amStartEpochMs ?? null, endEpochMs: null,
+      block: r.block, orderInBlock: r.orderInBlock, evidence: false, t0EpochMs: l?.amStartEpochMs ?? null,
+      endEpochMs: l?.readyEpochMs ?? (l?.amStartEpochMs != null && l?.totalTimeMs != null ? l.amStartEpochMs + l.totalTimeMs : null),
       valid, flags: ['capture-mode', ...(o.keep ? ['kept-state'] : []), ...(valid ? [] : ['invalid'])], sessionId: null, projectId: null,
       metrics, units: 'ms', build: ctx.build, journeyHash: ctx.journeyHash, fixturesHash: ctx.fixturesHash,
       android: { launch: l || null, clearedData: !o.keep },
