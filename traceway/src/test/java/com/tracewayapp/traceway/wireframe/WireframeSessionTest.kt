@@ -275,8 +275,7 @@ class WireframeSessionTest {
         session.tap(pay)
         val shown = dialog!!
         session.windows.add(shown.window!!)
-        session.track(s.activity)
-        session.touches.track(shown.window!!)
+        // The tracker finds the dialog's window itself, as in an app: nothing hands it over.
         session.checkpoint("dialog")
         session.tap(shown.getButton(AlertDialog.BUTTON_POSITIVE))
         assertFalse("Retry closed the dialog", shown.isShowing)
