@@ -23,6 +23,28 @@ dependencies {
     testImplementation("org.ow2.asm:asm-util:9.2")
 }
 
+// The TestKit builds (MinifiedBuildTest) apply the Android Gradle plugin next to this one: the version the repo
+// builds its apps with, from the classpath the runner injects.
+val agpForTests: Configuration by configurations.creating {
+    isCanBeConsumed = false
+    attributes {
+        attribute(Usage.USAGE_ATTRIBUTE, objects.named(Usage.JAVA_RUNTIME))
+        attribute(Category.CATEGORY_ATTRIBUTE, objects.named(Category.LIBRARY))
+        attribute(Bundling.BUNDLING_ATTRIBUTE, objects.named(Bundling.EXTERNAL))
+        attribute(LibraryElements.LIBRARY_ELEMENTS_ATTRIBUTE, objects.named(LibraryElements.JAR))
+        attribute(TargetJvmEnvironment.TARGET_JVM_ENVIRONMENT_ATTRIBUTE, objects.named(TargetJvmEnvironment.STANDARD_JVM))
+        attribute(TargetJvmVersion.TARGET_JVM_VERSION_ATTRIBUTE, 17)
+    }
+}
+
+dependencies {
+    agpForTests("com.android.tools.build:gradle:8.7.3")
+}
+
+tasks.named<org.gradle.plugin.devel.tasks.PluginUnderTestMetadata>("pluginUnderTestMetadata") {
+    pluginClasspath.from(agpForTests)
+}
+
 java {
     sourceCompatibility = JavaVersion.VERSION_17
     targetCompatibility = JavaVersion.VERSION_17

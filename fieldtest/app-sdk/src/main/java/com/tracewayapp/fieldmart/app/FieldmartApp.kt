@@ -54,7 +54,8 @@ object TracewayTelemetry : Telemetry {
             "stream-noimg" -> common.copy(screenCapture = true, recordAllSessions = true, collection = noImages)
             else -> common
         }
-        return s.fps?.let { variant.copy(fps = it) } ?: variant
+        val timed = s.sessionTimeoutMs?.let { variant.copy(sessionTimeoutMs = it) } ?: variant
+        return s.fps?.let { timed.copy(fps = it) } ?: timed
     }
 
     override fun interceptors(): List<Interceptor> = listOf(TracewayOkHttpInterceptor())

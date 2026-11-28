@@ -1,5 +1,6 @@
 package com.tracewayapp.traceway.wireframe
 
+import android.content.res.Configuration
 import android.util.SparseArray
 import android.view.View
 import androidx.compose.ui.graphics.isSpecified
@@ -177,11 +178,16 @@ internal class WireframeComposeCapture(private val c: WireframeCapture) {
         val text = config.getOrNull(SemanticsProperties.Text)
         val children = n.children
         val kind = when {
+            config.contains(SemanticsProperties.PaneTitle) -> PANE
             editable != null -> FIELD
             range != null -> if (config.contains(SemanticsActions.SetProgress)) SLIDER else PROGRESS
+            // Material 3's FilterChip and InputChip say they are checkboxes (Role.Checkbox, with Selected rather than
+            // a toggle state); a checkbox has no label of its own.
+            role == Role.Checkbox && toggle == null && selected != null && children.any { firstText(it, 0) != null } -> CHIP
             toggle != null || role == Role.Checkbox || role == Role.Switch || role == Role.RadioButton -> TOGGLE
             !text.isNullOrEmpty() -> TEXT
             role == Role.Image -> IMAGE
+            isScrim(n, children, role) -> SCRIM
             children.isEmpty() && config.contains(SemanticsProperties.ContentDescription) -> IMAGE
             role == Role.Button -> BUTTON
             role == Role.Tab && selected == true -> TAB
@@ -276,6 +282,26 @@ internal class WireframeComposeCapture(private val c: WireframeCapture) {
                 }
                 TAB -> sb.append("box-shadow:inset 0 -3px 0 0 ").appendColor(DEFAULT_PRIMARY).append(';')
                 SCROLL -> sb.append("overflow:hidden;")
+                CHIP -> {
+                    // 8 dp corners; selected: a tinted container, else an outline (Material 3's filter chip).
+                    if (selected == true) {
+                        sb.append("background-color:").appendColor(withAlpha(DEFAULT_PRIMARY, CHIP_SELECTED_ALPHA)).append(';')
+                    } else {
+                        sb.append("box-shadow:inset 0 0 0 1px ").appendColor(DEFAULT_OUTLINE).append(';')
+                    }
+                    sb.appendRadius(CHIP_RADIUS_DP)
+                }
+                PANE -> {
+                    // A sheet, a dialog, a drawer: an opaque surface that hides what is under it. Its colors are not in
+                    // the semantics; Material 3's surface container is the likeliest. A sheet at the bottom rounds its
+                    // top corners only.
+                    val night = view?.let { (it.resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK) == Configuration.UI_MODE_NIGHT_YES } == true
+                    sb.append("background-color:").appendColor(if (night) PANE_DARK else PANE_LIGHT).append(';')
+                    val rootHeight = view?.height ?: 0
+                    val atBottom = rootHeight > 0 && y + size.height >= rootHeight - c.density
+                    if (atBottom && y > 0f) sb.append("border-radius:28px 28px 0 0;") else sb.appendRadius(PANE_RADIUS_DP)
+                }
+                SCRIM -> sb.append("background-color:").appendColor(SCRIM_COLOR).append(';')
             }
             if (disabled && kind != TOGGLE && kind != TEXT) sb.append("opacity:0.38;")
             out.add(c.element(rec, 0, cls, kids))
@@ -312,6 +338,20 @@ internal class WireframeComposeCapture(private val c: WireframeCapture) {
             (labelTop + labelH / 2) - (top + n.size.height / 2f) > OUTLINED_LABEL_ROOM_DP / 4 * d
         }
         return if (outlined) FIELD_OUTLINED_LABELED else FIELD_FILLED
+    }
+
+    /**
+     * A modal's scrim: a node that only dismisses (a click, a label, no role,
+     * text or children) over the whole Compose view, beside a pane (Material
+     * 3's ModalBottomSheet draws it so). It dims what is under the pane; it
+     * is not a picture.
+     */
+    private fun isScrim(n: SemanticsNode, children: List<SemanticsNode>, role: Role?): Boolean {
+        if (children.isNotEmpty() || role != null || !n.config.contains(SemanticsActions.OnClick)) return false
+        if (!n.config.getOrNull(SemanticsProperties.Text).isNullOrEmpty()) return false
+        val v = view ?: return false
+        if (n.size.width < v.width * 0.9f || n.size.height < v.height * 0.8f) return false
+        return n.parent?.children?.any { it.config.contains(SemanticsProperties.PaneTitle) } == true
     }
 
     private fun firstText(n: SemanticsNode, depth: Int): SemanticsNode? {
@@ -594,6 +634,20 @@ internal class WireframeComposeCapture(private val c: WireframeCapture) {
         const val BUTTON = 7
         const val TAB = 8
         const val SCROLL = 9
+        const val CHIP = 10
+        const val PANE = 11
+        const val SCRIM = 12
+
+        const val CHIP_RADIUS_DP = 8f
+        const val CHIP_SELECTED_ALPHA = 0.16f
+        const val PANE_RADIUS_DP = 28f
+
+        /** Material 3's surfaceContainerLow, light and dark: a sheet's container. */
+        const val PANE_LIGHT = 0xFFF7F2FA.toInt()
+        const val PANE_DARK = 0xFF1D1B20.toInt()
+
+        /** Material 3's scrim: black at 32 %. */
+        const val SCRIM_COLOR = 0x52000000
 
         fun box(sb: StringBuilder, rl: Float, rt: Float, wd: Float, hd: Float) {
             sb.append("left:").appendPx(rl).append(";top:").appendPx(rt)

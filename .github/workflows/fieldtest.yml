@@ -52,6 +52,11 @@ on:
         required: false
         default: '1112970949'
         type: string
+      sdk_check:
+        description: 'Checks of the SDK fixes, comma separated: no-workarounds (build without the app workarounds for android-001/002), relaunch (60 s session timeout, the app opened again 75 s after Home: android-003/004)'
+        required: false
+        default: ''
+        type: string
 
 permissions:
   contents: read
@@ -72,7 +77,14 @@ jobs:
         with:
           node-version: 22
       - name: Build APKs and report sizes
-        run: node fieldtest/harness/fm.mjs build --ci --no-cleartext --out out/apks
+        env:
+          SDK_CHECK: ${{ inputs.sdk_check }}
+        run: |
+          # no-workarounds: the SDK build as a customer's would be, without the app's workarounds for android-001/002.
+          case ",$SDK_CHECK," in
+            *,no-workarounds,*) export FM_GRADLE_PROPS="-Pfm.workaround.symbolsTaskDependency=false -Pfm.workaround.otelResourceEntities=false" ;;
+          esac
+          node fieldtest/harness/fm.mjs build --ci --no-cleartext --out out/apks
       - uses: actions/upload-artifact@v4
         with:
           name: fieldtest-apks
@@ -98,11 +110,12 @@ jobs:
           EXTRA: ${{ inputs.extra }}
           WARMUP_VARIANTS: ${{ inputs.warmup_variants }}
           TOOLKIT: ${{ inputs.toolkit }}
+          SDK_CHECK: ${{ inputs.sdk_check }}
         run: |
           node -e '
             const e = process.env, list = (s) => (s || "").split(",").map((x) => x.trim()).filter(Boolean);
             const ok = (s) => /^[A-Za-z0-9,._-]*$/.test(s);
-            for (const k of ["SCENARIOS", "VARIANTS", "REPS", "EVIDENCE", "SEED", "TOOLKIT", "WARMUP_VARIANTS"]) if (!ok(e[k] || "")) throw new Error("bad input " + k);
+            for (const k of ["SCENARIOS", "VARIANTS", "REPS", "EVIDENCE", "SEED", "TOOLKIT", "WARMUP_VARIANTS", "SDK_CHECK"]) if (!ok(e[k] || "")) throw new Error("bad input " + k);
             if (!/^[A-Za-z0-9,:+._-]*$/.test(e.EXTRA || "")) throw new Error("bad input EXTRA");
             const tk = e.TOOLKIT && e.TOOLKIT !== "compose" ? ` --toolkit ${e.TOOLKIT}` : "";
             const plan = (s, v, reps, warm) => `--scenarios ${s} --variants ${v} --reps ${reps} --seed ${e.SEED} --warmup ${warm}${tk}`;
@@ -136,6 +149,10 @@ jobs:
       FM_TARGET: emulator-api34-google_apis-x86_64
       FM_CAMPAIGN: FT-20261128-1
       FM_KEEP_RAW: ${{ inputs.mode == 'smoke' && '1' || '0' }}
+      # relaunch: the run's session is over 60 s after its last activity, and the app opens again 75 s after Home, so
+      # the SDK ends it at that start (android-003/004).
+      FM_SESSION_TIMEOUT_MS: ${{ contains(format(',{0},', inputs.sdk_check), ',relaunch,') && '60000' || '' }}
+      FM_RELAUNCH_AFTER_MS: ${{ contains(format(',{0},', inputs.sdk_check), ',relaunch,') && '75000' || '' }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4

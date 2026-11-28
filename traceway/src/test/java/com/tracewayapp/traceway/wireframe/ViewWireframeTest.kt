@@ -29,6 +29,7 @@ import android.view.View
 import android.view.ViewGroup
 import android.view.ViewGroup.LayoutParams.MATCH_PARENT
 import android.view.ViewGroup.LayoutParams.WRAP_CONTENT
+import android.view.WindowManager
 import android.widget.CheckBox
 import android.widget.EditText
 import android.widget.FrameLayout
@@ -1239,6 +1240,42 @@ class ViewWireframeTest {
     fun theKeyboardIsDarkInDarkMode() {
         val (_, keyboard) = keyboardTest()
         assertTrue(style(keyboard), style(keyboard).contains("background-color:#2c2c2e;color:#8e8e93;"))
+    }
+
+    /** Where the keyboard and [text] come in the screen's drawing order (the later one is on top). */
+    private fun keyboardAndText(screen: VNode, text: String): Pair<Int, Int> {
+        val nodes = allNodes(screen).toList()
+        val keyboard = nodes.indexOfFirst { it.id == keyboardNodeId }
+        val other = nodes.indexOf(withText(screen, text))
+        assertTrue("keyboard at $keyboard, \"$text\" at $other", keyboard >= 0 && other >= 0)
+        return keyboard to other
+    }
+
+    @Test
+    fun aDialogThatTakesNoTypingIsOverTheKeyboard() {
+        val s = RealScreen.open { a -> column(a, EditText(a).apply { hint = "Name" }) }
+        val terms = AlertDialog.Builder(s.activity).setTitle("Terms and conditions").setMessage("1. These terms apply.")
+            .setPositiveButton("I agree", null).show()
+        s.idle()
+        // Android places the keyboard right over the window it types into; a dialog without a text field says it
+        // does not take the keyboard and stays over it.
+        assertTrue(terms.window!!.attributes.flags and WindowManager.LayoutParams.FLAG_ALT_FOCUSABLE_IM != 0)
+        showKeyboard(s, 300f)
+        val (keyboard, title) = keyboardAndText(s.screen(), "Terms and conditions")
+        assertTrue("the dialog is drawn over the keyboard, as on the device", keyboard < title)
+        terms.dismiss()
+    }
+
+    @Test
+    fun theKeyboardIsOverADialogThatTypes() {
+        val s = RealScreen.open { a -> column(a, EditText(a).apply { hint = "Name" }) }
+        val picker = AlertDialog.Builder(s.activity).setTitle("Choose country").setView(EditText(s.activity).apply { hint = "Search" }).show()
+        s.idle()
+        assertEquals(0, picker.window!!.attributes.flags and WindowManager.LayoutParams.FLAG_ALT_FOCUSABLE_IM)
+        showKeyboard(s, 300f)
+        val (keyboard, title) = keyboardAndText(s.screen(), "Choose country")
+        assertTrue("the keyboard types into the dialog and is over it", keyboard > title)
+        picker.dismiss()
     }
 
     @Test

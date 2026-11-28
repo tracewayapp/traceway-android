@@ -1,7 +1,9 @@
 package com.tracewayapp.traceway.interaction
 
+import android.annotation.SuppressLint
 import android.app.Activity
 import android.app.Application
+import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
@@ -15,12 +17,16 @@ import android.view.MotionEvent
 import android.view.SearchEvent
 import android.view.View
 import android.view.ViewConfiguration
+import android.view.ViewTreeObserver
 import android.view.Window
 import android.view.WindowManager
 import android.view.accessibility.AccessibilityEvent
+import android.widget.PopupWindow
 import androidx.annotation.RequiresApi
 import com.tracewayapp.traceway.guarded
+import com.tracewayapp.traceway.wireframe.WindowList
 import java.lang.ref.WeakReference
+import java.lang.reflect.Field
 import java.util.WeakHashMap
 import java.util.concurrent.CopyOnWriteArrayList
 
@@ -46,9 +52,16 @@ internal interface TapListener {
 /**
  * Observes the pointer events of the app's windows by wrapping their
  * [Window.Callback]: every activity's (through activity lifecycle
- * callbacks), and others such as dialogs through [track]. The wrapper
- * delegates every call unchanged and only looks at touch and hover events;
- * nothing here can throw into the app or change how it handles a touch.
+ * callbacks), and the others the app opens over them, which it finds in the
+ * process's window list ([WindowList]): dialogs, bottom sheets and Compose
+ * dialogs (their [Window] read from the root view), and, below Android 9,
+ * popups (menus, dropdowns), whose touch interceptor it wraps the same way
+ * ([FrameworkWindows]). It looks when it is installed, after each
+ * gesture, when a window loses the focus (to a dialog) and, at most every
+ * [DRAW_SCAN_MS], while a window draws (a dropdown that opens as the user
+ * types). [track] adds a window at once. The wrappers delegate every call
+ * unchanged and only look at touch and hover events; nothing here can throw
+ * into the app or change how it handles a touch.
  *
  * A window whose callback the app replaces later is wrapped again when its
  * activity starts or resumes. A window is never wrapped twice by the same
@@ -59,8 +72,25 @@ internal class TouchTracker {
     private val pointerListeners = CopyOnWriteArrayList<PointerListener>()
     private val tapListeners = CopyOnWriteArrayList<TapListener>()
     private val windows = WeakHashMap<Window, WindowState>()
+    private val popups = WeakHashMap<View, TracewayPopupInterceptor>()
+
+    /** Windows [untrack]ed: looking at the window list leaves them alone. Main thread. */
+    private val untracked = WeakHashMap<Window, Boolean>()
+    private val observed = WeakHashMap<View, ViewTreeObserver>()
     private var application: Application? = null
     private val mainHandler by lazy { Handler(Looper.getMainLooper()) }
+
+    /** Whether it looks for new windows: until [uninstall]. */
+    private var scanning = true
+    private var scanQueued = false
+    private val queuedScan = Runnable {
+        scanQueued = false
+        scanNow()
+    }
+    private val scanOnce = Runnable { scanNow() }
+
+    // In the app's draw pass: only notes that a look is due.
+    private val drawListener = ViewTreeObserver.OnDrawListener { requestScan(DRAW_SCAN_MS) }
 
     private val lifecycle = object : Application.ActivityLifecycleCallbacks {
         override fun onActivityCreated(activity: Activity, savedInstanceState: Bundle?) = trackActivity(activity)
@@ -97,28 +127,122 @@ internal class TouchTracker {
         onMain {
             if (this.application != null) return@onMain
             this.application = application
+            scanning = true
             application.registerActivityLifecycleCallbacks(lifecycle)
+            // Windows open already: Traceway started after the app's first screen.
+            scanNow()
         }
     }
 
-    /** Stops tracking: unregisters the lifecycle callbacks and unwraps every window it can. */
+    /** Stops tracking: unregisters the lifecycle callbacks and unwraps every window and popup it can. */
     fun uninstall() {
         onMain {
+            scanning = false
+            mainHandler.removeCallbacks(queuedScan)
+            mainHandler.removeCallbacks(scanOnce)
+            scanQueued = false
             application?.unregisterActivityLifecycleCallbacks(lifecycle)
             application = null
             val tracked = synchronized(windows) { windows.keys.toList() }
             for (window in tracked) untrackNow(window)
+            for ((root, interceptor) in popups.entries.toList()) {
+                interceptor.active = false
+                try {
+                    val popup = interceptor.popup.get() ?: continue
+                    if (FrameworkWindows.interceptorOf(popup)?.listener === interceptor) popup.setTouchInterceptor(interceptor.original)
+                } catch (_: Throwable) {
+                }
+                popups.remove(root)
+            }
+            for ((_, observer) in observed) {
+                try {
+                    if (observer.isAlive) observer.removeOnDrawListener(drawListener)
+                } catch (_: Throwable) {
+                }
+            }
+            observed.clear()
+        }
+    }
+
+    // ── Finding windows ──────────────────────────────────────────────────
+
+    /** A look at the window list in [delayMs], unless one is due already. Main thread. */
+    internal fun requestScan(delayMs: Long) {
+        if (!scanning || scanQueued) return
+        scanQueued = true
+        mainHandler.postDelayed(queuedScan, delayMs)
+    }
+
+    /** A gesture ended: what it opens (a dialog, a menu) is in the window list once its click ran. Main thread. */
+    internal fun afterGesture() {
+        if (!scanning) return
+        for (delay in SCANS_AFTER_GESTURE_MS) mainHandler.postDelayed(scanOnce, delay)
+    }
+
+    /** Tracks every window of the process it does not track yet. Main thread. */
+    private fun scanNow() {
+        if (!scanning) return
+        try {
+            val roots = ArrayList<View>()
+            if (!WindowList.copyInto(roots)) return
+            for (root in roots) trackRoot(root)
+        } catch (_: Throwable) {
+        }
+    }
+
+    private fun trackRoot(root: View) {
+        try {
+            val window = FrameworkWindows.windowOf(root)
+            if (window != null) {
+                if (untracked.containsKey(window)) return
+                trackNow(window)
+            } else {
+                val popup = FrameworkWindows.popupOf(root) ?: return
+                trackPopup(root, popup)
+            }
+            observe(root)
+        } catch (_: Throwable) {
+        }
+    }
+
+    /** Wraps [popup]'s touch interceptor, only when the one in place can be read (it is called on, never lost). */
+    private fun trackPopup(root: View, popup: PopupWindow) {
+        val current = FrameworkWindows.interceptorOf(popup) ?: return
+        val listener = current.listener
+        if (listener is TracewayPopupInterceptor && listener.tracker === this) {
+            listener.active = true
+            return
+        }
+        val interceptor = TracewayPopupInterceptor(listener, this, popup, root, WindowState())
+        popup.setTouchInterceptor(interceptor)
+        popups[root] = interceptor
+    }
+
+    /** Looks again while [root]'s window draws: a window may open with nothing else to say so. */
+    private fun observe(root: View) {
+        val observer = root.viewTreeObserver
+        if (observed[root] === observer) return
+        try {
+            observer.addOnDrawListener(drawListener)
+            observed[root] = observer
+        } catch (_: Throwable) {
         }
     }
 
     /** Tracks [window] (a dialog's, for example). Safe to call again; it never wraps twice. */
     fun track(window: Window) {
-        onMain { trackNow(window) }
+        onMain {
+            untracked.remove(window)
+            trackNow(window)
+        }
     }
 
     /** Stops tracking [window], restoring its callback when the wrapper is still on top. */
     fun untrack(window: Window) {
-        onMain { untrackNow(window) }
+        onMain {
+            untracked[window] = true
+            untrackNow(window)
+        }
     }
 
     private fun trackActivity(activity: Activity?) {
@@ -144,6 +268,7 @@ internal class TouchTracker {
                 state.wrappers.add(WeakReference(wrapper))
                 window.callback = wrapper
             }
+            window.peekDecorView()?.let { observe(it) }
         } catch (_: Throwable) {
         }
     }
@@ -170,7 +295,8 @@ internal class TouchTracker {
 
     // ── Events ───────────────────────────────────────────────────────────
 
-    internal fun onTouch(state: WindowState, window: Window?, event: MotionEvent) {
+    /** A touch event of the window whose root view is [root] (its coordinates are [root]'s). */
+    internal fun onTouch(state: WindowState, root: View?, event: MotionEvent) {
         try {
             val action = event.actionMasked
             if (action == MotionEvent.ACTION_DOWN) state.downs.clear()
@@ -178,7 +304,7 @@ internal class TouchTracker {
                 if (action == MotionEvent.ACTION_UP || action == MotionEvent.ACTION_CANCEL) state.downs.clear()
                 return
             }
-            val root = window?.peekDecorView() ?: return
+            root ?: return
             val density = density(root)
             // Event coordinates are the window's; the raw ones (of pointer 0) the screen's.
             val offsetX = event.rawX - event.x
@@ -243,13 +369,13 @@ internal class TouchTracker {
         }
     }
 
-    internal fun onGenericMotion(window: Window?, event: MotionEvent) {
+    internal fun onGenericMotion(root: View?, event: MotionEvent) {
         try {
             val action = event.actionMasked
             if (action != MotionEvent.ACTION_HOVER_ENTER && action != MotionEvent.ACTION_HOVER_MOVE) return
             if (event.pointerCount == 0 || !isMouse(event, 0)) return
             if (pointerListeners.isEmpty() && tapListeners.isEmpty()) return
-            val root = window?.peekDecorView() ?: return
+            root ?: return
             val density = density(root)
             val x = event.getX(0)
             val y = event.getY(0)
@@ -283,6 +409,126 @@ internal class TouchTracker {
 
         /** Flutter's mouse slop (`kPrecisePointerHitSlop * 4`): a mouse is precise. */
         const val MOUSE_SLOP_DP = 4f
+
+        /** At most one look at the window list this often while windows draw. */
+        const val DRAW_SCAN_MS = 200L
+
+        /** Looks after a gesture: once its click ran, and again for a window that opens a little later (a DialogFragment). */
+        val SCANS_AFTER_GESTURE_MS = longArrayOf(0L, 300L, 1000L)
+    }
+}
+
+/**
+ * The framework's links from a window's root view to what owns it, read by
+ * reflection as Square's Curtains does: a dialog's or an activity's
+ * `DecorView` holds its [Window]; a popup's `PopupDecorView` belongs to its
+ * [PopupWindow], whose touch interceptor sees every touch of the popup
+ * first. Each lookup that fails once is not tried again; those windows are
+ * then not tracked.
+ *
+ * Android 9 and later refuse the popup link to apps (`PopupDecorView.this$0`
+ * is a blocked non-SDK field: "blocked, reflection, denied" on Android 14),
+ * so there popups are not looked up at all, and their taps are not
+ * recorded: no denied access is logged, and StrictMode's non-SDK checks are
+ * not tripped. Dialogs and sheets are recorded everywhere.
+ */
+@SuppressLint("PrivateApi", "DiscouragedPrivateApi")
+internal object FrameworkWindows {
+    class Interceptor(val listener: View.OnTouchListener?)
+
+    private const val POPUP_DECOR = "android.widget.PopupWindow\$PopupDecorView"
+
+    @Volatile
+    private var decorWindow: Field? = null
+
+    @Volatile
+    private var decorFailed = false
+
+    @Volatile
+    private var popupFields: Pair<Field, Field>? = null
+
+    @Volatile
+    private var popupFailed = false
+
+    /** Whether popups are looked up: below Android 9 (see above). A test sets it to try the lookup. */
+    @Volatile
+    internal var popupsReadable = Build.VERSION.SDK_INT < 28
+
+    /** The window of a root view made by one (an activity's, a dialog's), or null. */
+    fun windowOf(root: View): Window? {
+        if (decorFailed) return null
+        return try {
+            val field = decorWindow ?: run {
+                val name = when {
+                    Build.VERSION.SDK_INT >= 24 -> "com.android.internal.policy.DecorView"
+                    Build.VERSION.SDK_INT == 23 -> "com.android.internal.policy.PhoneWindow\$DecorView"
+                    else -> "com.android.internal.policy.impl.PhoneWindow\$DecorView"
+                }
+                Class.forName(name).getDeclaredField(if (Build.VERSION.SDK_INT >= 24) "mWindow" else "this\$0")
+                    .apply { isAccessible = true }
+                    .also { decorWindow = it }
+            }
+            if (field.declaringClass.isInstance(root)) field.get(root) as? Window else null
+        } catch (_: Throwable) {
+            decorFailed = true
+            null
+        }
+    }
+
+    private fun popupFields(): Pair<Field, Field>? {
+        if (popupFailed || !popupsReadable) return null
+        popupFields?.let { return it }
+        return try {
+            val owner = Class.forName(POPUP_DECOR).getDeclaredField("this\$0").apply { isAccessible = true }
+            val interceptor = PopupWindow::class.java.getDeclaredField("mTouchInterceptor").apply { isAccessible = true }
+            (owner to interceptor).also { popupFields = it }
+        } catch (_: Throwable) {
+            popupFailed = true
+            null
+        }
+    }
+
+    /** The popup a popup's root view belongs to, or null. */
+    fun popupOf(root: View): PopupWindow? {
+        if (popupFailed || !popupsReadable || root.javaClass.name != POPUP_DECOR) return null
+        return try {
+            popupFields()?.first?.get(root) as? PopupWindow
+        } catch (_: Throwable) {
+            popupFailed = true
+            null
+        }
+    }
+
+    /** [popup]'s touch interceptor, or null when it cannot be read. */
+    fun interceptorOf(popup: PopupWindow): Interceptor? = try {
+        popupFields()?.let { Interceptor(it.second.get(popup) as? View.OnTouchListener) }
+    } catch (_: Throwable) {
+        popupFailed = true
+        null
+    }
+}
+
+/** A popup's touch interceptor: reports the popup's touches to [tracker], then calls on the [original] one. */
+internal class TracewayPopupInterceptor(
+    val original: View.OnTouchListener?,
+    val tracker: TouchTracker,
+    popup: PopupWindow,
+    root: View,
+    private val state: WindowState,
+) : View.OnTouchListener {
+    val popup = WeakReference(popup)
+    private val root = WeakReference(root)
+
+    @Volatile
+    var active = true
+
+    override fun onTouch(v: View?, event: MotionEvent?): Boolean {
+        if (event != null && active && !state.dispatching) {
+            val action = event.actionMasked
+            tracker.onTouch(state, root.get() ?: v, event)
+            if (action == MotionEvent.ACTION_UP || action == MotionEvent.ACTION_CANCEL) tracker.afterGesture()
+        }
+        return original?.onTouch(v, event) ?: false
     }
 }
 
@@ -332,18 +578,21 @@ internal class TracewayWindowCallback(
 
     override fun dispatchTouchEvent(event: MotionEvent?): Boolean {
         if (event == null || !active || state.dispatching) return delegate.dispatchTouchEvent(event)
-        tracker.onTouch(state, window.get(), event)
+        val action = event.actionMasked
+        tracker.onTouch(state, window.get()?.peekDecorView(), event)
         state.dispatching = true
         try {
             return delegate.dispatchTouchEvent(event)
         } finally {
             state.dispatching = false
+            // After the app handled it: a click it posted runs before the look this posts.
+            if (action == MotionEvent.ACTION_UP || action == MotionEvent.ACTION_CANCEL) tracker.afterGesture()
         }
     }
 
     override fun dispatchGenericMotionEvent(event: MotionEvent?): Boolean {
         if (event == null || !active || state.dispatching) return delegate.dispatchGenericMotionEvent(event)
-        tracker.onGenericMotion(window.get(), event)
+        tracker.onGenericMotion(window.get()?.peekDecorView(), event)
         state.dispatching = true
         try {
             return delegate.dispatchGenericMotionEvent(event)
@@ -377,7 +626,11 @@ internal class TracewayWindowCallback(
 
     override fun onContentChanged() = delegate.onContentChanged()
 
-    override fun onWindowFocusChanged(hasFocus: Boolean) = delegate.onWindowFocusChanged(hasFocus)
+    override fun onWindowFocusChanged(hasFocus: Boolean) {
+        delegate.onWindowFocusChanged(hasFocus)
+        // The focus went to another window, a dialog most likely.
+        if (!hasFocus && active) tracker.requestScan(0)
+    }
 
     override fun onAttachedToWindow() = delegate.onAttachedToWindow()
 

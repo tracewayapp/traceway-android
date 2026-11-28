@@ -97,6 +97,45 @@ class SessionManagerTest {
     }
 
     @Test
+    fun aKilledAppsExpiredSessionIsEndedAtItsLastActivityBeforeTheNextStarts() {
+        val dir = tmp.newFolder("state")
+        val first = StateStore(dir).apply { load() }
+        val a = manager(first).apply { start() }
+        val id = a.currentId!!
+        scheduler.nowMs += 40_000
+        a.markActivity()
+        val lastActivity = scheduler.nowMs
+        first.flush()
+        // Android kills the process in the background: no stop(), and no check() ever runs in it again.
+        scheduler.nowMs += SessionManager.DEFAULT_INACTIVITY_MS + 60_000
+        val second = StateStore(dir).apply { load() }
+        val b = manager(second).apply { start() }
+        val next = b.currentId!!
+        assertNotEquals(id, next)
+        assertEquals(listOf("start:$id", "end:$id@$lastActivity", "start:$next"), events)
+        b.stop()
+    }
+
+    @Test
+    fun leavingTheAppIsTheSessionsLastActivityAndStartsNone() {
+        val m = manager(StateStore(null)).apply { start() }
+        val first = m.currentId!!
+        scheduler.nowMs += 60_000
+        m.leave()
+        val left = scheduler.nowMs
+        scheduler.nowMs += SessionManager.DEFAULT_INACTIVITY_MS - 1
+        m.check()
+        assertEquals("still inside the window counted from leaving", first, m.currentId)
+        scheduler.nowMs += 1
+        m.check()
+        assertEquals("end:$first@$left", events.last())
+        // Leaving once the session is over ends it and starts none.
+        m.leave()
+        assertNull(m.currentId)
+        m.stop()
+    }
+
+    @Test
     fun thePeriodicCheckEndsAnIdleSessionThroughTheLock() {
         var lockedRuns = 0
         val m = manager(StateStore(null)) { block ->

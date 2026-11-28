@@ -115,6 +115,7 @@ class JourneyRun(private val spec: RunSpec, private val scenario: Scenario, priv
         shell.run("am force-stop $pkg")
         val stopped = System.currentTimeMillis()
         screen?.stop()
+        if (spec.relaunchAfterMs > 0 && pkg == RunSpec.SDK_PACKAGE) relaunchOnceOver(home)
         val quiet = waitLedgerQuiet()
         rec.write("app.log", shell.run("logcat -d -v epoch -b main,system,crash"))
         boxer.shutdown()
@@ -130,9 +131,38 @@ class JourneyRun(private val spec: RunSpec, private val scenario: Scenario, priv
         rec.close()
     }
 
+    /**
+     * The app opened again [RunSpec.relaunchAfterMs] after the standard ending's Home, once the run's session is over
+     * (a short `fmSessionTimeoutMs`): the SDK ends the session the killed run left at this start, with its counts and
+     * memory peak (findings android-003/004), and sends it into this run's ledger. The relaunch has its own run id
+     * (`<run>-relaunch`), so its session is not this run's. Home, 5 s, force-stop again.
+     */
+    private fun relaunchOnceOver(home: Long) {
+        val wait = home + spec.relaunchAfterMs - System.currentTimeMillis()
+        if (wait > 0) SystemClock.sleep(wait)
+        configure("${spec.run}-relaunch")
+        val before = System.currentTimeMillis()
+        shell.run("am start -W -n $pkg/${RunSpec.MAIN}")
+        val ready = waitReady(before)
+        marks += buildJsonObject {
+            put("name", "relaunch")
+            put("epochMs", before)
+            put("afterHomeMs", before - home)
+            put("run", "${spec.run}-relaunch")
+            ready?.let { put("readyEpochMs", it) }
+        }
+        rec.log("relaunch ${before - home} ms after Home, FM_READY=${ready?.let { it - before }} ms after am start")
+        // The SDK starts, ends the earlier session and exports it; then the app leaves as at the standard ending.
+        SystemClock.sleep(10_000)
+        input.key(KeyEvent.KEYCODE_HOME)
+        SystemClock.sleep(5000)
+        shell.run("am force-stop $pkg")
+        marks += buildJsonObject { put("name", "relaunch-stopped"); put("epochMs", System.currentTimeMillis()) }
+    }
+
     /** Stores the launch settings through ConfigActivity (its own process), then stops the app. */
-    private fun configure() {
-        val extras = spec.launchExtras(scenario.launchSettings).entries.joinToString(" ") { (k, v) -> "--es $k $v" }
+    private fun configure(runId: String = spec.run) {
+        val extras = spec.launchExtras(scenario.launchSettings, runId).entries.joinToString(" ") { (k, v) -> "--es $k $v" }
         val out = shell.run("am start -W -n $pkg/${RunSpec.CONFIG} $extras")
         rec.log("config: ${out.lines().filter { it.startsWith("Status") || it.contains("Error") }.joinToString("; ")}")
         val deadline = SystemClock.uptimeMillis() + 8000

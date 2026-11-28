@@ -212,6 +212,15 @@ data class TracewayOptions @JvmOverloads constructor(
      * own.
      */
     val allProcesses: Boolean = false,
+
+    /**
+     * How long without user activity ends a session: 15 minutes by default,
+     * at least a second. A session also ends after an hour in all. The next
+     * activity starts a new one; an app opened again after this long starts
+     * a new one too, after it ended the one it left (`session.end` at its
+     * last activity, with its counts).
+     */
+    val sessionTimeoutMs: Long = DEFAULT_SESSION_TIMEOUT_MS,
 ) {
     /** These options as a [Builder], to change some of them (from Java, where [copy] takes every parameter). */
     fun toBuilder(): Builder = Builder(this)
@@ -290,6 +299,8 @@ data class TracewayOptions @JvmOverloads constructor(
         fun reportHangsInDebug(reportHangsInDebug: Boolean?): Builder =
             set { copy(reportHangsInDebug = reportHangsInDebug ?: defaults.reportHangsInDebug) }
         fun allProcesses(allProcesses: Boolean?): Builder = set { copy(allProcesses = allProcesses ?: defaults.allProcesses) }
+        fun sessionTimeoutMs(sessionTimeoutMs: Long?): Builder =
+            set { copy(sessionTimeoutMs = sessionTimeoutMs ?: defaults.sessionTimeoutMs) }
 
         fun build(): TracewayOptions = options
     }
@@ -297,6 +308,9 @@ data class TracewayOptions @JvmOverloads constructor(
     companion object {
         /** Traceway Cloud, the default [baseUrl]. */
         const val DEFAULT_BASE_URL = "https://cloud.tracewayapp.com"
+
+        /** 15 minutes, the default [sessionTimeoutMs], as in the other Traceway SDKs. */
+        const val DEFAULT_SESSION_TIMEOUT_MS = 15L * 60 * 1000
 
         /** A [Builder] of the default options, for Java. */
         @JvmStatic

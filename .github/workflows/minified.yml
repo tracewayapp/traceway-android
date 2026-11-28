@@ -1,0 +1,95 @@
+name: Minified app (R8)
+
+# A release build minified with R8 and the rules of Android Studio's template, with the SDK and the symbols plugin,
+# as customers ship it. The symbols plugin must not break the build (finding android-001), and what OpenTelemetry
+# reads by reflection must survive R8, or a minified app sends no logs, spans or metrics (android-002).
+# `dex` builds the example and the check app (minified-app/) and checks their dex; `export` runs the check app on an
+# emulator against a stand-in collector and waits for its logs, spans and metrics.
+on:
+  push:
+    branches: [main, v2]
+  pull_request:
+    branches: [main, v2]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  dex:
+    name: Build minified apps and check their dex
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+      - uses: gradle/actions/setup-gradle@v3
+
+      - name: Build the example and the check app, minified
+        run: ./gradlew :example:assembleRelease :minified-app:assembleRelease --stacktrace
+
+      - name: OpenTelemetry's reflected members survive R8
+        run: |
+          python3 scripts/ci/check_minified_otel.py --apk minified-app/build/outputs/apk/release/minified-app-release.apk \
+            --mapping minified-app/build/outputs/mapping/release/mapping.txt
+          python3 scripts/ci/check_minified_otel.py --apk example/build/outputs/apk/release/example-release-unsigned.apk \
+            --mapping example/build/outputs/mapping/release/mapping.txt
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: minified-apps
+          path: |
+            minified-app/build/outputs/apk/release/
+            minified-app/build/outputs/mapping/release/mapping.txt
+            example/build/outputs/mapping/release/mapping.txt
+          retention-days: 7
+          if-no-files-found: ignore
+
+  export:
+    name: The minified app exports on an emulator
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+      - uses: gradle/actions/setup-gradle@v3
+
+      - name: Build the check app, minified
+        run: ./gradlew :minified-app:assembleRelease --stacktrace
+
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      - name: Stand-in collector
+        run: |
+          mkdir -p out
+          nohup python3 scripts/ci/otlp_collector.py serve --port 18199 --ledger out/collector.jsonl > out/collector.log 2>&1 &
+          for i in $(seq 1 20); do curl -fsS http://127.0.0.1:18199/health && break; sleep 1; done
+
+      - name: Run it on an emulator until logs, spans and metrics arrive
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 34
+          arch: x86_64
+          target: google_apis
+          disable-animations: true
+          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
+          script: bash scripts/ci/minified-export.sh minified-app/build/outputs/apk/release/minified-app-release.apk out
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: minified-export
+          path: out
+          retention-days: 7
+          if-no-files-found: warn

@@ -291,6 +291,13 @@ internal class ReplayController(
         if (now) action()
     }
 
+    /**
+     * Runs [action] once no clip is being assembled: at once when none is,
+     * else on the thread that finishes the last one. The budget has counted
+     * every clip cut before this call by then.
+     */
+    fun whenEncoded(action: () -> Unit) = whenIdle(action)
+
     /** The session ended: a streaming one uploads its last segment under the session it belongs to. */
     fun onSessionEnd(endedSessionId: String) {
         cutSegment(session = endedSessionId)

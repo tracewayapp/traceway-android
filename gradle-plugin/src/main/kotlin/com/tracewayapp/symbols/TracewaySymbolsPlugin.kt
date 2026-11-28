@@ -108,6 +108,11 @@ class TracewaySymbolsPlugin : Plugin<Project> {
         }
     }
 
+    private companion object {
+        /** AGP's task that writes the files `getDefaultProguardFile(...)` names. */
+        const val EXTRACT_PROGUARD_FILES = "extractProguardFiles"
+    }
+
     /** The variants warned of an SDK too old for the rewrite, so the warning comes once per variant. */
     private val warned = Collections.synchronizedSet(HashSet<String>())
 
@@ -153,6 +158,9 @@ class TracewaySymbolsPlugin : Plugin<Project> {
     private fun registerStripMirror(project: Project, variant: Variant, cap: String, rules: List<File>) {
         val mirror = project.tasks.register("generate${cap}TracewayLogcatRules", MirrorLogStripRulesTask::class.java) { t ->
             t.rules.from(rules)
+            // getDefaultProguardFile(...), the rules of Android Studio's template, is a file AGP's extractProguardFiles
+            // writes: read after it, or Gradle refuses the build (it reads another task's output without a dependency).
+            t.dependsOn(project.provider { listOfNotNull(project.tasks.findByName(EXTRACT_PROGUARD_FILES)) })
             t.output.set(project.layout.buildDirectory.file("intermediates/traceway/${variant.name}/traceway-logcat-rules.pro"))
         }
         variant.proguardFiles.add(mirror.flatMap { it.output })

@@ -111,6 +111,7 @@ class TracewayClientTest {
         connectionString: String? = CONNECTION,
         exitSource: ExitSource? = null,
         pid: Int? = null,
+        scheduler: ManualScheduler = this.scheduler,
     ): TracewayClient = TracewayClient.initializeForTest(
         connectionString,
         options,
@@ -899,6 +900,66 @@ class TracewayClientTest {
         assertTrue(sent.map { it.body }.toString(), sent.any { it.body == "before the restart" })
         assertTrue(sent.any { it.eventName == "exception" })
         assertTrue(sent.any { it.eventName == "traceway.session.update" })
+    }
+
+    /** The replay events of [sessionId] the server received, as the budget counts them. */
+    private fun uploadedEvents(sessionId: String?): Long = http.to(RECORDINGS_URL).sumOf { request ->
+        @Suppress("UNCHECKED_CAST")
+        val segments = (Json.parse(String(gunzip(request.body))) as Map<String, Any?>)["segments"] as List<Map<String, Any?>>
+        segments.filter { it["sessionId"] == sessionId }.sumOf { (it["events"] as List<*>).size.toLong() }
+    }
+
+    @Test
+    fun goingToTheBackgroundSendsWhatTheSessionUsedSoFar() {
+        val client = start(TracewayOptions(screenCapture = true, recordAllSessions = true))
+        client.setReplaySource(FakeReplaySource())
+        scheduler.advance(25_000)
+        client.simulateLifecycle(foreground = false)
+        client.flush(2000)
+        val session = client.currentSessionId
+        val update = named("traceway.session.update").lastOrNull { it.attr("session.id") == session }
+        assertNotNull("the background reports the session's counts: an app that is not opened again sends nothing more", update)
+        val uploaded = uploadedEvents(session)
+        assertTrue("replay was uploaded: $uploaded events", uploaded > 0)
+        assertEquals("every event uploaded, the last segment's too", uploaded, update!!.attr("traceway.collection.events"))
+        assertNotNull(update.attr("traceway.collection.bytes"))
+        assertNotNull(update.attr("traceway.replay.image_bytes"))
+    }
+
+    @Test
+    fun aKilledAppsSessionIsEndedAtTheNextLaunchWithWhatItUsed() {
+        val dir = tmp.newFolder("state")
+        val options = TracewayOptions(screenCapture = true, recordAllSessions = true, attributes = mapOf("user.id" to "ada"))
+        val first = start(options, stateDir = dir)
+        first.setReplaySource(FakeReplaySource())
+        val session = first.currentSessionId!!
+        scheduler.advance(25_000)
+        first.markActivity()
+        scheduler.advance(3_000)
+        // The user leaves the app: the session's last activity.
+        val left = scheduler.now()
+        first.simulateLifecycle(foreground = false)
+        scheduler.advance(5_000)
+        val uploaded = uploadedEvents(session)
+        assertTrue(uploaded > 0)
+        // Android kills the process in the background: no shutdown, and nothing runs in it any more.
+        TracewayClient.killForTest()
+
+        val later = ManualScheduler(nowMs = scheduler.now() + 16 * 60_000)
+        val second = start(options.copy(attributes = mapOf("user.id" to "grace")), stateDir = dir, scheduler = later)
+        second.flush(2000)
+        val next = second.currentSessionId
+        assertTrue(next != session)
+        val end = named("session.end").singleOrNull { it.attr("session.id") == session }
+        assertNotNull("the earlier run's session is ended by the SDK at the next launch", end)
+        assertEquals("when the user left the app, its last activity", left, end!!.timestampEpochNanos / 1_000_000)
+        assertEquals("with what it used", uploaded, end.attr("traceway.collection.events"))
+        assertNotNull(end.attr("traceway.replay.image_bytes"))
+        // The server takes a session's attributes from its latest record: the end keeps the session's own.
+        assertEquals("ada", end.attr("user.id"))
+        assertEquals("grace", named("session.start").single { it.attr("session.id") == next }.attr("user.id"))
+        val order = exported().map { it.eventName to it.attr("session.id") }
+        assertTrue("before its successor starts: $order", order.indexOf("session.end" to session) < order.indexOf("session.start" to next))
     }
 
     @Test
