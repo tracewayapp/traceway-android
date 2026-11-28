@@ -3058,6 +3058,12 @@ class TracewayClient private constructor(
             return client
         }
 
+        /** Forgets the running client as when Android kills the app's process: nothing is flushed, ended or stopped. */
+        @VisibleForTesting
+        internal fun killForTest() {
+            synchronized(this) { current = null }
+        }
+
         @VisibleForTesting
         internal fun resetForTest() {
             val existing = synchronized(this) { current.also { current = null } }

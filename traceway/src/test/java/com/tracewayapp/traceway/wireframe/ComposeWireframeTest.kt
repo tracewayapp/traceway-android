@@ -21,6 +21,10 @@ import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.rememberModalBottomSheetState
+import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.FilterChip
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
@@ -59,6 +63,7 @@ import androidx.compose.foundation.clickable
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -346,5 +351,62 @@ class ComposeWireframeTest {
         val inPopup = shareX >= popup.x / s.density && shareX < (popup.x + popup.view.width) / s.density &&
             shareY >= popup.y / s.density && shareY < (popup.y + popup.view.height) / s.density
         assertTrue("Share at $shareX,$shareY; popup at ${popup.x},${popup.y} ${popup.view.width}x${popup.view.height}", inPopup)
+    }
+
+    /** The element drawn for [text]'s Compose node and the ones around it, nearest first. */
+    private fun around(screen: VNode, text: String): List<VNode> {
+        val node = withText(screen, text)
+        assertNotNull("\"$text\" on the screen: ${allText(screen)}", node)
+        return listOf(node!!) + ancestors(screen, node)
+    }
+
+    @OptIn(ExperimentalMaterial3Api::class)
+    @Test
+    fun filterChipsAreChipsWithTheirLabelNotCheckboxes() {
+        val s = compose {
+            Row {
+                FilterChip(selected = true, onClick = {}, label = { Text("1H") })
+                FilterChip(selected = false, onClick = {}, label = { Text("1D") })
+            }
+        }
+        val screen = s.screen()
+        // A FilterChip says it is a checkbox (Role.Checkbox, with Selected): it is not drawn as one.
+        val all = styles(screen)
+        assertFalse(all.joinToString("\n"), all.any { it.contains("width:18px;height:18px;border-radius:2px;") })
+        val on = around(screen, "1H").firstOrNull { style(it).contains("border-radius:8px;") }
+        assertNotNull("the selected chip is a rounded box around its label", on)
+        assertTrue(style(on!!), style(on).contains("background-color:"))
+        val off = around(screen, "1D").firstOrNull { style(it).contains("border-radius:8px;") }
+        assertNotNull("the other chip too", off)
+        assertTrue("an outline, no fill: ${style(off!!)}", style(off).contains("box-shadow:inset 0 0 0 1px ") && !style(off).contains("background-color:"))
+    }
+
+    @OptIn(ExperimentalMaterial3Api::class)
+    @Test
+    fun aModalBottomSheetHidesWhatIsBehindItAndItsScrimDims() {
+        val s = compose {
+            Box(Modifier.fillMaxSize()) {
+                Column { repeat(12) { Text("Watchlist row $it", Modifier.height(40.dp)) } }
+                ModalBottomSheet(onDismissRequest = {}, sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)) {
+                    Text("Order book", Modifier.padding(16.dp))
+                    repeat(6) { Text("Bid $it", Modifier.height(40.dp)) }
+                }
+            }
+        }
+        // The sheet slides in.
+        repeat(40) { s.idle() }
+        val screen = s.screen()
+        assertTrue("the sheet is its own window", s.windows().size >= 2)
+        val surface = around(screen, "Order book").firstOrNull { style(it).contains("background-color:") }
+        assertNotNull("the sheet has a surface that hides the screen under it: ${around(screen, "Order book").map(::style)}", surface)
+        val classes = allNodes(screen).mapNotNull { n -> n.attributes["class"]?.split(' ')?.let { n to it } }.toList()
+        assertFalse(
+            "the scrim is not a picture: ${classes.filter { "im" in it.second }.map { style(it.first) }}",
+            classes.any { (n, c) -> "im" in c && style(n).contains("width:400px;") },
+        )
+        assertTrue(
+            "the scrim dims the screen: ${styles(screen).filter { it.contains("rgba(0,0,0,") }}",
+            styles(screen).any { it.contains("width:400px;") && it.contains("background-color:rgba(0,0,0,") },
+        )
     }
 }
