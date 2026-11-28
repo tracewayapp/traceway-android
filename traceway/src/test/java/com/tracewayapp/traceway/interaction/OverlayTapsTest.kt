@@ -1,5 +1,6 @@
 package com.tracewayapp.traceway.interaction
 
+import android.os.Build
 import android.os.Looper
 import android.os.SystemClock
 import android.view.InputDevice
@@ -51,6 +52,7 @@ class OverlayTapsTest {
     fun tearDown() {
         tracker.uninstall()
         idle()
+        FrameworkWindows.popupsReadable = Build.VERSION.SDK_INT < 28
     }
 
     private fun open(content: (TestActivity) -> View): RealScreen {
@@ -137,8 +139,8 @@ class OverlayTapsTest {
         assertTrue("the tap reached the sheet's button", done)
     }
 
-    @Test
-    fun aTapInAPopupMenuIsSeen() {
+    /** A ListPopupWindow menu opened by a tap; [onTap] taps its second row. */
+    private fun popupMenu(onTap: (row: View, more: Button, picked: () -> Int) -> Unit) {
         var popup: ListPopupWindow? = null
         var picked = -1
         lateinit var more: Button
@@ -158,13 +160,35 @@ class OverlayTapsTest {
             FrameLayout(a).apply { addView(more, FrameLayout.LayoutParams(400, 120)) }
         }
         tap(more)
-        val row = popup!!.listView!!.getChildAt(1)
-        val root = row.rootView
-        assertTrue("the popup is a window of its own", root !== more.rootView)
-        assertEquals(1, taps.size)
-        tap(row)
-        assertEquals("the tap reached the popup's row", 1, picked)
-        assertEquals("the tap in the popup is seen too", 2, taps.size)
-        assertSame(root, taps[1])
+        onTap(popup!!.listView!!.getChildAt(1), more) { picked }
+    }
+
+    /** Below Android 9 the popup's window can be read: its taps are seen too. */
+    @Test
+    fun aTapInAPopupMenuIsSeen() {
+        FrameworkWindows.popupsReadable = true
+        popupMenu { row, more, picked ->
+            val root = row.rootView
+            assertTrue("the popup is a window of its own", root !== more.rootView)
+            assertEquals(1, taps.size)
+            tap(row)
+            assertEquals("the tap reached the popup's row", 1, picked())
+            assertEquals("the tap in the popup is seen too", 2, taps.size)
+            assertSame(root, taps[1])
+        }
+    }
+
+    /**
+     * From Android 9 a popup's window cannot be read (a blocked framework
+     * field): the popup is left exactly as it is, and works.
+     */
+    @Test
+    fun fromAndroid9APopupIsLeftAsItIs() {
+        FrameworkWindows.popupsReadable = false
+        popupMenu { row, _, picked ->
+            tap(row)
+            assertEquals("the popup's row still gets its tap", 1, picked())
+            assertEquals("only the tap that opened it", 1, taps.size)
+        }
     }
 }

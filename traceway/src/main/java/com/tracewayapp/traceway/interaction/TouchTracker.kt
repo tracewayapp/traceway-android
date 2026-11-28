@@ -54,9 +54,9 @@ internal interface TapListener {
  * [Window.Callback]: every activity's (through activity lifecycle
  * callbacks), and the others the app opens over them, which it finds in the
  * process's window list ([WindowList]): dialogs, bottom sheets and Compose
- * dialogs (their [Window] read from the root view), and popups (menus,
- * dropdowns), whose touch interceptor it wraps the same way where Android
- * lets it read the one in place. It looks when it is installed, after each
+ * dialogs (their [Window] read from the root view), and, below Android 9,
+ * popups (menus, dropdowns), whose touch interceptor it wraps the same way
+ * ([FrameworkWindows]). It looks when it is installed, after each
  * gesture, when a window loses the focus (to a dialog) and, at most every
  * [DRAW_SCAN_MS], while a window draws (a dropdown that opens as the user
  * types). [track] adds a window at once. The wrappers delegate every call
@@ -423,8 +423,14 @@ internal class TouchTracker {
  * reflection as Square's Curtains does: a dialog's or an activity's
  * `DecorView` holds its [Window]; a popup's `PopupDecorView` belongs to its
  * [PopupWindow], whose touch interceptor sees every touch of the popup
- * first. Each lookup that fails once (a field Android does not let the app
- * read) is not tried again; those windows are then not tracked.
+ * first. Each lookup that fails once is not tried again; those windows are
+ * then not tracked.
+ *
+ * Android 9 and later refuse the popup link to apps (`PopupDecorView.this$0`
+ * is a blocked non-SDK field: "blocked, reflection, denied" on Android 14),
+ * so there popups are not looked up at all, and their taps are not
+ * recorded: no denied access is logged, and StrictMode's non-SDK checks are
+ * not tripped. Dialogs and sheets are recorded everywhere.
  */
 @SuppressLint("PrivateApi", "DiscouragedPrivateApi")
 internal object FrameworkWindows {
@@ -443,6 +449,10 @@ internal object FrameworkWindows {
 
     @Volatile
     private var popupFailed = false
+
+    /** Whether popups are looked up: below Android 9 (see above). A test sets it to try the lookup. */
+    @Volatile
+    internal var popupsReadable = Build.VERSION.SDK_INT < 28
 
     /** The window of a root view made by one (an activity's, a dialog's), or null. */
     fun windowOf(root: View): Window? {
@@ -466,7 +476,7 @@ internal object FrameworkWindows {
     }
 
     private fun popupFields(): Pair<Field, Field>? {
-        if (popupFailed) return null
+        if (popupFailed || !popupsReadable) return null
         popupFields?.let { return it }
         return try {
             val owner = Class.forName(POPUP_DECOR).getDeclaredField("this\$0").apply { isAccessible = true }
@@ -480,7 +490,7 @@ internal object FrameworkWindows {
 
     /** The popup a popup's root view belongs to, or null. */
     fun popupOf(root: View): PopupWindow? {
-        if (popupFailed || root.javaClass.name != POPUP_DECOR) return null
+        if (popupFailed || !popupsReadable || root.javaClass.name != POPUP_DECOR) return null
         return try {
             popupFields()?.first?.get(root) as? PopupWindow
         } catch (_: Throwable) {

@@ -133,7 +133,7 @@ A group that is scrolled (`scrollX`/`scrollY` not 0), a `ScrollView` or `Horizon
 
 ## Pointers
 
-The `TouchTracker` wraps every activity window's `Window.Callback` and hands pointer events to the recorder in dp from the screen's top-left. The recorder keeps them as `WireframePointer` entries (at most 4000; moves thinned to one per pointer per 50 ms) and turns them into rrweb events on node 8:
+The `TouchTracker` wraps the `Window.Callback` of every activity window and of the windows the app opens over them, which it finds in the window list after each gesture, when a window loses the focus and while windows draw: dialogs, bottom sheets and Compose dialogs (their `Window` read from the `DecorView`). Below Android 9 it wraps popups' touch interceptor too; from Android 9 the framework refuses apps the link from a popup's view to its `PopupWindow` (`PopupDecorView.this$0` is a blocked non-SDK field), so taps in popups and dropdowns (`PopupWindow`, `ListPopupWindow`, `AutoCompleteTextView`, `Spinner` menus) are not recorded there; the popups themselves are drawn. It hands pointer events to the recorder in dp from the screen's top-left. The recorder keeps them as `WireframePointer` entries (at most 4000; moves thinned to one per pointer per 50 ms) and turns them into rrweb events on node 8:
 
 | Pointer | Touch | Mouse |
 |---------|-------|-------|
