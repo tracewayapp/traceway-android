@@ -32,6 +32,11 @@ on:
         required: false
         default: ''
         type: string
+      extra:
+        description: 'Extra variants for some scenarios (plan), e.g. stream-noimg:S1+S2'
+        required: false
+        default: ''
+        type: string
       toolkit:
         description: 'fmToolkit (feed implementation): compose or views'
         required: false
@@ -85,18 +90,22 @@ jobs:
           REPS: ${{ inputs.repetitions }}
           EVIDENCE: ${{ inputs.evidence }}
           SEED: ${{ inputs.seed }}
+          EXTRA: ${{ inputs.extra }}
           TOOLKIT: ${{ inputs.toolkit }}
         run: |
           node -e '
             const e = process.env, list = (s) => (s || "").split(",").map((x) => x.trim()).filter(Boolean);
             const ok = (s) => /^[A-Za-z0-9,._-]*$/.test(s);
             for (const k of ["SCENARIOS", "VARIANTS", "REPS", "EVIDENCE", "SEED", "TOOLKIT"]) if (!ok(e[k] || "")) throw new Error("bad input " + k);
+            if (!/^[A-Za-z0-9,:+._-]*$/.test(e.EXTRA || "")) throw new Error("bad input EXTRA");
             const tk = e.TOOLKIT && e.TOOLKIT !== "compose" ? ` --toolkit ${e.TOOLKIT}` : "";
             const plan = (s, v, reps, warm) => `--scenarios ${s} --variants ${v} --reps ${reps} --seed ${e.SEED} --warmup ${warm}${tk}`;
             let jobs = [];
             if (e.MODE === "s0") jobs = [{ name: "S0", plan: plan("S0", "off,core", 1, 0), evidence: "", startup: "" }];
             if (e.MODE === "smoke") jobs = [{ name: "smoke", plan: plan("S1", "off,off2", 1, 0), evidence: "S6:stream-img", startup: "" }];
-            if (e.MODE === "plan") jobs = list(e.SCENARIOS).map((s) => ({ name: s, plan: plan(s, e.VARIANTS, e.REPS, 1), evidence: list(e.EVIDENCE).map((v) => `${s}:${v}`).join(","), startup: "" }));
+            // One job per scenario; each draws the order of the whole plan from the seed and keeps its own runs.
+            const whole = ` --plan-scenarios ${list(e.SCENARIOS).join(",")}` + (e.EXTRA ? ` --extra ${e.EXTRA}` : "");
+            if (e.MODE === "plan") jobs = list(e.SCENARIOS).map((s) => ({ name: s, plan: plan(s, e.VARIANTS, e.REPS, 1) + whole, evidence: list(e.EVIDENCE).map((v) => `${s}:${v}`).join(","), startup: "" }));
             if (e.MODE === "evidence") jobs = list(e.SCENARIOS).map((s) => ({ name: `${s}-evidence`, plan: "", evidence: list(e.EVIDENCE || "stream-img").map((v) => `${s}:${v}`).join(","), startup: "" }));
             if (e.MODE === "startup") jobs = [{ name: "startup", plan: "", evidence: "", startup: e.VARIANTS, repeat: e.REPS }];
             require("fs").appendFileSync(e.GITHUB_OUTPUT, "jobs=" + JSON.stringify(jobs) + "\n");

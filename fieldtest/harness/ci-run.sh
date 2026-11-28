@@ -26,6 +26,7 @@ for e in ${FM_EVIDENCE_RUNS//,/ }; do
 done
 if [ -n "${FM_STARTUP:-}" ]; then
   node "$H" startup --variants "$FM_STARTUP" --repeat "${FM_STARTUP_REPEAT:-10}" "${COMMON[@]}" || status=1
+  node "$H" startup --variants "$FM_STARTUP" --repeat "${FM_STARTUP_REPEAT:-10}" --keep 1 "${COMMON[@]}" || status=1
 fi
 adb logcat -d -v epoch -b main,system,crash > "$OUT/device-logcat-tail.txt" 2>/dev/null || true
 exit $status

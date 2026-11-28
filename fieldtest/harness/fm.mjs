@@ -255,6 +255,8 @@ async function runOne(r, o, ctx) {
   if (process.env.FM_KEEP_RAW !== '1') {
     if (existsSync(join(dst, 'screen.mp4'))) rmSync(shellDir, { recursive: true, force: true });
     rmSync(join(media, 'app'), { recursive: true, force: true });
+    // A measured run's folder has everything of its raw files (the sampler text is in samples.jsonl).
+    if (!r.evidence) rmSync(media, { recursive: true, force: true });
   }
   log('  done in', Math.round((Date.now() - started) / 1000), 's valid', run.valid, run.flags.join(','), `CPU ${run.metrics['M-CPU-1']} s`);
   return { runId: r.runId, ok: res.ok && run.valid, flags: run.flags };
@@ -295,10 +297,21 @@ async function plan(o) {
   for (const sc of scenarios) scenarioInfo(sc);
   const evidence = [];
   for (const s of scenarios) for (const v of list(o['evidence-variants'])) evidence.push({ scenario: s, variant: v });
-  const runs = makePlan({ scenarios, variants: list(o.variants, ['off', 'off2', 'core', 'stream-img']), reps: Number(o.reps || 5), seed, warmup: o.warmup === '0' ? 0 : 1, evidence });
+  // --extra stream-noimg:S1+S2 adds a variant to the blocks of those scenarios only (plan.json extraVariants).
+  const extraVariants = {};
+  for (const e of list(o.extra)) {
+    const [v, ss] = e.split(':');
+    if (v && ss) extraVariants[v] = ss.split('+');
+  }
+  // One job per scenario: the order is drawn for the whole plan (--plan-scenarios, every scenario of the wave in
+  // the campaign's order) and this job keeps its own scenario's runs, so the jobs together play the plan of one seed.
+  const all = list(o['plan-scenarios'] || o.scenarios || o.scenario);
+  for (const sc of scenarios) if (!all.includes(sc)) throw new Error(`scenario ${sc} is not in --plan-scenarios ${all.join(',')}`);
+  const runs = makePlan({ scenarios: all, variants: list(o.variants, ['off', 'off2', 'core', 'stream-img']), reps: Number(o.reps || 5), seed, warmup: o.warmup === '0' ? 0 : 1, evidence, extraVariants })
+    .filter((r) => scenarios.includes(r.scenario));
   const out = resolve(o.out);
   mkdirSync(join(out, 'results', PLATFORM), { recursive: true });
-  writeFileSync(join(out, 'results', PLATFORM, `plan-${scenarios.join('+')}-${seed}.json`), JSON.stringify({ seed, scenarios, runs }, null, 2));
+  writeFileSync(join(out, 'results', PLATFORM, `plan-${scenarios.join('+')}-${seed}.json`), JSON.stringify({ seed, planScenarios: all, extraVariants, scenarios, runs }, null, 2));
   const results = [];
   for (const r of runs) {
     // A run that fails is kept and repeated once (03-MEASUREMENT.md §5.3).
@@ -314,13 +327,40 @@ async function plan(o) {
   log('plan done', results.filter((r) => r.ok).length, 'of', results.length, 'ok');
 }
 
+/**
+ * Cold starts (03-MEASUREMENT.md §4) in blocks: in each of [repeat] blocks every variant starts once, in an order drawn
+ * from the seed, from cleared data (or kept with --keep). Each launch is a run of scenario `S0-startup` with
+ * M-ST-1 (am start -W TotalTime: process start to the first frame drawn) and M-ST-2 (to FM_FULLY), paired by block.
+ */
 async function startup(o) {
   const ctx = context(o);
   const variants = list(o.variants, ['off', 'off2', 'core', 'stream-img']);
   const seed = Number(o.seed || 1112970949);
-  const order = makePlan({ scenarios: ['S0'], variants, reps: 1, seed, warmup: 0 });
-  for (const r of order) {
-    await runOne({ ...r, runId: r.runId.replace('-S0-', '-S0startup-'), mode: 'startup', repeat: Number(o.repeat || 10), clear: o.keep ? false : true }, o, ctx);
+  const plan = makePlan({ scenarios: ['S0'], variants, reps: Number(o.repeat || 10), seed, warmup: 0 });
+  const out = resolve(o.out);
+  // 03-MEASUREMENT.md §4.3: from clean state (pm clear) every time; the second pass (--keep) keeps the state.
+  const scenario = o.keep ? 'S0-startup-kept' : 'S0-startup';
+  for (const r of plan) {
+    const runId = r.runId.replace('-S0-', o.keep ? '-S0startupkept-' : '-S0startup-');
+    const res = await runOne({ ...r, runId, mode: 'startup', repeat: 1, clear: !o.keep }, o, ctx);
+    const src = join(out, 'results', PLATFORM, 'startup', runId, 'startup.json');
+    const st = readJson(src);
+    const l = st?.launches?.[0];
+    const dst = join(out, 'results', PLATFORM, 'runs', runId);
+    mkdirSync(dst, { recursive: true });
+    const metrics = {};
+    if (l?.totalTimeMs != null) metrics['M-ST-1'] = l.totalTimeMs;
+    if (l?.fullyAfterStartMs != null) metrics['M-ST-2'] = l.fullyAfterStartMs;
+    if (l?.readyAfterStartMs != null) metrics.readyAfterAmStartMs = l.readyAfterStartMs;
+    const valid = !!(res.ok && l?.totalTimeMs != null);
+    writeFileSync(join(dst, 'run.json'), JSON.stringify({
+      runId, campaign: ctx.campaign, platform: PLATFORM, target: ctx.target, scenario, variant: r.variant,
+      block: r.block, orderInBlock: r.orderInBlock, evidence: false, t0EpochMs: l?.amStartEpochMs ?? null, endEpochMs: null,
+      valid, flags: ['capture-mode', ...(o.keep ? ['kept-state'] : []), ...(valid ? [] : ['invalid'])], sessionId: null, projectId: null,
+      metrics, units: 'ms', build: ctx.build, journeyHash: ctx.journeyHash, fixturesHash: ctx.fixturesHash,
+      android: { launch: l || null, clearedData: !o.keep },
+    }, null, 2));
+    log('  startup', runId, JSON.stringify(metrics));
   }
 }
 
@@ -361,6 +401,7 @@ async function processRuns(o) {
   if (!art) throw new Error('--gh-run ID or --artifact DIR');
   const roots = findOutputRoots(art);
   log('outputs', roots);
+  const added = { runs: [], evidence: [], startup: [] };
   for (const root of roots) {
     const ledger = join(root, 'ledger');
     if (existsSync(ledger) && !o['no-forward']) {
@@ -378,12 +419,28 @@ async function processRuns(o) {
           continue;
         }
         copyTree(join(d, r), dst);
+        added[kind].push(r);
         if (existsSync(join(ledger, `${r}.forward.jsonl`))) copyFileSync(join(ledger, `${r}.forward.jsonl`), join(dst, 'ledger.forward.jsonl'));
       }
     }
     for (const f of readdirSafe(src).filter((f) => f.endsWith('.json'))) copyFileSync(join(src, f), join(results, f));
   }
+  log('added', Object.entries(added).map(([k, v]) => `${v.length} ${k}`).join(', '));
   if (o['no-check']) return;
+  // Measured runs are not forwarded: the checks that need only the captured ledger (E-25 for off and off2, E-20 for
+  // core; the session half of E-20 cannot be seen without a forward). No browser, so no lock (check.mjs).
+  for (const r of added.runs) {
+    const dir = join(results, 'runs', r);
+    const run = readJson(join(dir, 'run.json'));
+    if (!run || (run.flags || []).includes('warmup')) continue;
+    const only = run.variant.startsWith('off') ? 'E-25' : run.variant === 'core' ? 'E-20' : null;
+    if (!only) continue;
+    try {
+      sh(process.execPath, [join(TOOLS, 'tw/check.mjs'), '--run-dir', dir, '--platform', PLATFORM, '--only', only, '--no-dom', '--no-dashboard']);
+    } catch (e) {
+      log('check failed', r, e.message);
+    }
+  }
   // Traceway stores forwarded recordings a few seconds after it answers; checking at once finds no events.
   const settle = Number(o['settle-s'] ?? 30);
   if (settle > 0 && !o['no-forward']) {
@@ -391,7 +448,8 @@ async function processRuns(o) {
     await new Promise((r) => setTimeout(r, settle * 1000));
   }
   // The checker and the renderer take the measurement lock themselves (tools/README.md).
-  for (const r of readdirSafe(join(results, 'evidence'))) {
+  // Only the evidence runs this call added (--recheck: all), so checks.json gets each run's results once.
+  for (const r of o.recheck ? readdirSafe(join(results, 'evidence')) : added.evidence) {
     const dir = join(results, 'evidence', r);
     if (!existsSync(join(dir, 'run.json'))) continue;
     try {
