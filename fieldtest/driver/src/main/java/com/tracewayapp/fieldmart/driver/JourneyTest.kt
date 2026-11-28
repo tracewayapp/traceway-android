@@ -91,8 +91,16 @@ class StartupRun(private val spec: RunSpec, inst: android.app.Instrumentation, r
             SystemClock.sleep(3000)
             val before = System.currentTimeMillis()
             val out = shell.run("am start -W -n ${spec.pkg}/${RunSpec.MAIN}")
+            // 03-MEASUREMENT.md §4: record M-ST-1 and M-ST-2, then wait 5 s. FM_FULLY (hero and eight grid pictures
+            // decoded) comes several seconds after the first frame here, so it is waited for (up to 30 s, polled
+            // once a second; the value is the app's own timestamp, the polling does not change it).
+            var log = shell.run("logcat -d -v epoch -s FM:I")
+            val deadline = SystemClock.uptimeMillis() + 30_000
+            while (!log.contains("FM_FULLY") && SystemClock.uptimeMillis() < deadline) {
+                SystemClock.sleep(1000)
+                log = shell.run("logcat -d -v epoch -s FM:I")
+            }
             SystemClock.sleep(5000)
-            val log = shell.run("logcat -d -v epoch -s FM:I")
             val ready = Regex("FM_READY (\\d+)").find(log)?.groupValues?.get(1)?.toLong()
             val fully = Regex("FM_FULLY (\\d+)").find(log)?.groupValues?.get(1)?.toLong()
             results += buildJsonObject {
