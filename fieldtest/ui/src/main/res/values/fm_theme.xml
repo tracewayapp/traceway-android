@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="fm_brand">#0B6E4F</color>
+    <color name="fm_brand_dark">#08513A</color>
+    <color name="fm_accent">#F2A541</color>
+    <color name="fm_up">#1B873F</color>
+    <color name="fm_down">#C62828</color>
+    <color name="fm_surface">#FFFFFF</color>
+    <color name="fm_muted">#6B7280</color>
+    <color name="fm_line">#E5E7EB</color>
+    <color name="fm_placeholder">#E8ECEF</color>
+
+    <style name="Theme.Fieldmart" parent="Theme.Material3.Light.NoActionBar">
+        <item name="colorPrimary">@color/fm_brand</item>
+        <item name="colorOnPrimary">#FFFFFF</item>
+        <item name="colorPrimaryContainer">#CDEBDD</item>
+        <item name="colorSecondary">@color/fm_accent</item>
+        <item name="android:windowBackground">@color/fm_surface</item>
+        <item name="android:statusBarColor">@color/fm_brand_dark</item>
+    </style>
+
+    <style name="Fieldmart.Title" parent="TextAppearance.Material3.TitleMedium" />
+    <style name="Fieldmart.Body" parent="TextAppearance.Material3.BodyMedium" />
+    <style name="Fieldmart.Caption" parent="TextAppearance.Material3.BodySmall">
+        <item name="android:textColor">@color/fm_muted</item>
+    </style>
+</resources>

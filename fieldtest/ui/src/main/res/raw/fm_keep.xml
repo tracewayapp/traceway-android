@@ -1,0 +1,3 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Element ids are looked up by name for recycled rows: keep every one through resource shrinking. -->
+<resources xmlns:tools="http://schemas.android.com/tools" tools:keep="@id/fm_*" />

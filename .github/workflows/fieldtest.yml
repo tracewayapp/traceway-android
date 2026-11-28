@@ -1,0 +1,186 @@
+name: Field test (manual)
+
+# The SDK field test (sdk-field-test, campaign plan in AGENT-4): Fieldmart off and with the SDK on an Android
+# emulator, driven by the UiAutomator driver. The gateway runs on the runner in capture mode, so nothing leaves the
+# runner but the artifact; it is forwarded into a Traceway instance afterwards. Started by hand only; no secrets.
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: 'build | s0 | smoke | plan | evidence | startup'
+        required: true
+        default: build
+        type: choice
+        options: [build, s0, smoke, plan, evidence, startup]
+      scenarios:
+        description: 'Scenarios, comma separated (plan, evidence): one job each'
+        required: false
+        default: 'S6'
+        type: string
+      variants:
+        description: 'Variants (plan, startup)'
+        required: false
+        default: 'off,off2,core,stream-img'
+        type: string
+      repetitions:
+        description: 'Blocks per scenario (plan), launches per variant (startup)'
+        required: false
+        default: '5'
+        type: string
+      evidence:
+        description: 'Evidence variants run after each scenario (plan, evidence), e.g. stream-img,buffer'
+        required: false
+        default: ''
+        type: string
+      toolkit:
+        description: 'fmToolkit (feed implementation): compose or views'
+        required: false
+        default: 'compose'
+        type: string
+      seed:
+        description: 'Block order seed'
+        required: false
+        default: '1112970949'
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build Fieldmart and the driver
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+      - uses: gradle/actions/setup-gradle@v3
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Build APKs and report sizes
+        run: node fieldtest/harness/fm.mjs build --ci --no-cleartext --out out/apks
+      - uses: actions/upload-artifact@v4
+        with:
+          name: fieldtest-apks
+          path: out/apks
+          retention-days: 14
+          if-no-files-found: error
+
+  matrix:
+    name: Plan the jobs
+    if: inputs.mode != 'build'
+    runs-on: ubuntu-latest
+    outputs:
+      jobs: ${{ steps.plan.outputs.jobs }}
+    steps:
+      - id: plan
+        env:
+          MODE: ${{ inputs.mode }}
+          SCENARIOS: ${{ inputs.scenarios }}
+          VARIANTS: ${{ inputs.variants }}
+          REPS: ${{ inputs.repetitions }}
+          EVIDENCE: ${{ inputs.evidence }}
+          SEED: ${{ inputs.seed }}
+          TOOLKIT: ${{ inputs.toolkit }}
+        run: |
+          node -e '
+            const e = process.env, list = (s) => (s || "").split(",").map((x) => x.trim()).filter(Boolean);
+            const ok = (s) => /^[A-Za-z0-9,._-]*$/.test(s);
+            for (const k of ["SCENARIOS", "VARIANTS", "REPS", "EVIDENCE", "SEED", "TOOLKIT"]) if (!ok(e[k] || "")) throw new Error("bad input " + k);
+            const tk = e.TOOLKIT && e.TOOLKIT !== "compose" ? ` --toolkit ${e.TOOLKIT}` : "";
+            const plan = (s, v, reps, warm) => `--scenarios ${s} --variants ${v} --reps ${reps} --seed ${e.SEED} --warmup ${warm}${tk}`;
+            let jobs = [];
+            if (e.MODE === "s0") jobs = [{ name: "S0", plan: plan("S0", "off,core", 1, 0), evidence: "", startup: "" }];
+            if (e.MODE === "smoke") jobs = [{ name: "smoke", plan: plan("S1", "off,off2", 1, 0), evidence: "S6:stream-img", startup: "" }];
+            if (e.MODE === "plan") jobs = list(e.SCENARIOS).map((s) => ({ name: s, plan: plan(s, e.VARIANTS, e.REPS, 1), evidence: list(e.EVIDENCE).map((v) => `${s}:${v}`).join(","), startup: "" }));
+            if (e.MODE === "evidence") jobs = list(e.SCENARIOS).map((s) => ({ name: `${s}-evidence`, plan: "", evidence: list(e.EVIDENCE || "stream-img").map((v) => `${s}:${v}`).join(","), startup: "" }));
+            if (e.MODE === "startup") jobs = [{ name: "startup", plan: "", evidence: "", startup: e.VARIANTS, repeat: e.REPS }];
+            require("fs").appendFileSync(e.GITHUB_OUTPUT, "jobs=" + JSON.stringify(jobs) + "\n");
+            console.log(JSON.stringify(jobs, null, 2));
+          '
+
+  emulator:
+    name: Emulator · ${{ matrix.job.name }}
+    needs: [build, matrix]
+    runs-on: ubuntu-latest
+    timeout-minutes: 330
+    strategy:
+      fail-fast: false
+      matrix:
+        job: ${{ fromJSON(needs.matrix.outputs.jobs) }}
+    env:
+      FM_OUT: out
+      FM_PLAN_ARGS: ${{ matrix.job.plan }}
+      FM_EVIDENCE_RUNS: ${{ matrix.job.evidence }}
+      FM_STARTUP: ${{ matrix.job.startup }}
+      FM_STARTUP_REPEAT: ${{ matrix.job.repeat }}
+      FM_TARGET: emulator-api34-google_apis-x86_64
+      FM_CAMPAIGN: FT-20261128-1
+      FM_KEEP_RAW: ${{ inputs.mode == 'smoke' && '1' || '0' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: actions/download-artifact@v4
+        with:
+          name: fieldtest-apks
+          path: out/apks
+
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+          if [ ! -e /dev/kvm ]; then echo "::error::no /dev/kvm on this runner: the emulator would be too slow to measure"; exit 1; fi
+          ls -la /dev/kvm
+          nproc; free -m
+
+      - name: ffmpeg (joins the screen recording of evidence runs)
+        if: matrix.job.evidence != ''
+        run: sudo apt-get update -q && sudo apt-get install -y -q ffmpeg
+
+      - name: Fixtures and the gateway in capture mode
+        run: |
+          cat fieldtest/shared/VERSION
+          node fieldtest/shared/fixtures/gen.mjs --out "$RUNNER_TEMP/fixtures" --seed 20261128
+          # The same bytes as the campaign's fixtures: checked against the vendored lock, not the one just written.
+          node fieldtest/shared/fixtures/gen.mjs --check "$RUNNER_TEMP/fixtures" --lock fieldtest/shared/fixtures.lock.json
+          mkdir -p out/ledger
+          nohup node fieldtest/shared/gateway/gateway.mjs --mode capture --port 18190 --fixtures "$RUNNER_TEMP/fixtures" \
+            --ledger out/ledger > out/gateway.log 2>&1 &
+          for i in $(seq 1 30); do curl -fsS http://127.0.0.1:18190/ctl/health && break; sleep 1; done
+          curl -fsS http://127.0.0.1:18190/ctl/health
+
+      - name: Emulator, then the runs
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 34
+          arch: x86_64
+          target: google_apis
+          profile: pixel_6_pro
+          ram-size: 4096M
+          cores: 2
+          disable-animations: false
+          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none -skin 720x1560
+          script: bash fieldtest/harness/ci-run.sh
+
+      - name: Stop the gateway
+        if: always()
+        run: |
+          pkill -f 'gateway.mjs --mode capture' || true
+          du -sh out || true
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: fieldtest-${{ matrix.job.name }}-${{ github.run_attempt }}
+          path: |
+            out
+            !out/apks/*.apk
+          retention-days: 14
+          if-no-files-found: warn

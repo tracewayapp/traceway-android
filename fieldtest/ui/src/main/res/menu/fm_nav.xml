@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<menu xmlns:android="http://schemas.android.com/apk/res/android">
+    <item android:id="@id/fm_nav_home" android:icon="@drawable/fm_ic_home" android:title="@string/fm_l_nav_home" />
+    <item android:id="@id/fm_nav_markets" android:icon="@drawable/fm_ic_markets" android:title="@string/fm_l_nav_markets" />
+    <item android:id="@id/fm_nav_feed" android:icon="@drawable/fm_ic_feed" android:title="@string/fm_l_nav_feed" />
+    <item android:id="@id/fm_nav_checkout" android:icon="@drawable/fm_ic_cart" android:title="@string/fm_l_nav_checkout" />
+    <item android:id="@id/fm_nav_more" android:icon="@drawable/fm_ic_more" android:title="@string/fm_l_nav_more" />
+</menu>

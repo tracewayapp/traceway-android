@@ -1,0 +1,509 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The checkout form of 02-APP-SPEC.md §2.5 in standard Material controls; texts from shared/labels.json. -->
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:orientation="vertical">
+
+    <TextView
+        android:layout_width="match_parent"
+        android:layout_height="56dp"
+        android:gravity="center_vertical"
+        android:paddingHorizontal="16dp"
+        android:text="@string/fm_l_checkout_title"
+        android:textAppearance="@style/TextAppearance.Material3.TitleLarge" />
+
+    <FrameLayout
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_weight="1">
+
+        <androidx.core.widget.NestedScrollView
+            android:id="@id/fm_checkout_form"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent">
+
+            <LinearLayout
+                android:id="@+id/fm_checkout_fields"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="vertical"
+                android:paddingHorizontal="16dp">
+
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="20dp"
+                android:tag="fm-section-0"
+                android:textAppearance="@style/TextAppearance.Material3.TitleLarge" />
+            <com.google.android.material.textfield.TextInputLayout
+                android:id="@+id/fm_til_name"
+                style="@style/Widget.Material3.TextInputLayout.OutlinedBox"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="8dp"
+                android:hint="@string/fm_l_checkout_name" >
+
+                <com.google.android.material.textfield.TextInputEditText
+                    android:id="@id/fm_checkout_name"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:inputType="textPersonName|textCapWords"
+                    android:maxLines="1"  />
+            </com.google.android.material.textfield.TextInputLayout>
+            <com.google.android.material.textfield.TextInputLayout
+                android:id="@+id/fm_til_email"
+                style="@style/Widget.Material3.TextInputLayout.OutlinedBox"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="8dp"
+                android:hint="@string/fm_l_checkout_email" >
+
+                <com.google.android.material.textfield.TextInputEditText
+                    android:id="@id/fm_checkout_email"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:inputType="textEmailAddress"
+                    android:maxLines="1"  />
+            </com.google.android.material.textfield.TextInputLayout>
+            <com.google.android.material.textfield.TextInputLayout
+                android:id="@+id/fm_til_phone"
+                style="@style/Widget.Material3.TextInputLayout.OutlinedBox"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="8dp"
+                android:hint="@string/fm_l_checkout_phone" >
+
+                <com.google.android.material.textfield.TextInputEditText
+                    android:id="@id/fm_checkout_phone"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:inputType="phone"
+                    android:maxLines="1"  />
+            </com.google.android.material.textfield.TextInputLayout>
+            <com.google.android.material.materialswitch.MaterialSwitch
+                android:id="@id/fm_checkout_account"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="8dp"
+                android:text="@string/fm_l_checkout_account" />
+            <com.google.android.material.textfield.TextInputLayout
+                android:id="@+id/fm_til_password"
+                style="@style/Widget.Material3.TextInputLayout.OutlinedBox"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="8dp"
+                android:hint="@string/fm_l_checkout_password" android:visibility="gone" app:endIconMode="password_toggle">
+
+                <com.google.android.material.textfield.TextInputEditText
+                    android:id="@id/fm_checkout_password"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:inputType="textPassword"
+                    android:maxLines="1"  />
+            </com.google.android.material.textfield.TextInputLayout>
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="20dp"
+                android:tag="fm-section-1"
+                android:textAppearance="@style/TextAppearance.Material3.TitleLarge" />
+            <com.google.android.material.textfield.TextInputLayout
+                android:id="@+id/fm_til_address"
+                style="@style/Widget.Material3.TextInputLayout.OutlinedBox"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="8dp"
+                android:hint="@string/fm_l_checkout_address" >
+
+                <com.google.android.material.textfield.TextInputEditText
+                    android:id="@id/fm_checkout_address"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:inputType="textPostalAddress|textMultiLine"
+                    android:minLines="2" android:gravity="top"  />
+            </com.google.android.material.textfield.TextInputLayout>
+            <com.google.android.material.textfield.TextInputLayout
+                android:id="@+id/fm_til_city"
+                style="@style/Widget.Material3.TextInputLayout.OutlinedBox"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="8dp"
+                android:hint="@string/fm_l_checkout_city" >
+
+                <com.google.android.material.textfield.TextInputEditText
+                    android:id="@id/fm_checkout_city"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:inputType="textPostalAddress|textCapWords"
+                    android:maxLines="1"  />
+            </com.google.android.material.textfield.TextInputLayout>
+            <com.google.android.material.textfield.TextInputLayout
+                android:id="@+id/fm_til_postcode"
+                style="@style/Widget.Material3.TextInputLayout.OutlinedBox"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="8dp"
+                android:hint="@string/fm_l_checkout_postcode" >
+
+                <com.google.android.material.textfield.TextInputEditText
+                    android:id="@id/fm_checkout_postcode"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:inputType="textPostalAddress|textCapCharacters"
+                    android:maxLines="1"  />
+            </com.google.android.material.textfield.TextInputLayout>
+            <com.google.android.material.textfield.TextInputLayout
+                android:id="@+id/fm_til_country"
+                style="@style/Widget.Material3.TextInputLayout.OutlinedBox"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="8dp"
+                android:hint="@string/fm_l_checkout_country" >
+
+                <com.google.android.material.textfield.TextInputEditText
+                    android:id="@id/fm_checkout_country"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:inputType="none"
+                    android:maxLines="1" android:focusable="false" android:clickable="true" android:cursorVisible="false" />
+            </com.google.android.material.textfield.TextInputLayout>
+            <com.google.android.material.textfield.TextInputLayout
+                android:id="@+id/fm_til_date"
+                style="@style/Widget.Material3.TextInputLayout.OutlinedBox"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="8dp"
+                android:hint="@string/fm_l_checkout_date" >
+
+                <com.google.android.material.textfield.TextInputEditText
+                    android:id="@id/fm_checkout_date"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:inputType="none"
+                    android:maxLines="1" android:focusable="false" android:clickable="true" android:cursorVisible="false" />
+            </com.google.android.material.textfield.TextInputLayout>
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="12dp"
+                android:text="@string/fm_l_checkout_window"
+                android:textStyle="bold" />
+            <RadioGroup
+                android:id="@+id/fm_checkout_window"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal">
+
+                <com.google.android.material.radiobutton.MaterialRadioButton
+                    android:id="@id/fm_checkout_window_0"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:tag="fm-window-0" />
+                <com.google.android.material.radiobutton.MaterialRadioButton
+                    android:id="@id/fm_checkout_window_1"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:tag="fm-window-1" />
+                <com.google.android.material.radiobutton.MaterialRadioButton
+                    android:id="@id/fm_checkout_window_2"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:tag="fm-window-2" />
+            </RadioGroup>
+            <com.google.android.material.checkbox.MaterialCheckBox
+                android:id="@id/fm_checkout_door"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="@string/fm_l_checkout_door" />
+            <com.google.android.material.checkbox.MaterialCheckBox
+                android:id="@id/fm_checkout_gift"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="@string/fm_l_checkout_gift" />
+            <com.google.android.material.textfield.TextInputLayout
+                android:id="@+id/fm_til_giftnote"
+                style="@style/Widget.Material3.TextInputLayout.OutlinedBox"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="8dp"
+                android:hint="@string/fm_l_checkout_giftNote" android:visibility="gone">
+
+                <com.google.android.material.textfield.TextInputEditText
+                    android:id="@id/fm_checkout_giftnote"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:inputType="textMultiLine|textCapSentences"
+                    android:minLines="2" android:gravity="top"  />
+            </com.google.android.material.textfield.TextInputLayout>
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="20dp"
+                android:tag="fm-section-2"
+                android:textAppearance="@style/TextAppearance.Material3.TitleLarge" />
+            <com.google.android.material.textfield.TextInputLayout
+                android:id="@+id/fm_til_card"
+                style="@style/Widget.Material3.TextInputLayout.OutlinedBox"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="8dp"
+                android:hint="@string/fm_l_checkout_card" >
+
+                <com.google.android.material.textfield.TextInputEditText
+                    android:id="@id/fm_checkout_card"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:inputType="number"
+                    android:maxLines="1" android:digits="0123456789 " />
+            </com.google.android.material.textfield.TextInputLayout>
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal">
+            <com.google.android.material.textfield.TextInputLayout
+                android:id="@+id/fm_til_expiry"
+                style="@style/Widget.Material3.TextInputLayout.OutlinedBox"
+                android:layout_width="0dp" android:layout_weight="1" android:layout_marginEnd="8dp"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="8dp"
+                android:hint="@string/fm_l_checkout_expiry" >
+
+                <com.google.android.material.textfield.TextInputEditText
+                    android:id="@id/fm_checkout_expiry"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:inputType="datetime|date"
+                    android:maxLines="1"  />
+            </com.google.android.material.textfield.TextInputLayout>
+            <com.google.android.material.textfield.TextInputLayout
+                android:id="@+id/fm_til_cvv"
+                style="@style/Widget.Material3.TextInputLayout.OutlinedBox"
+                android:layout_width="0dp" android:layout_weight="1"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="8dp"
+                android:hint="@string/fm_l_checkout_cvv" >
+
+                <com.google.android.material.textfield.TextInputEditText
+                    android:id="@id/fm_checkout_cvv"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:inputType="number"
+                    android:maxLines="1"  />
+            </com.google.android.material.textfield.TextInputLayout>
+            </LinearLayout>
+            <com.google.android.material.textfield.TextInputLayout
+                android:id="@+id/fm_til_cardname"
+                style="@style/Widget.Material3.TextInputLayout.OutlinedBox"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="8dp"
+                android:hint="@string/fm_l_checkout_cardName" >
+
+                <com.google.android.material.textfield.TextInputEditText
+                    android:id="@id/fm_checkout_cardname"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:inputType="textPersonName|textCapWords"
+                    android:maxLines="1"  />
+            </com.google.android.material.textfield.TextInputLayout>
+            <com.google.android.material.checkbox.MaterialCheckBox
+                android:id="@id/fm_checkout_savecard"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="@string/fm_l_checkout_saveCard" />
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="12dp"
+                android:orientation="horizontal">
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="@string/fm_l_checkout_tip"
+                    android:textStyle="bold" />
+
+                <TextView
+                    android:id="@+id/fm_checkout_tip_value"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginStart="8dp" />
+            </LinearLayout>
+
+            <com.google.android.material.slider.Slider
+                android:id="@id/fm_checkout_tip"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:stepSize="1"
+                android:value="0"
+                android:valueFrom="0"
+                android:valueTo="30" />
+
+            <com.google.android.material.textfield.TextInputLayout
+                android:id="@+id/fm_til_promo"
+                style="@style/Widget.Material3.TextInputLayout.OutlinedBox"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="8dp"
+                android:hint="@string/fm_l_checkout_promo">
+
+                <com.google.android.material.textfield.MaterialAutoCompleteTextView
+                    android:id="@id/fm_checkout_promo"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:completionThreshold="1"
+                    android:inputType="textCapCharacters|textNoSuggestions"
+                    android:maxLines="1" />
+            </com.google.android.material.textfield.TextInputLayout>
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="20dp"
+                android:tag="fm-section-3"
+                android:textAppearance="@style/TextAppearance.Material3.TitleLarge" />
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="8dp"
+                android:text="@string/fm_l_checkout_summary"
+                android:textStyle="bold" />
+            <LinearLayout
+                android:id="@+id/fm_checkout_summary"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="vertical" />
+
+            <TextView
+                android:id="@+id/fm_checkout_total"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:gravity="end"
+                android:textStyle="bold" />
+
+            <com.google.android.material.button.MaterialButton
+                android:id="@id/fm_checkout_edit"
+                style="@style/Widget.Material3.Button.OutlinedButton"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="@string/fm_l_checkout_edit" />
+
+            <TextView
+                android:id="@id/fm_checkout_terms"
+                android:layout_width="wrap_content"
+                android:layout_height="48dp"
+                android:gravity="center_vertical"
+                android:text="@string/fm_l_checkout_terms"
+                android:textColor="@color/fm_brand" />
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:gravity="center_vertical"
+                android:orientation="horizontal">
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="@string/fm_l_checkout_menu"
+                    android:textStyle="bold" />
+
+                <TextView
+                    android:id="@+id/fm_checkout_instructions"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_marginStart="8dp"
+                    android:layout_weight="1" />
+
+                <ImageButton
+                    android:id="@id/fm_checkout_menu"
+                    android:layout_width="48dp"
+                    android:layout_height="48dp"
+                    android:background="?attr/selectableItemBackgroundBorderless"
+                    android:contentDescription="@string/fm_l_checkout_menu"
+                    android:src="@drawable/fm_ic_menu" />
+            </LinearLayout>
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal">
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="@string/fm_l_checkout_loyalty" />
+
+                <!-- The one element masked with the marker tag instead of the mask API (02-APP-SPEC.md §2.5). -->
+                <TextView
+                    android:id="@id/fm_checkout_loyalty"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginStart="8dp"
+                    android:tag="traceway-mask"
+                    android:text="LOY-88442211" />
+            </LinearLayout>
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="12dp"
+                android:text="@string/fm_l_checkout_rating"
+                android:textStyle="bold" />
+            <LinearLayout
+                android:id="@+id/fm_checkout_rating"
+                android:layout_width="wrap_content"
+                android:layout_height="48dp"
+                android:orientation="horizontal" />
+            <com.google.android.material.textfield.TextInputLayout
+                android:id="@+id/fm_til_notes"
+                style="@style/Widget.Material3.TextInputLayout.OutlinedBox"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="8dp"
+                android:hint="@string/fm_l_checkout_notes" >
+
+                <com.google.android.material.textfield.TextInputEditText
+                    android:id="@id/fm_checkout_notes"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:inputType="textMultiLine|textCapSentences"
+                    android:minLines="2" android:gravity="top"  />
+            </com.google.android.material.textfield.TextInputLayout>
+            <com.google.android.material.button.MaterialButton
+                android:id="@id/fm_checkout_place"
+                android:layout_width="match_parent"
+                android:layout_height="56dp"
+                android:layout_marginTop="16dp"
+                android:layout_marginBottom="24dp"
+                android:text="@string/fm_l_checkout_place" />
+            </LinearLayout>
+        </androidx.core.widget.NestedScrollView>
+
+        <LinearLayout
+            android:id="@id/fm_checkout_success"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:background="@color/fm_surface"
+            android:gravity="center"
+            android:orientation="vertical"
+            android:visibility="gone">
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="@string/fm_l_checkout_success"
+                android:textAppearance="@style/TextAppearance.Material3.HeadlineMedium" />
+
+            <TextView
+                android:id="@id/fm_checkout_order"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="8dp"
+                android:textAppearance="@style/TextAppearance.Material3.TitleMedium" />
+        </LinearLayout>
+    </FrameLayout>
+</LinearLayout>

@@ -1,0 +1,33 @@
+{
+  "version": 1,
+  "viewport": { "width": 412, "height": 892 },
+  "scenarios": {
+    "S5-checkout": {
+      "launch": "cold",
+      "start": "home",
+      "durationMs": 90000,
+      "steps": [
+        { "t": 0,     "do": "waitFor",    "id": "fm-home-grid", "timeoutMs": 15000 },
+        { "t": 2000,  "do": "tap",        "id": "fm-nav-checkout" },
+        { "t": 3500,  "do": "checkpoint", "name": "s5-form-empty", "shows": ["Contact", "Full name"], "hides": [] },
+        { "t": 4000,  "do": "tap",        "id": "fm-checkout-name" },
+        { "t": 4500,  "do": "type",       "text": "Ada Fieldtest", "perCharMs": 120 },
+        { "t": 7000,  "do": "checkpoint", "name": "s5-name-typed", "shows": ["Contact"], "hides": ["Ada Fieldtest"], "masked": ["fm-checkout-name"] },
+        { "t": 8000,  "do": "fling",      "id": "fm-checkout-form", "dir": "down", "distance": 0.6, "durationMs": 120 },
+        { "t": 9000,  "do": "pick",       "id": "fm-checkout-country", "value": "Norway" },
+        { "t": 12000, "do": "drag",       "id": "fm-checkout-tip", "from": [0.05, 0.5], "to": [0.5, 0.5], "durationMs": 1500 },
+        { "t": 14000, "do": "paste",      "text": "A note" },
+        { "t": 15000, "do": "mark",       "name": "half" }
+      ]
+    },
+    "S9-bad": {
+      "durationMs": 1000,
+      "steps": [
+        { "t": 500, "do": "tap", "id": "fm-home-grid" },
+        { "t": 400, "do": "teleport" },
+        { "t": 600, "do": "type", "text": "abcdefghij", "perCharMs": 120 },
+        { "t": 700, "do": "tap", "id": "home_grid" }
+      ]
+    }
+  }
+}

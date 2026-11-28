@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+
+    <application
+        android:name="com.tracewayapp.fieldmart.app.FieldmartApp"
+        android:allowBackup="false"
+        android:label="@string/fm_l_app_name"
+        android:networkSecurityConfig="@xml/fm_network_security"
+        android:theme="@style/Theme.Fieldmart"
+        tools:ignore="MissingApplicationIcon">
+        <!-- Release-like but measurable from the shell (03-MEASUREMENT.md §3.3). -->
+        <profileable android:shell="true" tools:targetApi="29" />
+    </application>
+</manifest>
