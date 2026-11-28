@@ -41,6 +41,7 @@ class JourneyTest {
         for (spec in specs) {
             when (spec.mode) {
                 "startup" -> StartupRun(spec, inst, root).execute()
+                "warmup" -> warmUp(spec, inst)
                 "validate" -> {
                     val s = journey.scenario(spec.scenario)
                     File(root, "validate-${spec.scenario}.txt").writeText(validate(s).joinToString("\n"))
@@ -49,6 +50,23 @@ class JourneyTest {
             }
         }
     }
+}
+
+/**
+ * Before the first run of a job: the app once, until UiAutomator sees its screen. Right after the emulator boots, the
+ * accessibility window tracking may not be ready ("wait for adding window timeout") and the first run would see no
+ * window at all. Not a run: nothing is written.
+ */
+private fun warmUp(spec: RunSpec, inst: android.app.Instrumentation) {
+    val shell = Shell(inst.uiAutomation)
+    val device = androidx.test.uiautomator.UiDevice.getInstance(inst)
+    shell.run("am start -W -n ${spec.pkg}/${RunSpec.MAIN}")
+    val grid = androidx.test.uiautomator.By.res(java.util.regex.Pattern.compile(com.tracewayapp.fieldmart.core.resourcePattern("fm-home-grid")))
+    val seen = device.wait(androidx.test.uiautomator.Until.hasObject(grid), 60_000) == true
+    device.pressHome()
+    SystemClock.sleep(1000)
+    shell.run("am force-stop ${spec.pkg}")
+    if (!seen) throw IllegalStateException("warm-up: the app's screen was not seen in 60 s")
 }
 
 /**

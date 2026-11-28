@@ -10,6 +10,7 @@ COMMON=(--out "$OUT" --ledger "$OUT/ledger" --apks "$OUT/apks")
 
 node "$H" device-setup --size 720x1560 --density 280 --out "$OUT" || exit 1
 node "$H" install --apks "$OUT/apks" || exit 1
+node "$H" warmup || exit 1
 adb shell settings put system show_touches 0
 
 status=0

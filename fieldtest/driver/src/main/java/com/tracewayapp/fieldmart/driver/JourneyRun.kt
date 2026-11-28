@@ -245,7 +245,7 @@ class JourneyRun(private val spec: RunSpec, private val scenario: Scenario, priv
             input.key(code)
             "key $code"
         }
-        "pick" -> onGesture(s) { val id = s.id!!; Picker(device, ::tapAt, rec, t0).pick(id, selector(id), s.value ?: "") }
+        "pick" -> onGesture(s) { val id = s.id!!; Picker(device, input, ::tapAt, rec, t0).pick(id, selector(id), s.value ?: "", s.durationMs ?: 2500) }
         "idle" -> "idle"
         "checkpoint" -> checkpoint(s)
         "mark" -> {
@@ -452,8 +452,20 @@ class JourneyRun(private val spec: RunSpec, private val scenario: Scenario, priv
                         put("w", r.width() / density); put("h", r.height() / density)
                     })
                 }
-                for (id in s.masked) box(device.findObject(selector(id))) { put("id", id); put("role", "masked") }
-                for (id in REGIONS) box(device.findObject(selector(id))) { put("id", id); put("role", "region") }
+                // Two passes over the tree (ids, then texts) instead of one per id and text: a busy screen is slow to read.
+                val ids = (s.masked + REGIONS).distinct()
+                val byId = if (ids.isEmpty()) emptyList() else device.findObjects(
+                    By.res(Pattern.compile(ids.joinToString("|") { resourcePattern(it).removePrefix("^").removeSuffix("$") }.let { "^(?:$it)$" })),
+                )
+                fun idOf(o: androidx.test.uiautomator.UiObject2): String? = try {
+                    ids.firstOrNull { Regex(resourcePattern(it)).matches(o.resourceName ?: "") }
+                } catch (_: Throwable) {
+                    null
+                }
+                for (o in byId) {
+                    val id = idOf(o) ?: continue
+                    box(o) { put("id", id); put("role", if (id in s.masked) "masked" else "region") }
+                }
                 s.list?.let { listId ->
                     val list = device.findObject(selector(listId))
                     val area = list?.visibleBounds
@@ -466,12 +478,13 @@ class JourneyRun(private val spec: RunSpec, private val scenario: Scenario, priv
                     rows.firstOrNull()?.let { r -> label(r)?.let { t -> box(r) { put("text", t); put("role", "first-row") } } }
                     rows.lastOrNull()?.takeIf { rows.size > 1 }?.let { r -> label(r)?.let { t -> box(r) { put("text", t); put("role", "last-row") } } }
                 }
+                val texts = if (s.shows.isEmpty()) emptyList() else try {
+                    device.findObjects(By.text(Pattern.compile("(?s).*\\S.*")))
+                } catch (_: Throwable) {
+                    emptyList()
+                }
                 for (text in s.shows) {
-                    val found = try {
-                        device.findObjects(By.textContains(text))
-                    } catch (_: Throwable) {
-                        emptyList()
-                    }
+                    val found = texts.filter { o -> (try { o.text } catch (_: Throwable) { null })?.contains(text) == true }
                     for (o in found.take(5)) {
                         val r = try {
                             o.visibleBounds

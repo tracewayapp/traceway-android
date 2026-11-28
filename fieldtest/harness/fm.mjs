@@ -5,6 +5,7 @@
 //   node fieldtest/harness/fm.mjs build [--ci] [--out DIR]          APKs + sizes (M-SIZE-1)
 //   node fieldtest/harness/fm.mjs device-setup [--size 720x1560 --density 280]
 //   node fieldtest/harness/fm.mjs install --apks DIR                adb reverse, install, cmd package compile -m speed
+//   node fieldtest/harness/fm.mjs warmup                            the app once until UiAutomator sees it (not a run)
 //   node fieldtest/harness/fm.mjs run --scenario S6 --variant stream-img [--evidence] --out DIR [--ledger DIR]
 //   node fieldtest/harness/fm.mjs plan --scenarios S1,S6 --variants off,off2,core,stream-img --reps 5 --seed N --out DIR
 //   node fieldtest/harness/fm.mjs startup --variants off,core --repeat 10 --out DIR
@@ -323,6 +324,16 @@ async function startup(o) {
   }
 }
 
+/** The app once before a job's first run, until UiAutomator sees it (see the driver's warm-up); not recorded. */
+async function warmup(o) {
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    const res = await instrument(['-e', 'fmMode', 'warmup', '-e', 'fmScenario', 'S0', '-e', 'fmPackage', PACKAGES.off, RUNNER]);
+    log('warm-up', attempt, res.ok ? 'ok' : 'failed');
+    if (res.ok) return;
+  }
+  throw new Error('warm-up failed three times');
+}
+
 function collect(o) {
   const run = collectRun(resolve(o.raw), o.shell ? resolve(o.shell) : null, resolve(o.out), { ...context(o), ledgerDir: o.ledger && resolve(o.ledger) });
   log('collected', run.runId, 'valid', run.valid, JSON.stringify(run.metrics));
@@ -422,7 +433,7 @@ function copyTree(src, dst) {
 
 const o = args(process.argv.slice(2));
 const cmd = o._[0];
-const commands = { build, 'device-setup': deviceSetup, install, run, plan, startup, collect, process: processRuns };
+const commands = { build, 'device-setup': deviceSetup, install, warmup, run, plan, startup, collect, process: processRuns };
 if (!commands[cmd]) {
   console.log(readFileSync(fileURLToPath(import.meta.url), 'utf8').split('\n').slice(1, 16).map((l) => l.replace(/^\/\/ ?/, '')).join('\n'));
   process.exit(cmd ? 2 : 0);
