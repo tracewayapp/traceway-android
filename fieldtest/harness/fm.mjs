@@ -432,7 +432,8 @@ async function processRuns(o) {
   for (const r of added.runs) {
     const dir = join(results, 'runs', r);
     const run = readJson(join(dir, 'run.json'));
-    if (!run || (run.flags || []).includes('warmup')) continue;
+    // Warm-ups are not results; a startup launch is not a journey (no run marks, nothing to check in the ledger).
+    if (!run || (run.flags || []).includes('warmup') || /startup/i.test(run.scenario)) continue;
     const only = run.variant.startsWith('off') ? 'E-25' : run.variant === 'core' ? 'E-20' : null;
     if (!only) continue;
     try {

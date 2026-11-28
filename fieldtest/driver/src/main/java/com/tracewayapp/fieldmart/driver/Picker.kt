@@ -155,13 +155,55 @@ class Picker(
             tap(null, b.exactCenterX(), b.exactCenterY())
             SystemClock.sleep(350)
         }
-        val b = finder.textBounds(day.toString(), month) ?: throw IllegalStateException("day $day $month not shown")
-        tap(null, b.exactCenterX(), b.exactCenterY())
-        SystemClock.sleep(200)
-        val ob = finder.viewBounds("$pkg:id/confirm_button") ?: throw IllegalStateException("no OK button")
-        tap(null, ob.exactCenterX(), ob.exactCenterY())
+        // The month slides in after "next month": a tap while it moves only stops the slide, nothing is selected
+        // and OK stays disabled (the picker then stays open over the form). Tap the day once its cell is still, and
+        // again if OK is not enabled; after OK, wait for the picker to close (tap OK again once if it did not).
+        var selected = false
+        for (attempt in 0 until 2) {
+            val b = stillBounds { finder.textBounds(day.toString(), month) } ?: throw IllegalStateException("day $day $month not shown")
+            tap(null, b.exactCenterX(), b.exactCenterY())
+            selected = waitFor(1000) { confirm()?.isEnabled == true }
+            if (selected) break
+            rec.log("date $day $monthName: OK not enabled after the tap, tapping the day again")
+        }
+        if (!selected) throw IllegalStateException("date $day $monthName not selected (OK disabled)")
+        for (attempt in 0 until 2) {
+            val ob = finder.viewBounds("$pkg:id/confirm_button") ?: break
+            tap(null, ob.exactCenterX(), ob.exactCenterY())
+            if (waitFor(1500) { confirm() == null }) break
+            rec.log("date $day $monthName: the picker is still open after OK")
+        }
+        if (confirm() != null) throw IllegalStateException("date picker still open after OK")
         rec.log("date picked $day $monthName")
         return "date $day $monthName"
+    }
+
+    private fun confirm(): UiObject2? = try {
+        device.findObject(By.res(CONFIRM))
+    } catch (_: Throwable) {
+        null
+    }
+
+    private fun waitFor(ms: Long, ok: () -> Boolean): Boolean {
+        val until = SystemClock.uptimeMillis() + ms
+        while (true) {
+            if (ok()) return true
+            if (SystemClock.uptimeMillis() >= until) return false
+            SystemClock.sleep(80)
+        }
+    }
+
+    /** The bounds once two reads 100 ms apart agree (up to 1.5 s), or the last ones read. */
+    private fun stillBounds(read: () -> Rect?): Rect? {
+        var prev = read()
+        val until = SystemClock.uptimeMillis() + 1500
+        while (SystemClock.uptimeMillis() < until) {
+            SystemClock.sleep(100)
+            val now = read()
+            if (now != null && now == prev) return now
+            prev = now
+        }
+        return prev
     }
 
     companion object {

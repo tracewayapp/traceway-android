@@ -181,6 +181,17 @@ class Reveal(
         val t = System.currentTimeMillis()
         input.swipe(x1, y1, x2, y2, ms, 16, hold)
         record("reveal", id, x1, y1, x2, y2, System.currentTimeMillis() - t)
+        // Compose reports a scroll to accessibility about 100 ms later: read the tree before that and it still shows
+        // the list where it was, so a row near the target is on screen while the reveal thinks it is further on.
+        settleTree()
+    }
+
+    /** Waits until no accessibility event came for 150 ms (at most 600 ms; a ticking screen never goes quiet). */
+    private fun settleTree() {
+        try {
+            ui.waitForIdle(150, 600)
+        } catch (_: Exception) {
+        }
     }
 
     private fun isHorizontal(b: Rect): Boolean = b.width() > b.height() * 2
