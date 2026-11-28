@@ -929,7 +929,7 @@ class TracewayClientTest {
     @Test
     fun aKilledAppsSessionIsEndedAtTheNextLaunchWithWhatItUsed() {
         val dir = tmp.newFolder("state")
-        val options = TracewayOptions(screenCapture = true, recordAllSessions = true)
+        val options = TracewayOptions(screenCapture = true, recordAllSessions = true, attributes = mapOf("user.id" to "ada"))
         val first = start(options, stateDir = dir)
         first.setReplaySource(FakeReplaySource())
         val session = first.currentSessionId!!
@@ -945,7 +945,7 @@ class TracewayClientTest {
         TracewayClient.killForTest()
 
         val later = ManualScheduler(nowMs = scheduler.now() + 16 * 60_000)
-        val second = start(options, stateDir = dir, scheduler = later)
+        val second = start(options.copy(attributes = mapOf("user.id" to "grace")), stateDir = dir, scheduler = later)
         second.flush(2000)
         val next = second.currentSessionId
         assertTrue(next != session)
@@ -954,6 +954,9 @@ class TracewayClientTest {
         assertEquals("at its last activity", lastActivity, end!!.timestampEpochNanos / 1_000_000)
         assertEquals("with what it used", uploaded, end.attr("traceway.collection.events"))
         assertNotNull(end.attr("traceway.replay.image_bytes"))
+        // The server takes a session's attributes from its latest record: the end keeps the session's own.
+        assertEquals("ada", end.attr("user.id"))
+        assertEquals("grace", named("session.start").single { it.attr("session.id") == next }.attr("user.id"))
         val order = exported().map { it.eventName to it.attr("session.id") }
         assertTrue("before its successor starts: $order", order.indexOf("session.end" to session) < order.indexOf("session.start" to next))
     }
