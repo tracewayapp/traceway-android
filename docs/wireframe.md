@@ -96,7 +96,7 @@ Backgrounds: `ColorDrawable` (with its tint), `GradientDrawable` (fill, radii, o
 
 Text weights are written as the app sets them, as the iOS and Flutter SDKs do, so a weight means the same in every SDK's replay. A viewer without Roboto Medium draws medium (500) text with its regular face.
 
-Compose (`WireframeComposeCapture`) walks `semanticsOwner.unmergedRootSemanticsNode` (depth ≤ 200) and classifies each node as a field, slider, progress, toggle, text, image, button, selected tab or scroll container; nodes of none of these are folded. Text style comes from the `GetTextLayoutResult` action, read again only when the text or its box changes. Compose keeps surface colors to itself: a wide button with light text takes the theme's primary color, other buttons and fields a neutral look. Compose `graphicsLayer` alpha and transforms are not read. A Compose view that fails becomes one `cp` box.
+Compose (`WireframeComposeCapture`) walks `semanticsOwner.unmergedRootSemanticsNode` (depth ≤ 200) and classifies each node as a field, slider, progress, toggle, text, image, button, selected tab, chip or scroll container; nodes of none of these are folded. A Material 3 `FilterChip` or `InputChip` (`Role.Checkbox` with `Selected` and a label) is a chip: 8 dp corners, tinted when selected, outlined when not. Text style comes from the `GetTextLayoutResult` action, read again only when the text or its box changes. Compose keeps surface colors to itself: a wide button with light text takes the theme's primary color, other buttons and fields a neutral look. Compose `graphicsLayer` alpha and transforms are not read. A Compose view that fails becomes one `cp` box.
 
 ## Images
 

@@ -179,6 +179,9 @@ internal class WireframeComposeCapture(private val c: WireframeCapture) {
         val kind = when {
             editable != null -> FIELD
             range != null -> if (config.contains(SemanticsActions.SetProgress)) SLIDER else PROGRESS
+            // Material 3's FilterChip and InputChip say they are checkboxes (Role.Checkbox, with Selected rather than
+            // a toggle state); a checkbox has no label of its own.
+            role == Role.Checkbox && toggle == null && selected != null && children.any { firstText(it, 0) != null } -> CHIP
             toggle != null || role == Role.Checkbox || role == Role.Switch || role == Role.RadioButton -> TOGGLE
             !text.isNullOrEmpty() -> TEXT
             role == Role.Image -> IMAGE
@@ -276,6 +279,15 @@ internal class WireframeComposeCapture(private val c: WireframeCapture) {
                 }
                 TAB -> sb.append("box-shadow:inset 0 -3px 0 0 ").appendColor(DEFAULT_PRIMARY).append(';')
                 SCROLL -> sb.append("overflow:hidden;")
+                CHIP -> {
+                    // 8 dp corners; selected: a tinted container, else an outline (Material 3's filter chip).
+                    if (selected == true) {
+                        sb.append("background-color:").appendColor(withAlpha(DEFAULT_PRIMARY, CHIP_SELECTED_ALPHA)).append(';')
+                    } else {
+                        sb.append("box-shadow:inset 0 0 0 1px ").appendColor(DEFAULT_OUTLINE).append(';')
+                    }
+                    sb.appendRadius(CHIP_RADIUS_DP)
+                }
             }
             if (disabled && kind != TOGGLE && kind != TEXT) sb.append("opacity:0.38;")
             out.add(c.element(rec, 0, cls, kids))
@@ -594,6 +606,10 @@ internal class WireframeComposeCapture(private val c: WireframeCapture) {
         const val BUTTON = 7
         const val TAB = 8
         const val SCROLL = 9
+        const val CHIP = 10
+
+        const val CHIP_RADIUS_DP = 8f
+        const val CHIP_SELECTED_ALPHA = 0.16f
 
         fun box(sb: StringBuilder, rl: Float, rt: Float, wd: Float, hd: Float) {
             sb.append("left:").appendPx(rl).append(";top:").appendPx(rt)
