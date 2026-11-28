@@ -46,6 +46,9 @@ class JourneyRun(private val spec: RunSpec, private val scenario: Scenario, priv
     private val density = metrics.density
     private val gestures = Executors.newSingleThreadExecutor { r -> Thread(r, "FmGesture") }
     private val writer = Executors.newSingleThreadExecutor { r -> Thread(r, "FmWriter") }
+    /** Text boxes are read after the screenshot on their own thread: a busy screen takes seconds to read. */
+    private val boxer = Executors.newSingleThreadExecutor { r -> Thread(r, "FmBoxes") }
+    private val boxesAt = java.util.concurrent.ConcurrentHashMap<String, Long>()
     private var gesture: Future<*>? = null
     private val stepLog = ArrayList<JsonObject>()
     private val checkpoints = ArrayList<JsonObject>()
@@ -113,6 +116,8 @@ class JourneyRun(private val spec: RunSpec, private val scenario: Scenario, priv
         screen?.stop()
         val quiet = waitLedgerQuiet()
         rec.write("app.log", shell.run("logcat -d -v epoch -b main,system,crash"))
+        boxer.shutdown()
+        boxer.awaitTermination(60, java.util.concurrent.TimeUnit.SECONDS)
         writer.shutdown()
         writer.awaitTermination(60, java.util.concurrent.TimeUnit.SECONDS)
         gestures.shutdownNow()
@@ -438,7 +443,12 @@ class JourneyRun(private val spec: RunSpec, private val scenario: Scenario, priv
                 rec.file("app/$name.png").outputStream().use { bitmap.compress(Bitmap.CompressFormat.PNG, 100, it) }
                 bitmap.recycle()
             }
-            boxes[name] = buildJsonArray {
+            val shows = s.shows
+            val masked = s.masked
+            val listId = s.list
+            boxer.execute {
+            val readAt = System.currentTimeMillis()
+            val result = buildJsonArray {
                 fun box(o: androidx.test.uiautomator.UiObject2?, extra: kotlinx.serialization.json.JsonObjectBuilder.() -> Unit) {
                     val r = try {
                         o?.visibleBounds
@@ -453,7 +463,7 @@ class JourneyRun(private val spec: RunSpec, private val scenario: Scenario, priv
                     })
                 }
                 // Two passes over the tree (ids, then texts) instead of one per id and text: a busy screen is slow to read.
-                val ids = (s.masked + REGIONS).distinct()
+                val ids = (masked + REGIONS).distinct()
                 val byId = if (ids.isEmpty()) emptyList() else device.findObjects(
                     By.res(Pattern.compile(ids.joinToString("|") { resourcePattern(it).removePrefix("^").removeSuffix("$") }.let { "^(?:$it)$" })),
                 )
@@ -464,10 +474,10 @@ class JourneyRun(private val spec: RunSpec, private val scenario: Scenario, priv
                 }
                 for (o in byId) {
                     val id = idOf(o) ?: continue
-                    box(o) { put("id", id); put("role", if (id in s.masked) "masked" else "region") }
+                    box(o) { put("id", id); put("role", if (id in masked) "masked" else "region") }
                 }
-                s.list?.let { listId ->
-                    val list = device.findObject(selector(listId))
+                listId?.let { lid ->
+                    val list = device.findObject(selector(lid))
                     val area = list?.visibleBounds
                     val rows = (list?.children ?: emptyList()).filter { c ->
                         val b = c.visibleBounds
@@ -478,12 +488,12 @@ class JourneyRun(private val spec: RunSpec, private val scenario: Scenario, priv
                     rows.firstOrNull()?.let { r -> label(r)?.let { t -> box(r) { put("text", t); put("role", "first-row") } } }
                     rows.lastOrNull()?.takeIf { rows.size > 1 }?.let { r -> label(r)?.let { t -> box(r) { put("text", t); put("role", "last-row") } } }
                 }
-                val texts = if (s.shows.isEmpty()) emptyList() else try {
+                val texts = if (shows.isEmpty()) emptyList() else try {
                     device.findObjects(By.text(Pattern.compile("(?s).*\\S.*")))
                 } catch (_: Throwable) {
                     emptyList()
                 }
-                for (text in s.shows) {
+                for (text in shows) {
                     val found = texts.filter { o -> (try { o.text } catch (_: Throwable) { null })?.contains(text) == true }
                     for (o in found.take(5)) {
                         val r = try {
@@ -498,6 +508,9 @@ class JourneyRun(private val spec: RunSpec, private val scenario: Scenario, priv
                         })
                     }
                 }
+            }
+            synchronized(boxes) { boxes[name] = result }
+            boxesAt[name] = readAt
             }
         }
         if (s.meminfo) {
@@ -537,10 +550,13 @@ class JourneyRun(private val spec: RunSpec, private val scenario: Scenario, priv
 
     private fun writeMeta(started: Long, end: Long, home: Long, stopped: Long, quiet: Long) {
         rec.write("steps.json", JsonArray(stepLog).toString())
-        rec.write("checkpoints.json", JsonArray(checkpoints).toString())
+        rec.write("checkpoints.json", JsonArray(checkpoints.map { c ->
+            val at = boxesAt[(c["name"] as? JsonPrimitive)?.content]
+            if (at == null) c else JsonObject(c + ("boxesEpochMs" to JsonPrimitive(at)))
+        }).toString())
         rec.write("actions.json", synchronized(actions) { JsonArray(actions.toList()) }.toString())
         if (spec.evidence) {
-            rec.write("boxes.json", JsonObject(boxes).toString())
+            rec.write("boxes.json", synchronized(boxes) { JsonObject(boxes) }.toString())
             rec.write("screen-pieces.json", screen?.json() ?: "[]")
         }
         val meta = buildJsonObject {

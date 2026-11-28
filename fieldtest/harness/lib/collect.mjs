@@ -144,7 +144,10 @@ export function collectRun(rawDir, shellDir, outDir, ctx = {}) {
     const pieces = readJson(join(rawDir, 'screen-pieces.json'), []);
     if (shellDir && pieces.length) {
       try {
-        const taps = (readJson(join(rawDir, 'actions.json'), []) || []).filter((a) => (a.do || a.kind) === 'tap' && a.x != null);
+        // Taps with no other gesture in the 1.5 s before them: a reveal or a fling moves the picture there first.
+        const actions = readJson(join(rawDir, 'actions.json'), []) || [];
+        const taps = actions.filter((a) => (a.do || a.kind) === 'tap' && a.x != null).filter((t) =>
+          !actions.some((o) => o !== t && (o.do || o.kind) !== 'checkpoint' && (o.endEpochMs ?? o.epochMs) <= t.epochMs && (o.endEpochMs ?? o.epochMs) > t.epochMs - 1500));
         const logical = meta.device ? { width: meta.device.widthDp, height: meta.device.heightDp } : null;
         screen = buildScreen({ rawDir: shellDir, outDir, pieces, checkpoints: cps, taps, logical });
       } catch (e) {

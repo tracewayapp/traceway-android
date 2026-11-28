@@ -247,7 +247,7 @@ test('taps: the recording latency from the moments the picture changes at tap po
   const sy = 780 / 892;
   const boxes = taps.map((t) => {
     const at = (t.epochMs - 1_000_000 - latency + 33) / 1000;
-    return `drawbox=x=${Math.round(t.x * sx) - 20}:y=${Math.round(t.y * sy) - 20}:w=40:h=40:color=white:t=fill:enable='between(t,${at.toFixed(3)},${(at + 0.8).toFixed(3)})'`;
+    return `drawbox=x=${Math.round(t.x * sx) - 20}:y=${Math.round(t.y * sy) - 20}:w=40:h=40:color=white:t=fill:enable='between(t,${at.toFixed(3)},${(at + 1.5).toFixed(3)})'`;
   });
   const r = spawnSync(ffmpegPath(), ['-v', 'error', '-y', '-f', 'lavfi', '-i', 'color=c=0x334455:s=360x780:r=30', '-t', '13',
     '-vf', [...boxes, "drawbox=x='mod(t*40,300)':y=700:w=30:h=30:color=gray:t=fill"].join(','), '-c:v', 'libx264', '-pix_fmt', 'yuv420p', file]);

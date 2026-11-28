@@ -96,8 +96,13 @@ class Reveal(
             val area = Rect(c.visibleBounds)
             if (ime != null && ime.top < area.bottom) area.bottom = ime.top
             val horizontal = isHorizontal(c)
-            val forward = hint(id)?.let { it > 0 } ?: !backwards
-            val span = (if (horizontal) area.width() else area.height()) * 0.7f
+            val h = hint(id)
+            val forward = h?.let { it > 0 } ?: !backwards
+            val size = if (horizontal) area.width() else area.height()
+            // Quick drags (the list keeps moving a little) only to cover distance in a long list towards a numbered
+            // element known to be off screen; otherwise held drags, which stop where the finger stops, so nothing
+            // passes by unseen (a form above the keyboard shows only a few fields).
+            val quick = h != null && size > 400 * density
             val sig = signature(c)
             if (sig == lastSignature) {
                 still++
@@ -110,9 +115,14 @@ class Reveal(
                 still = 0
             }
             lastSignature = sig
-            // A quick drag keeps the list moving a little after the finger leaves, as a person scrolling does.
-            drag(id, area, horizontal, if (forward) -span else span, 160, hold = 0)
-            SystemClock.sleep(260)
+            val span = size * (if (quick) 0.7f else 0.6f)
+            if (quick) {
+                drag(id, area, horizontal, if (forward) -span else span, 160, hold = 0)
+                SystemClock.sleep(260)
+            } else {
+                drag(id, area, horizontal, if (forward) -span else span, 260, hold = 120)
+                SystemClock.sleep(80)
+            }
         }
         throw IllegalStateException("$id not revealed in time")
     }
@@ -147,8 +157,9 @@ class Reveal(
         }
     }
 
+    /** Where the container's content is: the ids and positions of what it shows (a form's one child never moves). */
     private fun signature(c: UiObject2): String = try {
-        c.children.take(4).joinToString("|") { "${it.resourceName}@${it.visibleBounds.top},${it.visibleBounds.left}" }
+        c.findObjects(By.res(Pattern.compile(".+"))).take(8).joinToString("|") { "${it.resourceName}@${it.visibleBounds.top},${it.visibleBounds.left}" }
     } catch (_: Throwable) {
         ""
     }

@@ -102,22 +102,25 @@ export function calibratePiece({ file, execEpochMs, shots, searchBeforeMs = 2500
 export { grayFrames };
 
 /**
- * The latency of one piece from the taps (evidence runs show touches): every tap changes the picture right around
- * its point at its device time (the touch spot, the ripple). Each change that starts in a small area around a tap's
- * point, after a still moment, is a candidate latency; the latency most taps agree on (within 50 ms) is the piece's.
+ * The latency of one piece from the taps (evidence runs show touches). A tap changes the picture around its point a
+ * little after its device time: the touch spot within a frame, a ripple or a new screen a few hundred ms later. For
+ * each tap the strongest change near its point gives `lag = (tap time − exec) − (frame time)`, which is the latency
+ * minus the app's reaction. The lags of most taps fall in one band (reactions differ by up to ~400 ms); the fastest
+ * reaction in it that a second tap confirms, plus one display frame, is the latency. A recording cannot start before
+ * screenrecord was executed, so it is at least 0.
  * [taps]: { epochMs, x, y } with x and y in logical px; [logical]: { width, height } of the screen.
  */
-export function calibrateFromTaps({ frames, count, execEpochMs, taps, logical, maxLatencyMs = 3000 }) {
+export function calibrateFromTaps({ frames, count, execEpochMs, taps, logical, maxLatencyMs = 3000, band = 400 }) {
   if (!frames || !taps.length || !logical?.width) return { latencyMs: null, used: 0, taps: taps.length };
   const n = W * H;
   const r = 3;
-  const cands = [];
+  const lags = [];
   for (const tap of taps) {
     const cx = Math.round((tap.x / logical.width) * W);
     const cy = Math.round((tap.y / logical.height) * H);
     const predicted = tap.epochMs - execEpochMs;
     const lo = Math.max(1, Math.floor(((predicted - maxLatencyMs - 300) * FPS) / 1000));
-    const hi = Math.min(count - 1, Math.ceil(((predicted + 300) * FPS) / 1000));
+    const hi = Math.min(count - 1, Math.ceil(((predicted + band + 100) * FPS) / 1000));
     if (hi - lo < 6) continue;
     const d = [];
     for (let i = lo; i <= hi; i++) {
@@ -134,34 +137,34 @@ export function calibrateFromTaps({ frames, count, execEpochMs, taps, logical, m
     }
     const sorted = [...d].sort((a, b) => a - b);
     const quiet = sorted[sorted.length >> 1];
-    const threshold = Math.max(6, 4 * quiet);
-    const mine = [];
-    for (let j = 2; j < d.length; j++) {
-      if (d[j] >= threshold && d[j - 1] < threshold && d[j - 2] < threshold) {
-        const frameMs = ((lo + j) * 1000) / FPS;
-        const lat = predicted - frameMs;
-        if (lat >= -100 && lat <= maxLatencyMs) mine.push(Math.round(lat));
-      }
-    }
-    if (mine.length) cands.push(mine);
+    let best = -1;
+    for (let j = 0; j < d.length; j++) if (best < 0 || d[j] > d[best]) best = j;
+    if (best < 0 || d[best] < Math.max(6, 4 * quiet)) continue;
+    lags.push(Math.round(predicted - ((lo + best) * 1000) / FPS));
   }
-  if (!cands.length) return { latencyMs: null, used: 0, taps: taps.length };
-  let best = null;
-  let bestScore = 0;
-  for (let L = -100; L <= maxLatencyMs; L += 10) {
-    let score = 0;
-    for (const c of cands) if (c.some((x) => Math.abs(x - L) <= 50)) score++;
-    // On a tie the earlier onset wins (a larger latency): a press starts with the touch, its end comes later.
-    if (score >= bestScore && score > 0) {
-      bestScore = score;
-      best = L;
+  if (!lags.length) return { latencyMs: null, used: 0, taps: taps.length };
+  // The band [L - band, L] holding the most lags.
+  let top = null;
+  let topCount = 0;
+  for (const L of lags) {
+    const k = lags.filter((x) => x <= L && x >= L - band).length;
+    if (k > topCount || (k === topCount && L > top)) {
+      topCount = k;
+      top = L;
     }
   }
-  const near = cands.map((c) => c.filter((x) => Math.abs(x - best) <= 50)).filter((c) => c.length).map((c) => c.reduce((a, b) => (Math.abs(a - best) < Math.abs(b - best) ? a : b)));
-  near.sort((a, b) => a - b);
-  const latency = near[near.length >> 1];
-  const spread = near.length >= 2 ? near[Math.floor(near.length * 0.75)] - near[Math.floor(near.length * 0.25)] : null;
-  return { latencyMs: latency, used: near.length, taps: taps.length, withCandidates: cands.length, spreadMs: spread };
+  const inBand = lags.filter((x) => x <= top && x >= top - band).sort((a, b) => b - a);
+  // The fastest reaction a second tap confirms (one stray early change does not decide).
+  const fastest = inBand.find((v, i) => inBand.slice(i + 1).some((w) => v - w <= 120)) ?? inBand[0];
+  const latency = Math.max(0, fastest + Math.round(1000 / FPS / 2));
+  return {
+    latencyMs: latency,
+    used: inBand.length,
+    taps: taps.length,
+    withCandidates: lags.length,
+    spreadMs: inBand.length >= 2 ? inBand[0] - inBand[inBand.length - 1] : null,
+    lags: lags.sort((a, b) => b - a),
+  };
 }
 
 /**
@@ -186,18 +189,22 @@ export function buildScreen({ rawDir, outDir, pieces, checkpoints, taps = [], lo
     const inPiece = taps.filter((t) => t.epochMs >= p.execEpochMs + 300 && t.epochMs <= p.endEpochMs - 300);
     const tap = calibrateFromTaps({ frames, count, execEpochMs: p.execEpochMs, taps: inPiece, logical });
     // Taps first (a change at a known instant); screenshots of still screens are the fallback.
-    const useTaps = tap.latencyMs != null && tap.used >= 3 && tap.used >= 0.4 * tap.withCandidates;
+    const useTaps = tap.latencyMs != null && (tap.used >= 5 || (tap.used >= 3 && tap.used >= 0.5 * tap.withCandidates));
     const cal = useTaps
       ? { latencyMs: tap.latencyMs, spreadMs: tap.spreadMs, used: tap.used, source: 'taps', matches: shot.matches, taps: tap, shots: { latencyMs: shot.latencyMs, used: shot.used, spreadMs: shot.spreadMs } }
       : { ...shot, source: shot.latencyMs != null ? 'screenshots' : null, taps: tap };
     parts.push({ ...p, file, info, cal });
   }
   if (!parts.length) return null;
+  // A piece without enough taps takes the latency of the pieces whose taps settled it (screenrecord starts the same
+  // way each time); screenshot matching only when no piece has taps, as it is misled by still screens.
+  const byTaps = parts.filter((p) => p.cal.source === 'taps').map((p) => p.cal.latencyMs).sort((a, b) => a - b);
   const known = parts.map((p) => p.cal.latencyMs).filter((x) => x != null).sort((a, b) => a - b);
-  const fallback = known.length ? known[known.length >> 1] : defaultLatencyMs;
+  const fallback = byTaps.length ? byTaps[byTaps.length >> 1] : known.length ? known[known.length >> 1] : defaultLatencyMs;
   for (const p of parts) {
+    if (p.cal.source !== 'taps' && byTaps.length) p.cal = { ...p.cal, latencyMs: null, source: null };
     p.latencyMs = p.cal.latencyMs ?? fallback;
-    p.method = p.cal.latencyMs != null ? `calibrated (${p.cal.source})` : known.length ? 'other-pieces' : 'assumed';
+    p.method = p.cal.latencyMs != null ? `calibrated (${p.cal.source})` : byTaps.length ? 'other-pieces (taps)' : known.length ? 'other-pieces' : 'assumed';
     p.startEpochMs = p.execEpochMs + p.latencyMs;
   }
   const start = parts[0].startEpochMs;
