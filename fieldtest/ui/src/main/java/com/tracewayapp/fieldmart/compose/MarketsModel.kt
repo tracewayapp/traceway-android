@@ -1,5 +1,8 @@
 package com.tracewayapp.fieldmart.compose
 
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
 import com.tracewayapp.fieldmart.core.MarketClock
 import com.tracewayapp.fieldmart.core.Prng
 import com.tracewayapp.fieldmart.data.Api
@@ -12,7 +15,8 @@ import com.tracewayapp.fieldmart.data.Symbol
  * history per symbol for the sparklines, and the order book. Touched on the main thread only, except [load].
  */
 class MarketsModel {
-    var symbols: List<Symbol> = emptyList()
+    /** Snapshot state: whatever shows the symbols (the watchlist) recomposes when they load. */
+    var symbols: List<Symbol> by mutableStateOf(emptyList())
         private set
     var clock: MarketClock? = null
         private set

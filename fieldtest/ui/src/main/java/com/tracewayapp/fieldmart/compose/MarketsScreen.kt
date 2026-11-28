@@ -7,7 +7,6 @@ import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -49,7 +48,9 @@ import com.tracewayapp.fieldmart.ui.R
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.testTagsAsResourceId
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
@@ -139,8 +140,11 @@ fun MarketsScreen() {
             style = MaterialTheme.typography.titleSmall,
         )
         LazyColumn(Modifier.fillMaxWidth().weight(1f).testTag("fm-markets-watchlist")) {
+            // Read here, the list's content follows the ticks and the symbols once they load (a lambda that only
+            // captured the model would keep the empty list it was first built with).
+            val tick = version
             val symbols = model.symbols
-            items(symbols.size, key = { symbols[it].symbol }) { k -> WatchRow(model, k, version) }
+            items(symbols.size, key = { symbols[it].symbol }) { k -> WatchRow(model, k, tick) }
         }
     }
 
@@ -199,8 +203,11 @@ private fun timeLabel(t: Long): String = timeFormat.format(Date(if (t > 100_000_
 
 @Composable
 private fun Chart(model: MarketsModel, version: Int, crosshair: Float?, onCrosshair: (Float?) -> Unit) {
-    val all = model.candles()
-    val window = if (all.size > VISIBLE) all.copyOfRange(all.size - VISIBLE, all.size) else all
+    // Everything drawn comes from the tick: a parameter the body does not read would not make Compose redraw.
+    val window = remember(version) {
+        val all = model.candles()
+        Array(minOf(all.size, VISIBLE)) { i -> all[all.size - minOf(all.size, VISIBLE) + i].let { c -> com.tracewayapp.fieldmart.data.Candle(c.t, c.o, c.h, c.l, c.c) } }
+    }
     var lo = Long.MAX_VALUE
     var hi = Long.MIN_VALUE
     for (c in window) {
@@ -212,10 +219,13 @@ private fun Chart(model: MarketsModel, version: Int, crosshair: Float?, onCrossh
         hi = 1
     }
     val span = (hi - lo).coerceAtLeast(1)
-    val price = model.price(model.selected)
+    val price = remember(version) { model.price(model.selected) }
     val density = LocalDensity.current
-    BoxWithConstraints(
+    // Sized by its layout, not by BoxWithConstraints: a subcomposition there kept the first (empty) chart.
+    var size by remember { mutableStateOf(IntSize.Zero) }
+    Box(
         Modifier.fillMaxWidth().height(250.dp).padding(horizontal = 8.dp).testTag("fm-markets-chart")
+            .onSizeChanged { size = it }
             .pointerInput(Unit) {
                 awaitEachGesture {
                     val down = awaitFirstDown()
@@ -233,8 +243,8 @@ private fun Chart(model: MarketsModel, version: Int, crosshair: Float?, onCrossh
             },
     ) {
         val labelW = 56.dp
-        val plotW = with(density) { (maxWidth - labelW).toPx() }
-        val plotH = with(density) { (maxHeight - 20.dp).toPx() }
+        val plotW = (size.width - with(density) { labelW.toPx() }).coerceAtLeast(1f)
+        val plotH = (size.height - with(density) { 20.dp.toPx() }).coerceAtLeast(1f)
         fun y(v: Long): Float = plotH - (v - lo).toFloat() / span * plotH
         Canvas(Modifier.fillMaxSize()) {
             if (window.isEmpty()) return@Canvas
@@ -275,7 +285,7 @@ private fun Chart(model: MarketsModel, version: Int, crosshair: Float?, onCrossh
             color = Color.White,
         )
         if (window.isNotEmpty()) {
-            Row(Modifier.align(Alignment.BottomStart).width(maxWidth - labelW), horizontalArrangement = Arrangement.SpaceBetween) {
+            Row(Modifier.align(Alignment.BottomStart).width(with(density) { plotW.toDp() }), horizontalArrangement = Arrangement.SpaceBetween) {
                 for (i in listOf(0, VISIBLE / 3, 2 * VISIBLE / 3, window.size - 1)) {
                     Text(timeLabel(window[i.coerceIn(0, window.size - 1)].t), fontSize = 10.sp, color = Muted)
                 }
@@ -300,7 +310,7 @@ private fun Chart(model: MarketsModel, version: Int, crosshair: Float?, onCrossh
 @Composable
 private fun WatchRow(model: MarketsModel, k: Int, version: Int) {
     val sym = model.symbols[k]
-    val price = model.price(k)
+    val price = remember(version) { model.price(k) }
     val up = price >= sym.startCents
     Row(
         Modifier.fillMaxWidth().clickable { }.testTag("fm-markets-row-${sym.symbol}").padding(horizontal = 16.dp, vertical = 8.dp),
@@ -310,7 +320,7 @@ private fun WatchRow(model: MarketsModel, k: Int, version: Int) {
             Text(sym.symbol, fontWeight = FontWeight.SemiBold)
             Text(sym.name, style = MaterialTheme.typography.bodySmall, color = Muted, maxLines = 1)
         }
-        val history = model.history(k)
+        val history = remember(version) { model.history(k) }
         AndroidView(
             factory = { SparklineView(it) },
             update = { it.setValues(history, up) },
@@ -326,13 +336,14 @@ private fun WatchRow(model: MarketsModel, k: Int, version: Int) {
 
 @Composable
 private fun Book(model: MarketsModel, version: Int) {
-    val price = model.price(model.selected)
+    val price = remember(version) { model.price(model.selected) }
+    val sizes = remember(version) { model.bookSizes.copyOf() }
     Row(Modifier.fillMaxWidth().padding(top = 8.dp)) {
         Column(Modifier.weight(1f)) {
             Text(stringResource(R.string.fm_l_markets_bids), color = Up, fontWeight = FontWeight.SemiBold)
             for (i in 0 until 20) Row {
                 Text(MarketClock.price(price - (i + 1) * 5), Modifier.weight(1f), fontSize = 12.sp)
-                Text(model.bookSizes[i].toString(), fontSize = 12.sp)
+                Text(sizes[i].toString(), fontSize = 12.sp)
             }
         }
         Spacer(Modifier.width(16.dp))
@@ -340,7 +351,7 @@ private fun Book(model: MarketsModel, version: Int) {
             Text(stringResource(R.string.fm_l_markets_asks), color = Down, fontWeight = FontWeight.SemiBold)
             for (i in 0 until 20) Row {
                 Text(MarketClock.price(price + (i + 1) * 5), Modifier.weight(1f), fontSize = 12.sp)
-                Text(model.bookSizes[20 + i].toString(), fontSize = 12.sp)
+                Text(sizes[20 + i].toString(), fontSize = 12.sp)
             }
         }
     }

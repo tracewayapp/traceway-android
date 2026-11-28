@@ -84,6 +84,10 @@ class DataScreensTest {
         }
     }
 
+    private fun idleFrames(n: Int) {
+        repeat(n) { shadowOf(Looper.getMainLooper()).idleFor(java.time.Duration.ofMillis(16)) }
+    }
+
     private fun viewTexts(root: View): List<String> {
         val out = ArrayList<String>()
         fun walk(v: View) {
@@ -108,7 +112,7 @@ class DataScreensTest {
 
     /** (testTag, text) of every Compose semantics node under [root]. */
     @OptIn(androidx.compose.ui.ExperimentalComposeUiApi::class)
-    private fun compose(root: View): List<Pair<String?, String?>> {
+    private fun compose(root: View, forceLayout: Boolean = true): List<Pair<String?, String?>> {
         val out = ArrayList<Pair<String?, String?>>()
         fun node(n: SemanticsNode) {
             val tag = n.config.getOrNull(SemanticsProperties.TestTag)
@@ -119,8 +123,8 @@ class DataScreensTest {
         }
         fun walk(v: View) {
             if (v is ViewRootForTest) {
-                // A screen that recomposes ten times a second may have a measure pending: lay it out first.
-                v.measureAndLayoutForTest()
+                // Off for Markets: the device does not force a layout either, and a stale screen must show here.
+                if (forceLayout) v.measureAndLayoutForTest()
                 node(v.semanticsOwner.unmergedRootSemanticsNode)
             }
             if (v is ViewGroup) for (i in 0 until v.childCount) walk(v.getChildAt(i))
@@ -160,6 +164,11 @@ class DataScreensTest {
         val controller = Robolectric.buildActivity(MainActivity::class.java).setup()
         val activity = controller.get()
         val root = activity.window.decorView
+        // The data the Markets chart draws: 5,000 candles of the first symbol.
+        val api = FieldmartApplication.of(activity).api
+        val candles = runCatching { api.candles("HEAM", "1H") }
+        assertTrue("candles: ${candles.exceptionOrNull()} ${candles.getOrNull()?.size} ${candles.getOrNull()?.lastOrNull()?.let { "${it.t} ${it.c}" }}",
+            candles.getOrNull()?.size == 5000 && candles.getOrNull()!!.last().c > 0)
         settle(2500)
         // s0-home: "Fieldmart", "Search Fieldmart", "Outdoor", "Today's deals"; the grid, product 17 on the first page.
         assertShows("Home", viewTexts(root), "Fieldmart", "Search Fieldmart", "Outdoor", "Today's deals", "Popular now", "Home", "Markets")
@@ -194,10 +203,16 @@ class DataScreensTest {
 
         // Markets (Compose): the symbol, the timeframes, the watchlist, polls.
         activity.select(MainActivity.Tab.MARKETS)
+        // The first layout happens before the data is there, as on a device (its first frame comes at once).
+        idleFrames(3)
+        compose(root)
         settle(2500)
         val markets = compose(root)
         val mtexts = markets.mapNotNull { it.second }
         assertShows("Markets", mtexts, "HEAM", "1H", "1D", "1W", "Watchlist", "Order book", "Polls")
+        // The chart's axis labels are prices of the loaded candles (not the empty chart's 0.00 and 0.01).
+        val prices = mtexts.filter { Regex("^\\d{2,}\\.\\d{2}$").matches(it) }
+        assertTrue("chart price labels: $prices in $mtexts", prices.size >= 4 && "0.01" !in mtexts)
         val mtags = markets.mapNotNull { it.first }
 
         for (t in listOf("fm-markets-chart", "fm-markets-price", "fm-markets-tf-1M", "fm-markets-watchlist", "fm-markets-book-open", "fm-markets-row-HEAM")) {
