@@ -35,13 +35,15 @@ export function runId({ scenario, variant, block, evidence }, next) {
  * [scenarios] × [variants] × [reps] in blocks; [evidence]: list of { scenario, variant } evidence runs, run after the
  * measured blocks of their scenario. Returns the runs in execution order.
  */
-export function makePlan({ scenarios, variants, reps, seed, warmup = 1, evidence = [], extraVariants = {} }) {
+export function makePlan({ scenarios, variants, reps, seed, warmup = 1, evidence = [], extraVariants = {}, warmupVariants = null }) {
   const next = prng(seed);
   const runs = [];
   for (const scenario of scenarios) {
     const vs = [...variants, ...Object.entries(extraVariants).filter(([, ss]) => ss.includes(scenario)).map(([v]) => v)];
+    // [warmupVariants]: the warm-up block plays only these (a trimmed plan warms up one build of each kind).
+    const warm = warmupVariants?.length ? vs.filter((v) => warmupVariants.includes(v)) : vs;
     for (let b = warmup ? 0 : 1; b <= reps; b++) {
-      const order = shuffle(vs, next);
+      const order = shuffle(b === 0 ? warm : vs, next);
       order.forEach((variant, i) => {
         runs.push({ scenario, variant, block: b, orderInBlock: i + 1, warmup: b === 0, evidence: false, runId: runId({ scenario, variant, block: b }, next) });
       });

@@ -307,7 +307,7 @@ async function plan(o) {
   // the campaign's order) and this job keeps its own scenario's runs, so the jobs together play the plan of one seed.
   const all = list(o['plan-scenarios'] || o.scenarios || o.scenario);
   for (const sc of scenarios) if (!all.includes(sc)) throw new Error(`scenario ${sc} is not in --plan-scenarios ${all.join(',')}`);
-  const runs = makePlan({ scenarios: all, variants: list(o.variants, ['off', 'off2', 'core', 'stream-img']), reps: Number(o.reps || 5), seed, warmup: o.warmup === '0' ? 0 : 1, evidence, extraVariants })
+  const runs = makePlan({ scenarios: all, variants: list(o.variants, ['off', 'off2', 'core', 'stream-img']), reps: Number(o.reps || 5), seed, warmup: o.warmup === '0' ? 0 : 1, evidence, extraVariants, warmupVariants: list(o['warmup-variants']) })
     .filter((r) => scenarios.includes(r.scenario));
   const out = resolve(o.out);
   mkdirSync(join(out, 'results', PLATFORM), { recursive: true });
