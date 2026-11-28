@@ -11,6 +11,7 @@ import androidx.test.uiautomator.UiDevice
 import androidx.test.uiautomator.UiObject2
 import com.tracewayapp.fieldmart.core.resourcePattern
 import java.util.regex.Pattern
+import kotlin.math.abs
 
 /**
  * The journey's `reveal` (shared/journey.md, Rules): before acting, make the element fully visible: hide the
@@ -100,12 +101,13 @@ class Reveal(
             if (ime != null && ime.top < area.bottom) area.bottom = ime.top
             val horizontal = isHorizontal(cb)
             val h = hint(id)
-            val forward = h?.let { it > 0 } ?: !backwards
+            // The numbered hint gives the direction, unless the list stopped moving that way (then the other way).
+            val forward = if (h != null) (h > 0) != backwards else !backwards
             val size = if (horizontal) area.width() else area.height()
-            // Quick drags (the list keeps moving a little) only to cover distance in a long list towards a numbered
-            // element known to be off screen; otherwise held drags, which stop where the finger stops, so nothing
-            // passes by unseen (a form above the keyboard shows only a few fields).
-            val quick = h != null && size > 400 * density
+            // Quick drags (the list keeps moving after the finger lifts) only to cover distance in a long list towards
+            // a numbered element far from the ones on screen; otherwise held drags, which stop where the finger
+            // stops, so nothing passes by unseen (a few rows away, a quick drag flew past the row and back again).
+            val quick = h != null && abs(h) > QUICK_MIN_ROWS && size > 400 * density
             val sig = cid?.let { signature(it) } ?: ""
             if (sig == lastSignature) {
                 still++
@@ -142,7 +144,10 @@ class Reveal(
         return prev
     }
 
-    /** Positive when the element is after the visible ones (scroll forwards), negative before, null without numbers. */
+    /**
+     * How many numbers the element is after the last visible one (positive: scroll forwards) or before the first
+     * (negative); null without numbers or when it is between them.
+     */
     private fun hint(id: String): Int? {
         val m = Regex("^(fm-[a-z]+-[a-z]+-)(?:([a-z]+)(\\d+)-)?(\\d+)$").find(id) ?: return null
         val prefix = m.groupValues[1] + (if (m.groupValues[2].isNotEmpty()) "${m.groupValues[2]}${m.groupValues[3]}-" else "")
@@ -155,8 +160,8 @@ class Reveal(
         }
         if (seen.isEmpty()) return null
         return when {
-            target > seen.max() -> 1
-            target < seen.min() -> -1
+            target > seen.max() -> target - seen.max()
+            target < seen.min() -> target - seen.min()
             else -> null
         }
     }
@@ -193,6 +198,9 @@ class Reveal(
         if (horizontal) r.left > area.left && r.right < area.right else r.top > area.top && r.bottom < area.bottom
 
     companion object {
+        /** Rows beyond the visible ones from which a reveal uses quick drags (a screen holds about 8–12 rows). */
+        private const val QUICK_MIN_ROWS = 12
+
         /** Checkout elements in dialogs, sheets and popups, not in the form. */
         private val OVERLAY = Regex("^fm-checkout-(terms-agree|terms-text|menu-item-\\d+|edit-plus-\\d+|edit-done|promo-option-\\d+|success|form)$")
     }
