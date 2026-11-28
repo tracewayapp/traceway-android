@@ -2255,15 +2255,19 @@ class TracewayClient private constructor(
      * Going to the background, or a flush: what the session used so far
      * (its `traceway.collection.*` counts, picture bytes, drops) is sent in
      * a `traceway.session.update` when it changed since the session's last
-     * record, and kept with the stored session. A session whose app is
-     * never opened again then still has its counts on the server, and the
-     * next launch ends it with them. Called with the lock held.
+     * record, and kept with the stored session, with the global attributes
+     * it has now. A session whose app is never opened again then still has
+     * its counts on the server, and the next launch ends it with them, and
+     * with its own attributes (the server takes a session's attributes from
+     * its latest record). Called with the lock held.
      */
     private fun reportSessionProgress() {
         val manager = sessions ?: return
         val session = manager.current ?: return
         val attributes = sessionAttributes(session)
-        manager.save(attributes.filterKeys { it != Events.ATTR_SESSION_ID && it != Events.ATTR_SESSION_STARTED_AT })
+        val saved = LinkedHashMap<String, Any?>(globalAttributes)
+        for ((k, v) in attributes) if (k != Events.ATTR_SESSION_ID && k != Events.ATTR_SESSION_STARTED_AT) saved[k] = v
+        manager.save(saved)
         val counts = replay.budget.snapshot(session.id)
         if (control.settings.sessionsEnabled && session.id in reportedSessions && counts != lastSessionCounts) {
             lastSessionCounts = counts
@@ -2274,8 +2278,10 @@ class TracewayClient private constructor(
     /**
      * Ends a session an earlier run left open, found over at this start
      * (the app was killed in the background): `session.end` at its last
-     * activity, with the counts kept with it and the replay budget's own,
-     * and its memory peak. Nothing of this process is its.
+     * activity, with the attributes and counts kept with it (the replay
+     * budget's own when newer), and its memory peak. Nothing of this process
+     * is its: its global attributes are only added where the earlier run
+     * kept none.
      */
     private fun endEarlierSession(session: SessionInfo, endedAtMs: Long) {
         if (options.captureMetrics) {
