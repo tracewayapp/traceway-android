@@ -21,6 +21,7 @@ import java.util.regex.Pattern
  */
 class Reveal(
     private val device: UiDevice,
+    private val finder: Finder,
     private val ui: UiAutomation,
     private val input: Input,
     private val density: Float,
@@ -56,32 +57,33 @@ class Reveal(
         var still = 0
         var nudges = 0
         var lastSize = 0
+        var dragged = false
+        var ime = ime()
+        val cid = containerOf(id)
         while (SystemClock.uptimeMillis() < deadlineMs) {
-            val ime = ime()
-            val o = device.findObject(selector(id))
-            val cid = containerOf(id)
-            val c: UiObject2? = if (cid != null) device.findObject(selector(cid)) else largestScrollable()
-            if (cid != null && c == null) {
+            val vb = finder.bounds(id)
+            val cb: Rect? = if (cid != null) finder.bounds(cid) else largestScrollable()?.visibleBounds
+            if (cid != null && cb == null) {
                 if (depth > 2) throw IllegalStateException("container $cid of $id not on screen")
                 reveal(cid, depth + 1, deadlineMs)
                 continue
             }
-            if (o != null) {
-                val vb = o.visibleBounds
+            if (vb != null) {
                 if (ime != null && Rect.intersects(vb, ime)) {
                     log("reveal $id: hiding the keyboard")
                     input.key(KeyEvent.KEYCODE_BACK)
                     SystemClock.sleep(450)
+                    ime = ime()
                     continue
                 }
-                val area = Rect(c?.visibleBounds ?: screen())
+                val area = Rect(cb ?: screen())
                 if (ime != null && ime.top < area.bottom) area.bottom = ime.top
-                val horizontal = c != null && isHorizontal(c)
-                if (vb.width() > 0 && vb.height() > 0 && inside(vb, area, horizontal)) return settle(id, vb)
+                val horizontal = cb != null && isHorizontal(cb)
+                if (vb.width() > 0 && vb.height() > 0 && inside(vb, area, horizontal)) return if (dragged) settle(id, vb) else vb
                 // Larger than its container, or a nudge did not show more of it: as visible as it gets.
                 val size = if (horizontal) vb.width() else vb.height()
-                if (c == null || nudges >= 2 || size >= (if (horizontal) area.width() else area.height()) - 2 || (nudges > 0 && size <= lastSize + 1)) {
-                    return settle(id, vb)
+                if (cb == null || nudges >= 2 || size >= (if (horizontal) area.width() else area.height()) - 2 || (nudges > 0 && size <= lastSize + 1)) {
+                    return if (dragged) settle(id, vb) else vb
                 }
                 nudges++
                 lastSize = size
@@ -90,12 +92,13 @@ class Reveal(
                 val limit = (if (horizontal) area.width() else area.height()) * 0.45f
                 val d = shift.coerceIn(-limit, limit)
                 drag(id, area, horizontal, -d, 240, hold = 100)
+                dragged = true
                 continue
             }
-            if (c == null) throw IllegalStateException("$id not on screen and nothing to scroll")
-            val area = Rect(c.visibleBounds)
+            if (cb == null) throw IllegalStateException("$id not on screen and nothing to scroll")
+            val area = Rect(cb)
             if (ime != null && ime.top < area.bottom) area.bottom = ime.top
-            val horizontal = isHorizontal(c)
+            val horizontal = isHorizontal(cb)
             val h = hint(id)
             val forward = h?.let { it > 0 } ?: !backwards
             val size = if (horizontal) area.width() else area.height()
@@ -103,7 +106,7 @@ class Reveal(
             // element known to be off screen; otherwise held drags, which stop where the finger stops, so nothing
             // passes by unseen (a form above the keyboard shows only a few fields).
             val quick = h != null && size > 400 * density
-            val sig = signature(c)
+            val sig = cid?.let { signature(it) } ?: ""
             if (sig == lastSignature) {
                 still++
                 if (still >= 2) {
@@ -115,14 +118,15 @@ class Reveal(
                 still = 0
             }
             lastSignature = sig
-            val span = size * (if (quick) 0.7f else 0.6f)
+            val span = size * (if (quick) 0.7f else 0.75f)
             if (quick) {
                 drag(id, area, horizontal, if (forward) -span else span, 160, hold = 0)
                 SystemClock.sleep(260)
             } else {
-                drag(id, area, horizontal, if (forward) -span else span, 260, hold = 120)
-                SystemClock.sleep(80)
+                drag(id, area, horizontal, if (forward) -span else span, 240, hold = 100)
+                SystemClock.sleep(60)
             }
+            dragged = true
         }
         throw IllegalStateException("$id not revealed in time")
     }
@@ -130,8 +134,8 @@ class Reveal(
     private fun settle(id: String, first: Rect): Rect {
         var prev = first
         for (i in 0 until 8) {
-            SystemClock.sleep(100)
-            val now = device.findObject(selector(id))?.visibleBounds ?: return prev
+            SystemClock.sleep(80)
+            val now = finder.bounds(id) ?: return prev
             if (now == prev) return now
             prev = now
         }
@@ -158,8 +162,9 @@ class Reveal(
     }
 
     /** Where the container's content is: the ids and positions of what it shows (a form's one child never moves). */
-    private fun signature(c: UiObject2): String = try {
-        c.findObjects(By.res(Pattern.compile(".+"))).take(8).joinToString("|") { "${it.resourceName}@${it.visibleBounds.top},${it.visibleBounds.left}" }
+    private fun signature(cid: String): String = try {
+        device.findObject(selector(cid))?.findObjects(By.res(Pattern.compile(".+")))?.take(8)
+            ?.joinToString("|") { "${it.resourceName}@${it.visibleBounds.top},${it.visibleBounds.left}" } ?: ""
     } catch (_: Throwable) {
         ""
     }
@@ -173,10 +178,7 @@ class Reveal(
         record("reveal", id, x1, y1, x2, y2, System.currentTimeMillis() - t)
     }
 
-    private fun isHorizontal(c: UiObject2): Boolean {
-        val b = c.visibleBounds
-        return b.width() > b.height() * 2
-    }
+    private fun isHorizontal(b: Rect): Boolean = b.width() > b.height() * 2
 
     private fun largestScrollable(): UiObject2? =
         device.findObjects(By.scrollable(true)).maxByOrNull { it.visibleBounds.width() * it.visibleBounds.height() }

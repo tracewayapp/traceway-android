@@ -19,30 +19,32 @@ import java.util.regex.Pattern
  */
 class Picker(
     private val device: UiDevice,
+    private val finder: Finder,
     private val input: Input,
     private val tap: (String?, Float, Float) -> String,
     private val rec: Recorder,
     /** The run's T0 on the device clock: `+Nd` counts from its day. */
     private val t0: Long,
+    private val pkg: String,
 ) {
-    fun pick(id: String, field: BySelector, value: String, budgetMs: Long): String {
+    fun pick(id: String, value: String, budgetMs: Long): String {
         // The journey taps the field just before: give the picker it opens a moment to show (a Material date
         // picker takes over a second on the emulator) before tapping the field again.
         val shown = SystemClock.uptimeMillis() + minOf(1500L, budgetMs / 2)
         while (!open() && SystemClock.uptimeMillis() < shown) SystemClock.sleep(100)
         if (!open()) {
-            val o = device.findObject(field) ?: throw IllegalStateException("$id not on screen")
-            val r = o.visibleBounds
+            val r = finder.bounds(id) ?: throw IllegalStateException("$id not on screen")
             tap(id, r.exactCenterX(), r.exactCenterY())
             // The picker takes a moment to show (a Material date picker over a second on the emulator).
             val until = SystemClock.uptimeMillis() + minOf(3000L, budgetMs)
             while (!open() && SystemClock.uptimeMillis() < until) SystemClock.sleep(100)
         }
-        return if (isDate(value) || device.hasObject(By.res(DATE_PICKER))) date(value) else list(value)
+        return if (isDate(value) || finder.datePickerOpen()) date(value) else list(value)
     }
 
     /** A date picker, or a dialog or popup with a list, is on screen. */
-    private fun open(): Boolean = device.hasObject(By.res(DATE_PICKER)) || device.hasObject(By.clazz("android.widget.ListView"))
+    private fun open(): Boolean = finder.datePickerOpen() || finder.viewBounds("$pkg:id/fm_checkout_country_list") != null ||
+        device.hasObject(By.clazz("android.widget.ListView"))
 
     private fun isDate(v: String) = v.startsWith("+") || Regex("\\d{4}-\\d{2}-\\d{2}").matches(v)
 
@@ -59,9 +61,9 @@ class Picker(
      * through the keyboard path, then its row tapped; without one, flung towards [value].
      */
     private fun list(value: String): String {
-        val search = device.findObjects(By.clazz("android.widget.EditText")).firstOrNull { it.resourceName?.endsWith("_search") == true }
+        val search = finder.viewBounds("$pkg:id/fm_checkout_country_search")
         if (search != null) {
-            val b = search.visibleBounds
+            val b = search
             tap(null, b.exactCenterX(), b.exactCenterY())
             SystemClock.sleep(150)
             for (c in value.take(3)) {
@@ -70,9 +72,9 @@ class Picker(
             }
             val until = SystemClock.uptimeMillis() + 1500
             while (SystemClock.uptimeMillis() < until) {
-                val row = device.findObject(By.text(value))?.takeIf { it.className != "android.widget.EditText" }
+                val row = finder.textBounds(value)
                 if (row != null) {
-                    val r = row.visibleBounds
+                    val r = row
                     tap(null, r.exactCenterX(), r.exactCenterY())
                     return "picked '$value' through the search field"
                 }
@@ -147,21 +149,16 @@ class Picker(
         val month = cal.getDisplayName(Calendar.MONTH, Calendar.LONG, Locale.US)
         val monthName = "$month ${cal.get(Calendar.YEAR)}"
         for (i in 0 until 14) {
-            if (device.hasObject(By.textContains(monthName))) break
-            val next = device.findObject(By.res(NEXT_MONTH)) ?: throw IllegalStateException("no next-month button")
-            val b = next.visibleBounds
+            // Day cells carry the full date in their description ("Saturday, December 12"): the right month shows it.
+            if (finder.textBounds(day.toString(), "$month $day") != null || finder.textBounds(day.toString(), month) != null) break
+            val b = finder.viewBounds("$pkg:id/month_navigation_next") ?: throw IllegalStateException("no next-month button")
             tap(null, b.exactCenterX(), b.exactCenterY())
-            SystemClock.sleep(400)
+            SystemClock.sleep(350)
         }
-        // Day cells carry the full date in their description ("Saturday, December 12"): the visible month's day.
-        val cells = device.findObjects(By.text(day.toString()))
-        val cell = cells.firstOrNull { (it.contentDescription ?: "").contains(month) } ?: cells.firstOrNull()
-            ?: throw IllegalStateException("day $day not shown")
-        val b = cell.visibleBounds
+        val b = finder.textBounds(day.toString(), month) ?: throw IllegalStateException("day $day $month not shown")
         tap(null, b.exactCenterX(), b.exactCenterY())
-        SystemClock.sleep(300)
-        val ok = device.findObject(By.res(CONFIRM)) ?: device.findObject(By.text("OK")) ?: throw IllegalStateException("no OK button")
-        val ob = ok.visibleBounds
+        SystemClock.sleep(200)
+        val ob = finder.viewBounds("$pkg:id/confirm_button") ?: throw IllegalStateException("no OK button")
         tap(null, ob.exactCenterX(), ob.exactCenterY())
         rec.log("date picked $day $monthName")
         return "date $day $monthName"

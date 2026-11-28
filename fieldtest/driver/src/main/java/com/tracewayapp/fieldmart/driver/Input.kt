@@ -61,10 +61,11 @@ class Input(private val ui: UiAutomation) {
     /** Types [c] as the key events a keyboard produces for it (with Shift where needed). */
     fun type(c: Char): Boolean {
         val events = keys.getEvents(charArrayOf(c)) ?: return false
+        // Without waiting for the app to take each key: the typing keeps its pace on a busy screen, in order.
         for (e in events) {
             val now = SystemClock.uptimeMillis()
             val k = KeyEvent(now, now, e.action, e.keyCode, 0, e.metaState, KeyCharacterMap.VIRTUAL_KEYBOARD, 0, 0, InputDevice.SOURCE_KEYBOARD)
-            if (!ui.injectInputEvent(k, true)) return false
+            if (!ui.injectInputEvent(k, false)) return false
         }
         return true
     }

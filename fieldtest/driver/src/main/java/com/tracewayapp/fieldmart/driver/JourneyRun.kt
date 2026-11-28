@@ -65,8 +65,9 @@ class JourneyRun(private val spec: RunSpec, private val scenario: Scenario, priv
     private val launches = ArrayList<JsonObject>()
     @Volatile
     private var released = true
+    private val finder = Finder(ui, device, pkg)
     private val reveal by lazy {
-        Reveal(device, ui, input, density, { kind, id, x, y, x2, y2, ms -> record(kind, id, x, y, x2, y2, ms) }) { rec.log(it) }
+        Reveal(device, finder, ui, input, density, { kind, id, x, y, x2, y2, ms -> record(kind, id, x, y, x2, y2, ms) }) { rec.log(it) }
     }
 
     fun execute() {
@@ -251,7 +252,7 @@ class JourneyRun(private val spec: RunSpec, private val scenario: Scenario, priv
             input.key(code)
             "key $code"
         }
-        "pick" -> onGesture(s) { val id = s.id!!; Picker(device, input, ::tapAt, rec, t0).pick(id, selector(id), s.value ?: "", s.durationMs ?: 2500) }
+        "pick" -> onGesture(s) { val id = s.id!!; Picker(device, finder, input, ::tapAt, rec, t0, pkg).pick(id, s.value ?: "", s.durationMs ?: 2500) }
         "idle" -> "idle"
         "checkpoint" -> checkpoint(s)
         "mark" -> {
@@ -313,7 +314,7 @@ class JourneyRun(private val spec: RunSpec, private val scenario: Scenario, priv
     /** The on-screen bounds of [id]: as it is, or brought fully into view first when the step says `reveal`. */
     private fun bounds(id: String, revealFirst: Boolean): Rect {
         if (revealFirst) return reveal.reveal(id)
-        return device.findObject(selector(id))?.visibleBounds ?: throw IllegalStateException("$id not on screen")
+        return finder.bounds(id) ?: throw IllegalStateException("$id not on screen")
     }
 
     private fun tapAt(id: String?, x: Float, y: Float): String = action("tap", id, x, y) { input.tap(x, y) }
