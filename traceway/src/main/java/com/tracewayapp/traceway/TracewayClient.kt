@@ -2972,8 +2972,9 @@ class TracewayClient private constructor(
                         metrics.flush(final = true)
                     }
                     saveTriggerProgress(now = true)
-                    // The last activity, on disk for a next launch that finds the session over.
-                    sessions?.save()
+                    // The user was here until now: the session's last activity, on disk for a next launch that finds
+                    // it over.
+                    sessions?.leave()
                 }
                 scheduler.io {
                     persistBuffer()

@@ -117,6 +117,25 @@ class SessionManagerTest {
     }
 
     @Test
+    fun leavingTheAppIsTheSessionsLastActivityAndStartsNone() {
+        val m = manager(StateStore(null)).apply { start() }
+        val first = m.currentId!!
+        scheduler.nowMs += 60_000
+        m.leave()
+        val left = scheduler.nowMs
+        scheduler.nowMs += SessionManager.DEFAULT_INACTIVITY_MS - 1
+        m.check()
+        assertEquals("still inside the window counted from leaving", first, m.currentId)
+        scheduler.nowMs += 1
+        m.check()
+        assertEquals("end:$first@$left", events.last())
+        // Leaving once the session is over ends it and starts none.
+        m.leave()
+        assertNull(m.currentId)
+        m.stop()
+    }
+
+    @Test
     fun thePeriodicCheckEndsAnIdleSessionThroughTheLock() {
         var lockedRuns = 0
         val m = manager(StateStore(null)) { block ->

@@ -96,6 +96,19 @@ internal class SessionManager(
         persist()
     }
 
+    /**
+     * The app went to the background: the user was in it until now, which
+     * is the session's last activity (and, if it is not opened again in
+     * time, its end). An expired session is ended; none is started.
+     */
+    fun leave() {
+        if (!started) return
+        check()
+        if (session == null) return
+        lastActivityMs = now()
+        persist()
+    }
+
     /** Next index for a replay segment of this session. */
     fun nextSegmentIndex(): Int {
         val index = segmentIndex++

@@ -935,8 +935,9 @@ class TracewayClientTest {
         val session = first.currentSessionId!!
         scheduler.advance(25_000)
         first.markActivity()
-        val lastActivity = scheduler.now()
         scheduler.advance(3_000)
+        // The user leaves the app: the session's last activity.
+        val left = scheduler.now()
         first.simulateLifecycle(foreground = false)
         scheduler.advance(5_000)
         val uploaded = uploadedEvents(session)
@@ -951,7 +952,7 @@ class TracewayClientTest {
         assertTrue(next != session)
         val end = named("session.end").singleOrNull { it.attr("session.id") == session }
         assertNotNull("the earlier run's session is ended by the SDK at the next launch", end)
-        assertEquals("at its last activity", lastActivity, end!!.timestampEpochNanos / 1_000_000)
+        assertEquals("when the user left the app, its last activity", left, end!!.timestampEpochNanos / 1_000_000)
         assertEquals("with what it used", uploaded, end.attr("traceway.collection.events"))
         assertNotNull(end.attr("traceway.replay.image_bytes"))
         // The server takes a session's attributes from its latest record: the end keeps the session's own.
